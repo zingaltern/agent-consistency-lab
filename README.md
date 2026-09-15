@@ -14,7 +14,7 @@
 |---|---|---|
 | W1 | 事件日志 + state 折叠 + checkpoint/writes 提交协议 + 语义文档 v1 | 完成 |
 | W2 | 最小 loop + 命名崩溃注入器 + 崩溃窗口矩阵（窗口 1-3） | 完成 |
-| W3 | interrupt/resume + 审批绑定 + 幂等 outbox + unknown 对账 | 未开始 |
+| W3 | interrupt/resume + 审批绑定（TOCTOU）+ outbox + unknown 对账 | 完成 |
 | W4 | 上下文视图 + 压缩 + 卸载 + 缓存纪律 | 未开始 |
 | W5 | 运维壳 + 场景集 + 三基线（含 LangGraph 对照） | 未开始 |
 | W6 | 评测台 + 人工校准 + CI 门禁 | 未开始 |
@@ -23,14 +23,18 @@
 
 ## 已产出的实测结论
 
-W2 崩溃矩阵（60 次 SIGKILL + 60 次恢复，8.4 秒，见
-[docs/w2-crash-windows.md](docs/w2-crash-windows.md)）：
+**W2**（[w2-crash-windows.md](docs/w2-crash-windows.md)）：
+"效果已发生、记录未落盘"是唯一产生重复副作用的窗口，下游不幂等时 5/5 复现，
+且 runtime 侧去重开关在该窗口完全无效。
 
-* "效果已发生、记录未落盘"是唯一产生重复副作用的窗口：下游不幂等时 5/5 复现，
-  下游幂等时 0/5；
-* **runtime 侧去重开关在该窗口完全无效**（12 格对比无一改变）——崩溃点在记录之前，
-  去重表里没有可查的行；
-* 三个窗口下"日志不重不漏 + 不变量零违反"均为 5/5，孤儿 writes 不造成危害。
+**W3**（[w3-report.md](docs/w3-report.md)，70 次崩溃 + 70 次恢复，14 格）：
+
+* 同一窗口加 **outbox（副作用前预写意图）+ 按键读回**：重复副作用 5/5 → **0/5**，
+  恢复路径由探针确认（不重跑）；
+* 没有读回能力时：0 重复，但收敛为**恰好 1 行 unknown** 待人工对账——
+  即把"静默重复"变成"显式有界的未知"；
+* **TOCTOU 有实测护栏**：批准之后执行之前改写参数，5/5 拒绝执行、0 副作用；
+* **改参即换键**有端到端证据：改参批准 → 新 tool_call_id → 不同幂等键，账本落的是改后参数。
 
 ## 核心设计
 
@@ -49,22 +53,24 @@ W2 崩溃矩阵（60 次 SIGKILL + 60 次恢复，8.4 秒，见
 ```
 harness/
   events.py              事件模型（扁平日志、kind 分离、type 约束）
-  state.py               事件 → 派生状态折叠 + 不变量（INV-001..006）
-  tools.py               效果声明、幂等键、参数规范化
+  state.py               事件 → 派生状态折叠 + 不变量（INV-001..007）
+  tools.py               效果声明、幂等键、参数规范化、探针 ProbeFn
+  approval.py            审批绑定（nonce / 过期 / scope / 参数 hash / TOCTOU）
   chaos.py               命名崩溃窗口 + 确定性 SIGKILL
-  loop.py                最小 agent loop（super-step + 边界 checkpoint + resume）
+  loop.py                agent loop（super-step、审批门、outbox、恢复）
   store/
     schema.py            DDL、schema 版本与迁移、append-only 触发器
     sqlite_store.py      单写者事务、seq 分配、分叉解析
     checkpoints.py       checkpoint/writes 提交协议、恢复计划
-    tool_calls.py        工具调用记录（运行时去重表）
+    tool_calls.py        工具调用记录（运行时去重表 / outbox 意图行）
 fakeworld/               受控仿真：副作用账本 + 仿真工具 + 脚本化模型
 experiments/
-  worker.py              单次 run / resume 的子进程入口
-  crash_matrix.py        崩溃窗口矩阵 runner（跑真实 kill -9 子进程）
-tests/                   不变量、协议、loop 与矩阵小样本
+  worker.py              run / approve / resume 的子进程入口
+  crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
+tests/                   不变量、协议、审批语义、loop 与矩阵小样本
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
+docs/w3-report.md        W3 审批与 outbox 一致性实验报告
 reports/                 矩阵原始数据与自动生成的报告
 ```
 
@@ -74,16 +80,19 @@ reports/                 矩阵原始数据与自动生成的报告
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                                        # 全部测试（含矩阵小样本）
 
-# 完整崩溃矩阵：3 窗口 × 去重 × 下游幂等 × 5 次
+# 完整崩溃矩阵：5 窗口 × outbox × 下游幂等 × 探针 + 篡改控制组（14 格）
 .venv/bin/python -m experiments.crash_matrix --repeats 5 \
-    --json-out reports/w2_crash_matrix.json --md-out reports/w2_crash_matrix.md
+    --json-out reports/w3_crash_matrix.json --md-out reports/w3_crash_matrix.md
 ```
 
 单次崩溃可手工复现：
 
 ```bash
-CHAOS_WINDOWS="post_tool_effect_pre_record:2" .venv/bin/python -m experiments.worker \
-    --run-dir /tmp/demo --mode run --tool-idem off     # 进程被 SIGKILL（退出码 137）
+.venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode run       # 停在审批门
+.venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode approve   # 人工批准
+CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
+    .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
+    # 进程被 SIGKILL（退出码 137）
 .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
 ```
 

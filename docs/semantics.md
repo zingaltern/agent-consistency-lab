@@ -67,19 +67,22 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
 
-### 2.5 工具执行的落盘顺序（有意为之）
+### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
 
-一次工具执行按固定顺序落盘：
+一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
 
-1. `tool_call` 事件（记录决策，此时副作用尚未发生）
-2. 执行副作用（发生在外部系统）
-3. `tool_result` 事件（**权威记录**）
-4. `tool_calls` 去重行（辅助记录）
-5. 边界 checkpoint 提交
+1. 日志里已有结论 → 重放，不重跑
+2. 补记 `tool_call` 事件（幂等）
+3. 查既有意图行：`executed` → 重放；`pending` → 探针对账（或转 `unknown`）；
+   `unknown` → 绝不自动重试
+4. 审批门：未获批的需审批调用 → 发 `interrupt`，loop 停在 `WAITING_HUMAN`
+5. 审批校验：拒绝 / 过期 / 参数 hash 不一致（TOCTOU）→ 拒绝执行并记录原因
+6. outbox 预写 `intent(pending)`（仅非幂等写）
+7. 执行副作用（外部系统）
+8. `tool_result` 事件（**权威记录**）→ 闭合意图行 → 边界 checkpoint 提交
 
 事件先于去重行的原因：这样"去重行已写、事件未写"这个**危险**微窗口不存在；
 反向残留（事件在、去重行缺失）由日志权威兜住，最坏只是审计少一行。
-窗口 2（第 2 步之后、第 3 步之前）是唯一无法自愈的位置，见 §3。
 
 ---
 
@@ -104,14 +107,16 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 
 | # | 窗口 | 位置 | 状态 |
 |---|---|---|---|
-| 1 | `pre_tool_exec` | 模型响应后 / 工具执行前 | 已实现并测（W2） |
-| 2 | `post_tool_effect_pre_record` | 工具成功后 / 任何记录前 | 已实现并测（W2） |
-| 3 | `post_record_pre_commit` | 记录后 / 边界 checkpoint 提交前 | 已实现并测（W2） |
-| 4 | `post_approval_pre_exec` | 审批通过后 / 执行前 | W3 |
+| 1 | `pre_tool_exec` | 模型响应后 / 工具执行前 | 已实现并测（W2/W3） |
+| 2 | `post_tool_effect_pre_record` | 工具成功后 / 任何记录前 | 已实现并测（W2/W3） |
+| 3 | `post_record_pre_commit` | 记录后 / 边界 checkpoint 提交前 | 已实现并测（W2/W3） |
+| 4 | `post_approval_pre_exec` | 审批通过后 / 执行前 | 已实现并测（W3） |
 | 5 | `during_compaction` | 压缩进行中 | W4 |
-| 6 | `after_resume` | 恢复之后再次崩溃 | 已埋点（W2），W3 并入矩阵 |
+| 6 | `after_resume` | 恢复之后再次崩溃 | 已实现并测（W3） |
 
-窗口 2 是唯一产生重复副作用的位置，且只能由下游幂等兜住（W2 实测 5/5 vs 0/5）。
+窗口 2 是唯一产生重复副作用的位置，且只能由下游幂等或 outbox+探针兜住
+（W3 实测：无 outbox 5/5 重复；outbox+读回 0/5 且探针确认；outbox 无读回 0/5
+但留下 1 行 unknown 待人工对账）。
 
 ---
 
@@ -122,15 +127,27 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 | `user_message` | tree | `{text}` |
 | `agent_message` | tree | `{text, final?: bool, usage?: {...}}` |
 | `tool_call` | tree | `{tool_call_id, tool, args, args_sha256, idempotency_key, effect}` |
-| `tool_result` | tree | `{tool_call_id, status: executed\|failed\|unknown, result?, error_class?, artifact_ref?}` |
-| `interrupt` | tree | `{interrupt_id, reason, request}` |
-| `resume` | tree | `{interrupt_id, values}` |
+| `tool_result` | tree | `{tool_call_id, status: executed\|failed\|unknown\|rejected\|superseded, result?, error_class?, artifact_ref?}` |
+| `interrupt` | tree | `{interrupt_id, interrupt_index, tool_call_id, tool, args, args_sha256, reason}` |
+| `resume` | tree | `{interrupt_id, interrupt_index, approval_id, decision, tool_call_id}` |
 | `error` | artifact | `{error_class, message, fatal?: bool}` |
 | `budget_update` | artifact | `{bucket, tokens_in, tokens_out, cost_usd}` |
 | `lease` | artifact | `{owner, expires_at}` |
 | `compaction` | artifact | `{replaces_event_ids, summary, artifact_ref?}` |
-| `approval` | artifact | `{approval_id, tool_call_id, decision, requested_args_sha256, approved_args_sha256, actor}` |
+| `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
 | `state_update` | artifact | `{patch}` |
+
+### 4.1 审批绑定的四条约束（W3）
+
+1. **绑定调用与参数 hash**：批准的是"某次调用 + 某组参数"，不是模糊的授权范围；
+   执行前用实际参数重算 hash 并比对。
+2. **改参即换调用**：改参批准时原调用闭合为 `superseded`，另起新 `tool_call_id`
+   （因此是新幂等键），批准绑定到新调用与新参数。
+3. **nonce 不是一次性闩锁**：它是这次批准的审计标识；单次性由
+   (tool_call_id, args_sha256) 绑定 + 调用闭合隐式保证——因此"批准后崩溃、恢复重跑"
+   不需要重新审批，重复执行由 outbox/幂等层拦截（W3 窗口 4 实测 5/5 恰好一次）。
+4. **过期与拒绝是默认方向**：`expires_at` 必须显式给出；auto-approve 绝不默认开。
+   `scope=once` 只授权绑定的那次调用；`scope=session` 复用同一（工具，参数 hash）。
 
 ---
 
@@ -142,6 +159,8 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 * INV-004 interrupt 不得在未 resume 时重复出现
 * INV-005 resume 必须对应一个未闭合的 interrupt
 * INV-006 终态（completed/failed）之后不得再出现树节点
+* INV-007 resume 携带的 `interrupt_index` 必须与未闭合 interrupt 的 index 一致
+  （index 与 id 双重核验：只对 id 不打分的实现会把 resume 值接到错误的 interrupt 上）
 
 不变量的违反以 `Violation` 显式返回，调用方决定告警/修复/中止；
 `DerivedState.fingerprint()` 用于重放确定性断言（同一日志 → 同一指纹）。
@@ -163,7 +182,8 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 
 ## 7. 未决问题
 
-1. `resume_from_seq` 与 writes 重放的先后关系在"边界提交前又崩溃"时的幂等性
-   证明（W2 用注入矩阵验证）。
-2. unknown 集合的收敛条件（何时可判定"不可对账"）。
-3. 租约失效后的接管语义（W3）。
+1. unknown 集合的收敛条件（何时可判定"不可对账只剩人工"）——W3 给出了产生规则，
+   收敛策略待 W5 场景接入后定义。
+2. 租约失效后的接管语义（lease 事件已定义，机制未实现）。
+3. 批量写一半（Saga 补偿）与 `during_compaction` 窗口（W4/W5）。
+4. `synchronous=FULL` 的掉电语义实验。

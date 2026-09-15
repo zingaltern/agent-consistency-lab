@@ -50,6 +50,58 @@ class ToolCallStore:
         ).fetchone()
         return self._row_to_record(row) if row else None
 
+    def begin(
+        self,
+        *,
+        tool_call_id: str,
+        run_id: str,
+        branch_id: str,
+        tool: str,
+        args: dict[str, Any],
+        args_sha256: str,
+        idempotency_key: str,
+        effect: str,
+    ) -> bool:
+        """outbox 预写意图：在任何副作用之前落一行 status='pending'。
+
+        返回 True 表示首次尝试；False 表示键已存在（重放或并发），调用方必须按既有
+        状态处置，绝不能直接执行。
+        """
+        return self.record(
+            tool_call_id=tool_call_id,
+            run_id=run_id,
+            branch_id=branch_id,
+            tool=tool,
+            args=args,
+            args_sha256=args_sha256,
+            idempotency_key=idempotency_key,
+            effect=effect,
+            status="pending",
+            result=None,
+        )
+
+    def complete(self, idempotency_key: str, result: dict[str, Any] | None) -> None:
+        """执行成功后闭合意图行。"""
+        with self._store.write_tx():
+            self._conn.execute(
+                "UPDATE tool_calls SET status='executed', result_json=?, ended_at=?"
+                " WHERE idempotency_key=?",
+                (
+                    None
+                    if result is None
+                    else json.dumps(result, sort_keys=True, ensure_ascii=False),
+                    time.time(),
+                    idempotency_key,
+                ),
+            )
+
+    def list_pending(self, run_id: str) -> list[ToolCallRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM tool_calls WHERE run_id=? AND status='pending' ORDER BY started_at",
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
     def record(
         self,
         *,

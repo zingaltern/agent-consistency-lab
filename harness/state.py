@@ -12,6 +12,8 @@ DerivedState 是事件日志的折叠结果，可随时重建，因此不存在"
 * INV-004 interrupt 不得在未 resume 时重复出现
 * INV-005 resume 必须对应一个未闭合的 interrupt
 * INV-006 终态（completed/failed）之后不得再出现树节点
+* INV-007 resume 携带的 interrupt_index 必须与未闭合 interrupt 的 index 一致
+  （index 与 id 双重核验：只对 id 不打分的实现会把 resume 值接到错误的 interrupt 上）
 """
 
 from __future__ import annotations
@@ -72,6 +74,7 @@ def reduce_events(events: Sequence[Event]) -> tuple[DerivedState, list[Violation
     open_calls: dict[str, str] = {}
     closed_calls: list[str] = []
     pending_interrupt: str | None = None
+    pending_interrupt_index: int | None = None
     last_event_id: str | None = None
     last_seq = -1
     violations: list[Violation] = []
@@ -152,6 +155,8 @@ def reduce_events(events: Sequence[Event]) -> tuple[DerivedState, list[Violation
                 pending_interrupt = (
                     interrupt_id if isinstance(interrupt_id, str) else event.event_id
                 )
+                raw_index = event.payload.get("interrupt_index")
+                pending_interrupt_index = raw_index if isinstance(raw_index, int) else None
                 status = RunStatus.WAITING_HUMAN
         elif event.type == TreeEventType.RESUME.value:
             if pending_interrupt is None:
@@ -163,7 +168,24 @@ def reduce_events(events: Sequence[Event]) -> tuple[DerivedState, list[Violation
                     )
                 )
             else:
+                resume_index = event.payload.get("interrupt_index")
+                if (
+                    pending_interrupt_index is not None
+                    and isinstance(resume_index, int)
+                    and resume_index != pending_interrupt_index
+                ):
+                    violations.append(
+                        Violation(
+                            code="INV-007",
+                            detail=(
+                                f"resume index {resume_index} does not match open "
+                                f"interrupt index {pending_interrupt_index}"
+                            ),
+                            event_id=event.event_id,
+                        )
+                    )
                 pending_interrupt = None
+                pending_interrupt_index = None
                 if status is RunStatus.WAITING_HUMAN:
                     status = RunStatus.RUNNING
 

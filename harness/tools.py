@@ -42,15 +42,35 @@ class ToolCallRequest(BaseModel):
 
 class ToolResult(BaseModel):
     tool_call_id: str
-    status: str  # executed | failed | unknown
+    status: str  # executed | failed | unknown | rejected | superseded
     result: dict[str, Any] | None = None
     error_class: str | None = None
+
+
+class ProbeOutcome(StrEnum):
+    """下游按键读回的三种结论；UNKNOWN 表示"读不出真实状态"。"""
+
+    APPLIED = "applied"
+    NOT_APPLIED = "not_applied"
+    UNKNOWN = "unknown"
+
+
+class ProbeResult(BaseModel):
+    outcome: ProbeOutcome
+    detail: dict[str, Any] = Field(default_factory=dict)
 
 
 ToolFn = Callable[[dict[str, Any], str], dict[str, Any]]
 """工具实现签名：(args, idempotency_key) -> result。
 
 幂等实现应当用 ``idempotency_key`` 做 upsert；非幂等实现忽略它并直接追加效果。
+"""
+
+ProbeFn = Callable[[dict[str, Any], str], ProbeResult]
+"""探针签名：(args, idempotency_key) -> ProbeResult。
+
+只有下游支持"按键读回"时才可能存在；没有探针的非幂等写，在崩溃后只能标记
+``unknown`` 交人工对账，绝不自动重跑。
 """
 
 
@@ -61,6 +81,8 @@ class Tool:
     fn: ToolFn
     description: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
+    requires_approval: bool = False
+    probe: ProbeFn | None = None
 
 
 class ToolRegistry:

@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from harness.tools import Effect, Tool, ToolRegistry
+from harness.tools import Effect, ProbeOutcome, ProbeResult, Tool, ToolRegistry
 
 from .world import World
 
 SCENARIO_POOL_EXHAUSTION = "pool_exhaustion"
+SCENARIO_TWO_WRITES = "pool_exhaustion_two_writes"
 
 
-def build_registry(world: World, *, idempotent_impl: bool) -> ToolRegistry:
+def build_registry(
+    world: World, *, idempotent_impl: bool, probe_enabled: bool = True
+) -> ToolRegistry:
     registry = ToolRegistry()
 
     def query_metrics(args: dict[str, Any], _key: str) -> dict[str, Any]:
@@ -40,6 +43,13 @@ def build_registry(world: World, *, idempotent_impl: bool) -> ToolRegistry:
             idempotent_impl=True,
         )
 
+    def scale_pool_probe(args: dict[str, Any], key: str) -> ProbeResult:
+        exists, detail = world.probe(key)
+        return ProbeResult(
+            outcome=ProbeOutcome.APPLIED if exists else ProbeOutcome.NOT_APPLIED,
+            detail=detail,
+        )
+
     registry.register(
         Tool(
             name="query_metrics",
@@ -54,8 +64,10 @@ def build_registry(world: World, *, idempotent_impl: bool) -> ToolRegistry:
             name="scale_pool",
             effect=Effect.WRITE_IDEMPOTENT if idempotent_impl else Effect.WRITE_NONIDEMPOTENT,
             fn=scale_pool,
-            description="扩容数据库连接池（写操作，需审批）",
+            description="扩容数据库连接池（高危写，需人工审批）",
             tags=("risky",),
+            requires_approval=True,
+            probe=scale_pool_probe if probe_enabled else None,
         )
     )
     registry.register(
@@ -70,10 +82,7 @@ def build_registry(world: World, *, idempotent_impl: bool) -> ToolRegistry:
     return registry
 
 
-def scripted_turns(scenario: str) -> list[dict[str, Any]]:
-    """确定性脚本：每个 turn 要么提工具调用，要么给最终答复。"""
-    if scenario != SCENARIO_POOL_EXHAUSTION:
-        raise ValueError(f"unknown scenario: {scenario!r}")
+def _single_write_script() -> list[dict[str, Any]]:
     return [
         {
             "text": "支付服务 P99 告警，先取指标。",
@@ -97,3 +106,25 @@ def scripted_turns(scenario: str) -> list[dict[str, Any]]:
         },
         {"text": "已扩容并确认指标回落，任务结束。", "tool_calls": []},
     ]
+
+
+def scripted_turns(scenario: str) -> list[dict[str, Any]]:
+    """确定性脚本：每个 turn 要么提工具调用，要么给最终答复。"""
+    if scenario == SCENARIO_POOL_EXHAUSTION:
+        return _single_write_script()
+    if scenario == SCENARIO_TWO_WRITES:
+        return [
+            *_single_write_script()[:2],
+            {
+                "text": "再确认一次池大小。",
+                "tool_calls": [
+                    {
+                        "tool_call_id": "tc_write_2",
+                        "tool": "scale_pool",
+                        "args": {"service": "payment", "size": 64},
+                    }
+                ],
+            },
+            {"text": "两次扩容完成，任务结束。", "tool_calls": []},
+        ]
+    raise ValueError(f"unknown scenario: {scenario!r}")

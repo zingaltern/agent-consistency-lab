@@ -119,6 +119,17 @@ class World:
     def duplicate_keys(self) -> dict[str, int]:
         return {key: n for key, n in self.effect_counts_by_key().items() if n > 1}
 
+    def probe(self, idempotency_key: str) -> tuple[bool, dict[str, Any]]:
+        """按键读回：真实系统里这要求下游提供"按幂等键查询"的接口。
+
+        返回 (效果是否存在, 细节)。没有这个能力时，崩溃后遗留的 pending 意图只能标记
+        ``unknown`` 交人工对账——这正是矩阵里 probe 开关这一维的含义。
+        """
+        rows = self.effects_for(idempotency_key)
+        if not rows:
+            return False, {}
+        return True, {"effect_id": int(rows[0]["effect_id"]), "effect_count": len(rows)}
+
     def all_effects(self) -> list[dict[str, Any]]:
         rows = self._conn.execute("SELECT * FROM effects ORDER BY effect_id").fetchall()
         return [dict(row) for row in rows]

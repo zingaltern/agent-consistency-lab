@@ -15,7 +15,7 @@ checkpoint_id / task_id / idx），目的是让"自研 vs LangGraph"的对照测
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL: str = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -109,7 +109,49 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version    INTEGER PRIMARY KEY,
   applied_at REAL NOT NULL
 );
+
+-- v2：工具调用的幂等记录。idempotency_key = hash(run_id, tool_call_id)，
+-- 刻意不含参数：参数 hash 只作旁路校验（改参检测），不参与键（见 semantics.md §4）。
+CREATE TABLE IF NOT EXISTS tool_calls (
+  tool_call_id    TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  branch_id       TEXT NOT NULL,
+  tool            TEXT NOT NULL,
+  args_json       TEXT NOT NULL,
+  args_sha256     TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  effect          TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  result_json     TEXT,
+  error_class     TEXT,
+  started_at      REAL NOT NULL,
+  ended_at        REAL,
+  FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id, started_at);
 """
 
 # 迁移按版本号顺序执行；v1 为初始版本，后续新增写 ALTER/CREATE 语句。
-MIGRATIONS: dict[int, str] = {}
+# 新建库由 DDL 直接建到最新版；老库走 MIGRATIONS 补齐（两条路径必须收敛到同一 schema）。
+MIGRATIONS: dict[int, str] = {
+    2: """
+CREATE TABLE IF NOT EXISTS tool_calls (
+  tool_call_id    TEXT PRIMARY KEY,
+  run_id          TEXT NOT NULL,
+  branch_id       TEXT NOT NULL,
+  tool            TEXT NOT NULL,
+  args_json       TEXT NOT NULL,
+  args_sha256     TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  effect          TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  result_json     TEXT,
+  error_class     TEXT,
+  started_at      REAL NOT NULL,
+  ended_at        REAL,
+  FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id, started_at);
+"""
+}

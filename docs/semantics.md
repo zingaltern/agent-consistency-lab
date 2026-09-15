@@ -18,6 +18,10 @@
 **明确不承诺**：不承诺 exactly-once 效果（任何声称此承诺的系统都在某处依赖下游幂等），
 不承诺掉电不丢最后一个事务（见 §3），不承诺跨进程并发写（见 §2）。
 
+**W2 实测（n=5/格，共 60 次 SIGKILL + 60 次恢复，详见 [w2-crash-windows.md](w2-crash-windows.md)）**：
+"效果已发生、记录未落盘"窗口下重复副作用 5/5，且 runtime 侧去重开关不改变结论——
+该窗口只能由下游幂等兜住（下游幂等时 0/5）。
+
 ---
 
 ## 2. 存储与恢复语义
@@ -63,6 +67,20 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
 
+### 2.5 工具执行的落盘顺序（有意为之）
+
+一次工具执行按固定顺序落盘：
+
+1. `tool_call` 事件（记录决策，此时副作用尚未发生）
+2. 执行副作用（发生在外部系统）
+3. `tool_result` 事件（**权威记录**）
+4. `tool_calls` 去重行（辅助记录）
+5. 边界 checkpoint 提交
+
+事件先于去重行的原因：这样"去重行已写、事件未写"这个**危险**微窗口不存在；
+反向残留（事件在、去重行缺失）由日志权威兜住，最坏只是审计少一行。
+窗口 2（第 2 步之后、第 3 步之前）是唯一无法自愈的位置，见 §3。
+
 ---
 
 ## 3. 崩溃语义的边界（重要）
@@ -80,6 +98,21 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 跨进程并发需要上层租约（`lease` 事件，W3 落地）；在租约落地前，
 双进程跑同一 thread 是未定义行为。
 
+### 3.1 命名崩溃窗口
+
+窗口是代码中的确定性注入点（`harness/chaos.py`），命中即 SIGKILL 自身进程。
+
+| # | 窗口 | 位置 | 状态 |
+|---|---|---|---|
+| 1 | `pre_tool_exec` | 模型响应后 / 工具执行前 | 已实现并测（W2） |
+| 2 | `post_tool_effect_pre_record` | 工具成功后 / 任何记录前 | 已实现并测（W2） |
+| 3 | `post_record_pre_commit` | 记录后 / 边界 checkpoint 提交前 | 已实现并测（W2） |
+| 4 | `post_approval_pre_exec` | 审批通过后 / 执行前 | W3 |
+| 5 | `during_compaction` | 压缩进行中 | W4 |
+| 6 | `after_resume` | 恢复之后再次崩溃 | 已埋点（W2），W3 并入矩阵 |
+
+窗口 2 是唯一产生重复副作用的位置，且只能由下游幂等兜住（W2 实测 5/5 vs 0/5）。
+
 ---
 
 ## 4. 事件目录（payload 规范形状）
@@ -88,7 +121,7 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 |---|---|---|
 | `user_message` | tree | `{text}` |
 | `agent_message` | tree | `{text, final?: bool, usage?: {...}}` |
-| `tool_call` | tree | `{tool_call_id, tool, args, effect: read\|write_idempotent\|write_nonidempotent}` |
+| `tool_call` | tree | `{tool_call_id, tool, args, args_sha256, idempotency_key, effect}` |
 | `tool_result` | tree | `{tool_call_id, status: executed\|failed\|unknown, result?, error_class?, artifact_ref?}` |
 | `interrupt` | tree | `{interrupt_id, reason, request}` |
 | `resume` | tree | `{interrupt_id, values}` |

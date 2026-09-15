@@ -69,14 +69,16 @@ class SqliteStore:
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
             ).fetchone()
             if row is None:
+                # 全新库：DDL 已建到最新版，迁移历史按 1..SCHEMA_VERSION 补齐登记
                 self._conn.execute(
                     "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)",
                     (str(SCHEMA_VERSION),),
                 )
-                self._conn.execute(
-                    "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
-                    (SCHEMA_VERSION, time.time()),
-                )
+                for version in range(1, SCHEMA_VERSION + 1):
+                    self._conn.execute(
+                        "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                        (version, time.time()),
+                    )
                 return
             current = int(row["value"])
             if current > SCHEMA_VERSION:

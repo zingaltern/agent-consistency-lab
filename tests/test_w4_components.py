@@ -280,17 +280,44 @@ def test_should_compact_respects_thresholds(
 
 
 def test_should_compact_triggers_on_buffer(store: SqliteStore, ctx: RunCtx, tmp_path: Path) -> None:
-    """还没到比例阈值，但加上预留余量会撞墙 → 提前压缩。"""
+    """还没到比例阈值，但加上预留余量会撞墙 → 提前压缩。
+
+    注意余量会按窗口钳位（min(buffer, usable × 25%)）：小窗口 + 巨大余量
+    曾经让 should_compact 恒为真（退化成每步都压缩），现在不会了。
+    """
     from harness.context import Block, View
     from harness.llm import ModelWindow
 
     compactor = Compactor(store, artifacts=ArtifactStore(tmp_path / "a"))
     window = ModelWindow(
         context_limit_tokens=1000, max_output_tokens=100, compaction_buffer_tokens=800
+    )  # usable = 900，钳位后余量 = 225
+
+    def view_with(tokens: int) -> View:
+        return View(
+            blocks=(Block(role="system", section="prefix", content="x", tokens=tokens),),
+            sections={"prefix": tokens},
+            total_tokens=tokens,
+        )
+
+    assert not compactor.should_compact(view=view_with(200), window=window)  # 200+225 < 900
+    assert compactor.should_compact(view=view_with(700), window=window)  # 700+225 > 900
+
+
+def test_buffer_clamp_prevents_degenerate_always_compact(
+    store: SqliteStore, ctx: RunCtx, tmp_path: Path
+) -> None:
+    """固定余量大于窗口时不得恒真（评审实测的退化触发）。"""
+    from harness.context import Block, View
+    from harness.llm import ModelWindow
+
+    compactor = Compactor(store, artifacts=ArtifactStore(tmp_path / "a"))
+    window = ModelWindow(
+        context_limit_tokens=10_000, max_output_tokens=1024, compaction_buffer_tokens=13_000
     )
-    view = View(
-        blocks=(Block(role="system", section="prefix", content="x", tokens=200),),
-        sections={"prefix": 200},
-        total_tokens=200,
+    tiny = View(
+        blocks=(Block(role="system", section="prefix", content="x", tokens=100),),
+        sections={"prefix": 100},
+        total_tokens=100,
     )
-    assert compactor.should_compact(view=view, window=window)
+    assert not compactor.should_compact(view=tiny, window=window)

@@ -197,16 +197,6 @@ class SqliteCheckpointSaver:
             return None
         return self._tuple_from_row(row, checkpoint_ns)
 
-    def list_checkpoints(
-        self, thread_id: str, limit: int = 20, checkpoint_ns: str = ""
-    ) -> list[CheckpointTuple]:
-        rows = self._conn.execute(
-            "SELECT * FROM checkpoints WHERE thread_id=? AND checkpoint_ns=?"
-            " ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (thread_id, checkpoint_ns, limit),
-        ).fetchall()
-        return [self._tuple_from_row(row, checkpoint_ns) for row in rows]
-
     # --------------------------------------------------------------- recovery
 
     def recovery_plan(

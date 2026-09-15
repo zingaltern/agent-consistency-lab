@@ -35,7 +35,7 @@ from harness.budget import BudgetLedger, BudgetLimits
 from harness.cache import CacheConfig, PrefixCacheModel
 from harness.chaos import Chaos
 from harness.compaction import CompactionPolicy, Compactor
-from harness.context import ViewBuilder
+from harness.context import DEFAULT_MAX_INLINE_TOKENS, ViewBuilder
 from harness.ids import new_id
 from harness.llm import ModelWindow, ScriptedLLMClient
 from harness.loop import DEFAULT_SYSTEM_PROMPT, Loop
@@ -58,11 +58,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tamper", choices=("on", "off"), default="off")
     parser.add_argument("--approve-mode", choices=("approve", "reject", "edit"), default="approve")
     parser.add_argument("--compaction", choices=("on", "off"), default="on")
-    parser.add_argument("--window-tokens", type=int, default=200_000)
-    parser.add_argument("--max-output-tokens", type=int, default=4_096)
+    parser.add_argument("--window-tokens", type=int, default=ModelWindow().context_limit_tokens)
+    parser.add_argument("--max-output-tokens", type=int, default=ModelWindow().max_output_tokens)
     parser.add_argument("--dynamic-at-head", choices=("on", "off"), default="off")
-    parser.add_argument("--budget-usd", type=float, default=1.0)
-    parser.add_argument("--max-inline-tokens", type=int, default=800)
+    parser.add_argument("--budget-usd", type=float, default=BudgetLimits().total_usd)
+    parser.add_argument("--max-inline-tokens", type=int, default=DEFAULT_MAX_INLINE_TOKENS)
     return parser.parse_args(argv)
 
 

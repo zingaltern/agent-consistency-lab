@@ -220,6 +220,8 @@ def analyze(run_dir: Path) -> dict[str, Any]:
             "unknown": outcome["unknown"],
             "rejected": outcome["rejected"],
             "probes": outcome["probes"],
+            "view_violations": outcome.get("view_violations", 0),
+            "tool_failures": outcome.get("tool_failures", 0),
         }
     marker = run_dir / "crash_marker.json"
     findings["crash_marker"] = (
@@ -298,6 +300,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_effects": 0,
             "expect_reconciled_min": 0,
             "expect_compaction_min": 0,
+            "expect_status": "completed",
+            "expect_rejected_min": 1,
             "note": "审批后参数被改写：预期拒绝执行，0 副作用",
         }
     if cell.window == "during_compaction":
@@ -307,6 +311,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_effects": 1,
             "expect_reconciled_min": 0,
             "expect_compaction_min": 1,
+            "expect_status": "completed",
+            "expect_rejected_min": 0,
             "note": "压缩中崩溃：压缩要么完整生效要么完全没发生，恢复后仍恰好一次副作用",
         }
     if cell.window == "(long-baseline)":
@@ -316,6 +322,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_effects": 1,
             "expect_reconciled_min": 0,
             "expect_compaction_min": 1,
+            "expect_status": "completed",
+            "expect_rejected_min": 0,
             "note": "长任务对照：不发生崩溃，压缩必须发生且任务跑完",
         }
     if cell.window == "post_tool_effect_pre_record" and not cell.tool_idem:
@@ -326,6 +334,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
                 "expect_effects": 2,
                 "expect_reconciled_min": 0,
                 "expect_compaction_min": 0,
+                "expect_status": "completed",
+                "expect_rejected_min": 0,
                 "note": "W2 基线：效果已发生、无记录 → 恢复时重跑 → 重复",
             }
         if not cell.probe:
@@ -335,6 +345,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
                 "expect_effects": 1,
                 "expect_reconciled_min": 0,
                 "expect_compaction_min": 0,
+                "expect_status": "completed",
+                "expect_rejected_min": 0,
                 "note": "outbox 有意图行但无按键读回 → 不重跑，转 unknown 待对账",
             }
         return {
@@ -343,6 +355,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_effects": 1,
             "expect_reconciled_min": 1,
             "expect_compaction_min": 0,
+            "expect_status": "completed",
+            "expect_rejected_min": 0,
             "note": "outbox + 按键读回 → 探针确认已生效，重放不重跑",
         }
     return {
@@ -351,6 +365,8 @@ def expectation(cell: Cell) -> dict[str, Any]:
         "expect_effects": 1,
         "expect_reconciled_min": 0,
         "expect_compaction_min": 0,
+        "expect_status": "completed",
+        "expect_rejected_min": 0,
         "note": "预期恰好一次副作用",
     }
 
@@ -380,12 +396,20 @@ def evaluate(cell: Cell, result: dict[str, Any]) -> dict[str, Any]:
     atomic_ok = result.get("compaction_replaced_duplicated", 0) == 0 and not result.get(
         "compaction_artifacts_missing"
     )
+    rejected = int(outcome.get("rejected", 0))
+    status_ok = outcome.get("status") == expected.get("expect_status", "completed")
+    rejected_ok = rejected >= expected.get("expect_rejected_min", 0)
+    # 视图违规必须是 0：视图是模型实际看到的东西，带违规运行等于机制在带伤工作
+    view_ok = int(outcome.get("view_violations", 0)) == 0
     prediction_holds = (
         duplicated == expected["expect_duplicate"]
         and unknown_row == expected["expect_unknown_row"]
         and effects == expected["expect_effects"]
         and reconciled >= expected["expect_reconciled_min"]
         and compactions >= expected.get("expect_compaction_min", 0)
+        and status_ok
+        and rejected_ok
+        and view_ok
         and atomic_ok
     )
     return {
@@ -396,6 +420,9 @@ def evaluate(cell: Cell, result: dict[str, Any]) -> dict[str, Any]:
         "duplicated": duplicated,
         "unknown_row": unknown_row,
         "reconciled": reconciled,
+        "status": outcome.get("status", "?"),
+        "rejected": rejected,
+        "view_violations": int(outcome.get("view_violations", 0)),
         "prediction_holds": prediction_holds,
         "verdict": (
             "as-predicted"
@@ -428,6 +455,8 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "unknown_rows": max(r["unknown_rows"] for r in group),
                 "reconciled": max(r["reconciled"] for r in group),
                 "compactions": max(r.get("compactions", 0) for r in group),
+                "view_violations": max(r.get("view_violations", 0) for r in group),
+                "status": group[0]["status"],
                 "expected_dup": group[0]["expect_duplicate"],
                 "verdict": (
                     "as-predicted"
@@ -442,14 +471,14 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def render_markdown(summary: list[dict[str, Any]]) -> str:
     lines = [
         "| 格 | 次数 | 注入/阶段 | 日志一致 | 效果数 | 重复运行 | 单键最大 | unknown 行 |"
-        " 探针对账 | 压缩 | 预期重复 | 判定 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        " 探针对账 | 压缩 | 视图违规 | 终态 | 预期重复 | 判定 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for cell in summary:
         lines.append(
             "| {cell} | {runs} | {crash_ok} | {log_ok} | {effects} | {duplicated} |"
-            " {max_per_key} | {unknown_rows} | {reconciled} | {compactions} | {expected_dup} |"
-            " {verdict} |".format(**cell)
+            " {max_per_key} | {unknown_rows} | {reconciled} | {compactions} | {view_violations} |"
+            " {status} | {expected_dup} | {verdict} |".format(**cell)
         )
     return "\n".join(lines)
 

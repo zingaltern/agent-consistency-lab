@@ -5,11 +5,19 @@
 """
 
 from .model import ScriptedModel
-from .tools import SCENARIO_POOL_EXHAUSTION, build_registry, scripted_turns
+from .tools import (
+    SCENARIO_LONG_INCIDENT,
+    SCENARIO_POOL_EXHAUSTION,
+    SCENARIO_TWO_WRITES,
+    build_registry,
+    scripted_turns,
+)
 from .world import World
 
 __all__ = [
+    "SCENARIO_LONG_INCIDENT",
     "SCENARIO_POOL_EXHAUSTION",
+    "SCENARIO_TWO_WRITES",
     "ScriptedModel",
     "World",
     "build_registry",

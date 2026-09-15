@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
 from .tools import ToolCallRequest
-
-
-class Message(BaseModel):
-    role: str
-    content: str
 
 
 class ModelTurn(BaseModel):
@@ -29,7 +23,3 @@ class Model(Protocol):
     """
 
     def next_turn(self, *, step: int, view: Any) -> ModelTurn: ...
-
-
-def message_texts(messages: Sequence[Message]) -> tuple[str, ...]:
-    return tuple(message.content for message in messages)

@@ -1,7 +1,11 @@
 # W3 实验报告：审批绑定与 outbox 一致性
 
 **日期**：2026-09-16 ｜ **代码**：`harness/approval.py`、`harness/loop.py`、`experiments/worker.py` ｜
-**原始数据**：`reports/w3_crash_matrix.json`（70 次 SIGKILL 崩溃 + 70 次恢复，14 格 × 5 次，20.1 秒）
+**原始数据**：`reports/w3_crash_matrix.json`（14 格 × 5 次 = 70 次运行，其中 **65 次真的被 SIGKILL**——
+篡改控制组按设计不注入崩溃；68 次恢复运行，20.1 秒）
+
+> ⚠️ **历史快照**：本文是 W3 时的 14 格矩阵。W4 起扩到 16 格（新增 `during_compaction`
+> 与长任务对照），后续数字以 `reports/w4_crash_matrix.md` 为准。
 
 ## 本轮新增的三块语义
 
@@ -63,7 +67,7 @@
 ## 边界
 
 * 每格 n=5（0/5 的置信上界仍约 60%，rule of three）；W6 提到 30+ 并报 CI。
-* `during_compaction` 窗口依赖 W4 的压缩实现，本轮仍为已埋点未接入矩阵。
+* `during_compaction` 窗口依赖 W4 的压缩实现，本轮尚未接入矩阵（W4 已接入，见 w4-report §三）。
 * 探针假设下游支持"按幂等键读回"；没有这个能力的下游只能得到 `unknown`——
   **这不是缺陷而是边界**，矩阵里单列一格证明它的行为是"显式有界"而非"静默重复"。
 * 批量写一半（Saga/补偿）仍未覆盖，计划并入 W5 场景集。

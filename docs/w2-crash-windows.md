@@ -1,6 +1,11 @@
 # W2 实验报告：崩溃窗口矩阵
 
-**日期**：2026-09-16 ｜ **代码**：`experiments/crash_matrix.py` ｜ **原始数据**：`reports/w2_crash_matrix.json`
+**日期**：2026-09-16 ｜ **代码**：`experiments/crash_matrix.py`（W2 版本，commit `4122c62`）｜
+**原始数据**：`reports/w2_crash_matrix.json`
+
+> ⚠️ **历史快照**：本文数字对应 W2 时的代码（写工具命中 `*:2`、矩阵 12 格）。
+> W3 起矩阵扩到 16 格并改为「审批后 resume 阶段命中 `:1`」，后续数字以
+> `reports/w4_crash_matrix.md` 为准。
 
 ## 方法
 
@@ -42,8 +47,10 @@
 3. **日志权威是有效的**：三个窗口下"日志不重不漏 + 不变量零违反"均为 5/5。
    `pre_tool_exec`（未执行）与 `post_record_pre_commit`（已记录未提交 checkpoint）都能恢复到
    恰好 1 次效果，说明"从最新 checkpoint 重放事件、未完成调用重跑"的恢复算法成立。
-4. **孤儿 writes 不造成危害**：`post_record_pre_commit` 崩溃会留下指向未提交 checkpoint 的
-   writes，恢复计划按已提交 checkpoint 读取，孤儿被忽略（见 `analyze()` 的 `orphan_writes` 计数）。
+4. **孤儿 writes 在 W2 的实现里恒为 0**：writes 与 checkpoint 同在 `_commit` 内写入，
+   而 `post_record_pre_commit` 命中点早于 `_commit`，所以该窗口根本不会留下 writes。
+   换言之"孤儿 writes 不造成危害"当时**没有被数据检验**（三个 JSON 的 `orphan_writes` 全为 0）。
+   writes 与 checkpoint 之间的微窗口没有注入点，属未测边界——此更正来自 W1–W4 审计。
 
 ## 边界（必须与结论一起引用）
 

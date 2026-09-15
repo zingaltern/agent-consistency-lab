@@ -4,7 +4,9 @@
 
 * **配对**：每个 tool_call 必须有对应的 tool_result；孤儿的任一侧都会让供应商 400。
 * **批次原子**：同一次模型响应里提出的多个 tool_call 是**一个批次**，要么全留要么全删。
-  只删一半会让工具调用序列在语义上不可解释。
+  只删一半会让工具调用序列在语义上不可解释。批次只在"下一个 turn 边界"
+  （新的 agent_message / user_message / 日志结束）收束——``interrupt`` / ``resume``
+  不打断批次，否则审批路径下"提议调用 → 人审批 → 执行 → 结果"会被撕成两半。
 * **观测唯一**：同一个 tool_call 至多一个 tool_result。
 
 违反不变式时**不抛出**，而是丢弃违规部分、把违反记进 ``View.violations``——
@@ -22,14 +24,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from .artifacts import ArtifactStore
-from .events import ArtifactEventType, Event, EventKind, TreeEventType
+from .events import ArtifactEventType, Event, TreeEventType
 from .state import Violation
 from .tokens import estimate_message_tokens
 from .tools import ToolRegistry, canonical_json
@@ -291,7 +292,10 @@ class ViewBuilder:
                     )
                 )
             elif event.type == TreeEventType.INTERRUPT.value:
-                flush()
+                # 刻意不 flush：事件顺序天然是 tool_call → interrupt → resume → tool_result，
+                # 若在 interrupt 处收束批次，这次调用会被判为"缺结果"整批丢弃，
+                # 随后的结果又变成孤儿——等于每次人工审批后，模型都看不到这次写操作的
+                # 调用与返回（这正是评审实测到的 view_violations=2）。
                 blocks.append(
                     Block(
                         role="user",
@@ -301,7 +305,6 @@ class ViewBuilder:
                     )
                 )
             elif event.type == TreeEventType.RESUME.value:
-                flush()
                 blocks.append(
                     Block(
                         role="user",
@@ -335,26 +338,3 @@ class ViewBuilder:
             }
         )
         return f"tool_result {rendered}", ref.digest
-
-
-def referenced_digests(events: Sequence[Event]) -> set[str]:
-    """从事件与压缩记录里收集被引用的 artifact digest（供 GC 判断孤儿）。"""
-    digests: set[str] = set()
-    for event in events:
-        if event.kind is EventKind.ARTIFACT and event.type == ArtifactEventType.COMPACTION.value:
-            ref = event.payload.get("artifact_ref") or {}
-            if isinstance(ref.get("digest"), str):
-                digests.add(ref["digest"])
-    return digests
-
-
-def summarize_artifacts(view: View) -> dict[str, Any]:
-    return {
-        "offloaded": len(view.offloaded),
-        "sections": dict(view.sections),
-        "total_tokens": view.total_tokens,
-        "violations": [violation.code for violation in view.violations],
-        "dropped": len(view.dropped_event_ids),
-        "fingerprint": view.fingerprint()[:16],
-        "rendered": json.dumps(view.sections, ensure_ascii=False),
-    }

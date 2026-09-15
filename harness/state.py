@@ -95,6 +95,10 @@ def reduce_events(events: Sequence[Event]) -> tuple[DerivedState, list[Violation
                     event_id=event.event_id,
                 )
             )
+            # 终态是**吸收态**：记录违规后不再用后续事件改写状态。
+            # 否则一个 fatal 之后到达的 interrupt 会把 run 从 FAILED 复活成
+            # WAITING_HUMAN，甚至让审批门重新打开并真的执行副作用。
+            continue
         if event.type == TreeEventType.AGENT_MESSAGE.value:
             step += 1
             if event.payload.get("final"):

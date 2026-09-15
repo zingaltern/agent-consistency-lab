@@ -25,7 +25,7 @@ CACHE_CONFIG_V1 = "cache-v1"
 
 
 class CacheConfig(BaseModel):
-    version: str = CACHE_CONFIG_V1
+    version: str = CACHE_CONFIG_V1  # 会随每次调用写进 agent_message，便于成本归因
     min_cacheable_tokens: int = 1024
     ttl_seconds: float = 300.0
     enabled: bool = True
@@ -51,10 +51,6 @@ class PrefixCacheModel:
     def __init__(self, config: CacheConfig | None = None) -> None:
         self.config = config or CacheConfig()
         self._entries: dict[str, _Entry] = {}
-        self.stats = {"requests": 0, "hits": 0, "misses": 0, "expired": 0}
-
-    def reset(self) -> None:
-        self._entries.clear()
         self.stats = {"requests": 0, "hits": 0, "misses": 0, "expired": 0}
 
     def fetch(

@@ -79,10 +79,6 @@ class BudgetLedger:
     def limits(self) -> BudgetLimits:
         return self._limits
 
-    @property
-    def price(self) -> PriceTable:
-        return self._price
-
     def _events(self) -> list[Event]:
         return [
             event
@@ -111,11 +107,19 @@ class BudgetLedger:
         return snapshot.per_bucket_usd.get(bucket, 0.0)
 
     def check(self, bucket: str) -> None:
-        """dispatch 前的硬停检查。"""
-        spent = self.spent_usd(bucket)
-        limit = self._limits.limit_for(bucket)
-        if spent >= limit:
-            raise BudgetExceeded(bucket, spent, limit)
+        """dispatch 前的硬停检查：**总量与分桶都要过**。
+
+        早期实现用 ``per_bucket.get(bucket, total)``，于是给 main 设了大额分桶额度
+        就等于把总量上限关掉了（审计实测：total=0.001 也拦不住）。
+        """
+        snapshot = self.snapshot()
+        if snapshot.spent_usd >= self._limits.total_usd:
+            raise BudgetExceeded("total", snapshot.spent_usd, self._limits.total_usd)
+        if bucket in self._limits.per_bucket:
+            spent = snapshot.per_bucket_usd.get(bucket, 0.0)
+            limit = self._limits.per_bucket[bucket]
+            if spent >= limit:
+                raise BudgetExceeded(bucket, spent, limit)
 
     def charge(self, *, bucket: str, usage: Usage, note: str = "") -> float:
         cost = usage.cost_usd(self._price)

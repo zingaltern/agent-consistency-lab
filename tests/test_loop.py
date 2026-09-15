@@ -117,7 +117,7 @@ def _results(store: SqliteStore, ctx: RunCtx) -> list[dict]:
 
 
 def _seed_pending_intent(store: SqliteStore, ctx: RunCtx) -> str:
-    key = idempotency_key(ctx.run_id, WRITE_CALL)
+    key = idempotency_key(ctx.run_id, ctx.branch_id, WRITE_CALL)
     ToolCallStore(store).begin(
         tool_call_id=WRITE_CALL,
         run_id=ctx.run_id,
@@ -235,8 +235,10 @@ def test_edited_approval_creates_new_call_and_key(
     assert len(effects) == 1
     assert json.loads(effects[0]["payload_json"]) == edited_args
     # 改参 ⇒ 换键：执行用的键必须是新调用的键
-    assert effects[0]["idempotency_key"] == idempotency_key(ctx.run_id, f"{WRITE_CALL}__edit1")
-    assert effects[0]["idempotency_key"] != idempotency_key(ctx.run_id, WRITE_CALL)
+    assert effects[0]["idempotency_key"] == idempotency_key(
+        ctx.run_id, ctx.branch_id, f"{WRITE_CALL}__edit1"
+    )
+    assert effects[0]["idempotency_key"] != idempotency_key(ctx.run_id, ctx.branch_id, WRITE_CALL)
     statuses = {r["tool_call_id"]: r["status"] for r in _results(store, ctx)}
     assert statuses[WRITE_CALL] == "superseded"
     assert statuses[f"{WRITE_CALL}__edit1"] == "executed"

@@ -19,7 +19,7 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -317,10 +317,6 @@ class SqliteStore:
         ).fetchone()
         return BranchRow(**dict(row)) if row else None
 
-    def get_event(self, event_id: str) -> Event | None:
-        row = self._conn.execute("SELECT * FROM events WHERE event_id=?", (event_id,)).fetchone()
-        return self._row_to_event(row) if row else None
-
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> Event:
         return Event(
@@ -364,7 +360,3 @@ class _ImmediateTransaction:
             self._conn.execute("COMMIT")
         else:
             self._conn.execute("ROLLBACK")
-
-
-def iter_tree_nodes(events: Iterable[Event]) -> Iterable[Event]:
-    return (e for e in events if e.kind is EventKind.TREE_NODE)

@@ -29,10 +29,9 @@ from pydantic import BaseModel, Field
 
 from .artifacts import ArtifactStore
 from .budget import Bucket, BudgetLedger
-from .cache import CacheConfig
 from .chaos import Chaos
 from .context import View
-from .events import ArtifactEventType, Event, EventKind, NewEvent, TreeEventType
+from .events import ArtifactEventType, Event, NewEvent, TreeEventType
 from .llm import ModelWindow
 from .store.sqlite_store import SqliteStore
 from .tokens import Usage, estimate_tokens
@@ -43,7 +42,6 @@ GROUP_START_TYPES = (TreeEventType.AGENT_MESSAGE.value, TreeEventType.USER_MESSA
 class CompactionPolicy(BaseModel):
     trigger_fraction: float = 0.85
     keep_recent_groups: int = 2
-    summary_token_ratio: float = 0.2
 
 
 class CompactionRecord(BaseModel):
@@ -118,9 +116,10 @@ class Compactor:
 
     def should_compact(self, *, view: View, window: ModelWindow) -> bool:
         ratio = window.usage_ratio(view.total_tokens)
-        buffered = (
-            view.total_tokens + window.compaction_buffer_tokens
-        ) > window.usable_input_tokens
+        # 余量必须相对窗口钳位：固定 13k 的余量在小窗口（如 10k）下恒为真，
+        # 会把"提前预警"退化成"每一步都压缩"（评审实测到的退化触发）。
+        buffer = min(window.compaction_buffer_tokens, int(window.usable_input_tokens * 0.25))
+        buffered = (view.total_tokens + buffer) > window.usable_input_tokens
         return ratio >= self.policy.trigger_fraction or buffered
 
     # ------------------------------------------------------------------ 执行
@@ -154,6 +153,23 @@ class Compactor:
             estimate_tokens(str(item.payload)) for group in groups for item in group
         )
         summary, usage = self._summarize([item for group in victims for item in group])
+        tokens_after = estimate_tokens(summary)
+        if tokens_after >= tokens_before:
+            # 摘要比被替换内容还长 ⇒ 压缩是负优化，直接中止（否则会越压越大、
+            # should_compact 恒真、每步重压直至 overflow）。
+            self._store.append(
+                NewEvent.artifact(
+                    run_id=run_id,
+                    branch_id=branch_id,
+                    type=ArtifactEventType.ERROR,
+                    payload={
+                        "error_class": "compaction_no_gain",
+                        "message": f"summary {tokens_after} >= replaced {tokens_before}",
+                        "fatal": False,
+                    },
+                )
+            )
+            return None
         ref = self._artifacts.put_json(
             {
                 "replaces_event_ids": victim_ids,
@@ -166,6 +182,7 @@ class Compactor:
             }
         )
         if self._budget is not None:
+            self._budget.check(Bucket.COMPACTION)
             self._budget.charge(bucket=Bucket.COMPACTION, usage=usage, note="summarize")
 
         # 窗口 5：artifact 已落盘、compaction 事件尚未追加
@@ -174,7 +191,6 @@ class Compactor:
         compaction_id = (
             "cmp_" + hashlib.sha256("\x1f".join(sorted(victim_ids)).encode()).hexdigest()[:16]
         )
-        tokens_after = estimate_tokens(summary)
         record = CompactionRecord(
             compaction_id=compaction_id,
             replaces_event_ids=victim_ids,
@@ -194,41 +210,3 @@ class Compactor:
             )
         )
         return record
-
-    def already_compacted(self, events: Sequence[Event], record: CompactionRecord) -> bool:
-        return any(
-            event.type == ArtifactEventType.COMPACTION.value
-            and event.payload.get("compaction_id") == record.compaction_id
-            for event in events
-        )
-
-
-def compaction_events(events: Sequence[Event]) -> list[Event]:
-    return [e for e in events if e.type == ArtifactEventType.COMPACTION.value]
-
-
-def replaced_ids(events: Sequence[Event]) -> set[str]:
-    out: set[str] = set()
-    for event in compaction_events(events):
-        out.update(event.payload.get("replaces_event_ids", []))
-    return out
-
-
-def view_tokens_of(events: Sequence[Event]) -> int:
-    """粗略对照：所有树节点的 token 量（不减去已压缩部分）。"""
-    return sum(
-        estimate_tokens(str(event.payload)) for event in events if event.kind is EventKind.TREE_NODE
-    )
-
-
-__all__ = [
-    "CacheConfig",
-    "CompactionPolicy",
-    "CompactionRecord",
-    "Compactor",
-    "compaction_events",
-    "deterministic_summary",
-    "iter_groups",
-    "replaced_ids",
-    "view_tokens_of",
-]

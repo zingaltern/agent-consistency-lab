@@ -1,6 +1,6 @@
 """崩溃矩阵小样本（真实 SIGKILL 子进程）：只跑主对照两格 + 篡改控制组。
 
-完整矩阵（14 格 × N 次）由 CLI 运行：
+完整矩阵（16 格 × N 次）由 CLI 运行：
 ``python -m experiments.crash_matrix --repeats 5``
 """
 
@@ -69,6 +69,7 @@ def test_cells_cover_all_declared_windows() -> None:
         "post_record_pre_commit",
         "post_approval_pre_exec",
         "after_resume",
+        "during_compaction",
     ):
         assert window in windows
 

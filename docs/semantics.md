@@ -10,19 +10,20 @@
 | 承诺 | 内容 | 由什么保证 |
 |---|---|---|
 | 执行语义 | **at-least-once**：中断/崩溃后恢复，未完成的步骤会重新执行 | 事件日志 + checkpoint 恢复算法 |
-| 效果语义 | **至多一次（效果）仅当下游支持幂等键**；否则产生 `unknown`，进入对账 | 工具声明效果类别 + outbox（W3） |
+| 效果语义 | 启用 outbox 时：**至多一次（效果）仅当下游支持幂等键**，否则产生 `unknown` 进入对账；关闭 outbox 时该窗口会产生重复副作用（W2 实测 5/5） | 工具声明效果类别 + outbox 意图行 + 探针 |
 | 日志语义 | **不重不漏**：同一事件永不重复写入，已提交事件永不丢失（kill -9 语义下） | 单写者事务 + append-only 触发器 + `UNIQUE(branch_id, seq)` |
-| 状态语义 | 状态**从不被持久化为权威**，只有事件日志是权威；状态 = 日志的折叠 | `harness.state.reduce_events` |
+| 状态语义 | 状态**不作为权威被持久化**（checkpoint 里的 channel 值只是快照）：权威只有事件日志，状态 = 日志的折叠 | `harness.state.reduce_events` |
 | 视图语义 | 请求视图由事件日志**纯函数**重建；违反结构不变式时丢弃违规批次而不是发出非法请求 | `harness.context.ViewBuilder` |
 | 成本语义 | 每次模型调用的 token / 缓存读写 / 成本都写进事件，可事后复算；预算超限即硬停 | `harness.llm` + `harness.budget` |
-| 恢复语义 | 已完成任务从 writes 重放（**不重跑副作用**），未完成任务从头重跑 | writes/checkpoint 分离 + `recovery_plan` |
+| 恢复语义 | 未闭合调用按 at-least-once 重跑；**有 pending 意图行时先探针对账，绝不盲目重跑** | 事件日志折叠 + outbox 意图行 + 探针 |
+| checkpoint 语义 | checkpoint 是**边界快照与交叉校验**，不是恢复权威：恢复时校验它引用的事件确实存在，不一致就报 `checkpoint_log_mismatch` | `harness/loop.py::_checkpoint_cross_check` |
 
 **明确不承诺**：不承诺 exactly-once 效果（任何声称此承诺的系统都在某处依赖下游幂等），
 不承诺掉电不丢最后一个事务（见 §3），不承诺跨进程并发写（见 §2）。
 
-**W2 实测（n=5/格，共 60 次 SIGKILL + 60 次恢复，详见 [w2-crash-windows.md](w2-crash-windows.md)）**：
-"效果已发生、记录未落盘"窗口下重复副作用 5/5，且 runtime 侧去重开关不改变结论——
-该窗口只能由下游幂等兜住（下游幂等时 0/5）。
+**实测（详见 [w2](w2-crash-windows.md) / [w3](w3-report.md) / [w4](w4-report.md) 报告）**：
+"效果已发生、记录未落盘"窗口是唯一会丢一致性的位置。关掉 outbox 时重复副作用 5/5；
+开启 outbox 后 0/5——有按键读回时由探针确认（对账），无读回时收敛为恰好 1 行 unknown。
 
 ---
 
@@ -60,14 +61,36 @@
 2. `checkpoints` **只在 super-step 边界提交**，记录该边界的全量 channel 快照。
 3. 崩溃发生在边界之前：该 super-step 不被承认，但已完成 task 的 writes 仍在，
    恢复时被重放而非重跑。
-4. 恢复算法：`get_latest` → 重放其后 writes → 未完成 task 从头执行
-   （`RecoveryPlan` 是该算法的可断言载体）。
+4. **存储层协议**：`get_latest` → 重放其后 writes → 未完成 task 从头执行
+   （`RecoveryPlan` 是该协议的可断言载体，见 `tests/test_checkpoint_protocol.py`）。
+
+   ⚠️ 需要说清：runtime 的**实际**恢复路径不是上面这条，而是
+   "事件日志折叠 + 未闭合调用重跑 + outbox 意图行对账/探针"（见 §2.5 与 §2.6）。
+   checkpoint/writes 提供的是边界快照、审计留痕与交叉校验；把它们当作恢复权威
+   会得出错误心智模型（评审据此判定为"文档承诺与实现背离"，已修正）。
 
 writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）：
 `-1 ERROR`、`-2 SCHEDULED`、`-3 INTERRUPT`、`-4 RESUME`；普通输出用 `>= 0`。
 
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
+
+### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
+
+一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
+
+1. 日志里已有结论 → 重放，不重跑
+2. 补记 `tool_call` 事件（幂等）
+3. 查既有意图行：`executed` → 重放；`pending` → 探针对账（或转 `unknown`）；
+   `unknown` → 绝不自动重试
+4. 审批门：未获批的需审批调用 → 发 `interrupt`，loop 停在 `WAITING_HUMAN`
+5. 审批校验：拒绝 / 过期 / 参数 hash 不一致（TOCTOU）→ 拒绝执行并记录原因
+6. outbox 预写 `intent(pending)`（仅非幂等写）
+7. 执行副作用（外部系统）
+8. `tool_result` 事件（**权威记录**）→ 闭合意图行 → 边界 checkpoint 提交
+
+事件先于去重行的原因：这样"去重行已写、事件未写"这个**危险**微窗口不存在；
+反向残留（事件在、去重行缺失）由日志权威兜住，最坏只是审计少一行。
 
 ### 2.6 上下文视图、压缩与缓存纪律（W4）
 
@@ -98,23 +121,6 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 **预算**：``main / compaction / judge / tools`` 分桶，账本由 ``budget_update`` 事件构成，
 跨进程恢复后重新折叠得到；dispatch 前检查、响应后复核，超限即 fatal。
 
-### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
-
-一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
-
-1. 日志里已有结论 → 重放，不重跑
-2. 补记 `tool_call` 事件（幂等）
-3. 查既有意图行：`executed` → 重放；`pending` → 探针对账（或转 `unknown`）；
-   `unknown` → 绝不自动重试
-4. 审批门：未获批的需审批调用 → 发 `interrupt`，loop 停在 `WAITING_HUMAN`
-5. 审批校验：拒绝 / 过期 / 参数 hash 不一致（TOCTOU）→ 拒绝执行并记录原因
-6. outbox 预写 `intent(pending)`（仅非幂等写）
-7. 执行副作用（外部系统）
-8. `tool_result` 事件（**权威记录**）→ 闭合意图行 → 边界 checkpoint 提交
-
-事件先于去重行的原因：这样"去重行已写、事件未写"这个**危险**微窗口不存在；
-反向残留（事件在、去重行缺失）由日志权威兜住，最坏只是审计少一行。
-
 ---
 
 ## 3. 崩溃语义的边界（重要）
@@ -129,8 +135,8 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
   未来工作。
 
 并发边界：存储层是**单写者**模型（进程内互斥 + `BEGIN IMMEDIATE`）。
-跨进程并发需要上层租约（`lease` 事件，W3 落地）；在租约落地前，
-双进程跑同一 thread 是未定义行为。
+跨进程并发需要上层租约：`lease` 事件类型已登记但**尚未实现**（没有生产者/消费者），
+因此双进程跑同一 thread 目前是未定义行为——这一点在 README 与报告中口径一致。
 
 ### 3.1 命名崩溃窗口
 
@@ -156,17 +162,17 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 | type | kind | payload |
 |---|---|---|
 | `user_message` | tree | `{text}` |
-| `agent_message` | tree | `{text, final?: bool, usage?: {...}}` |
+| `agent_message` | tree | `{text, final?, usage, view_fingerprint, context_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cache_config_version, price_version}` |
 | `tool_call` | tree | `{tool_call_id, tool, args, args_sha256, idempotency_key, effect}` |
-| `tool_result` | tree | `{tool_call_id, status: executed\|failed\|unknown\|rejected\|superseded, result?, error_class?, artifact_ref?}` |
+| `tool_result` | tree | `{tool_call_id, status: executed\|failed\|unknown\|rejected\|superseded, result?, error_class?}` |
 | `interrupt` | tree | `{interrupt_id, interrupt_index, tool_call_id, tool, args, args_sha256, reason}` |
 | `resume` | tree | `{interrupt_id, interrupt_index, approval_id, decision, tool_call_id}` |
 | `error` | artifact | `{error_class, message, fatal?: bool}` |
-| `budget_update` | artifact | `{bucket, tokens_in, tokens_out, cost_usd}` |
+| `budget_update` | artifact | `{bucket, cost_usd, price_version, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, note}` |
 | `lease` | artifact | `{owner, expires_at}` |
 | `compaction` | artifact | `{compaction_id, replaces_event_ids, summary, artifact_ref, tokens_before, tokens_after, reason, round}` |
 | `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
-| `state_update` | artifact | `{patch}` |
+| `state_update` | artifact | 类型已登记但**当前无生产者**（保留给未来的外部状态注入） |
 
 ### 4.1 审批绑定的四条约束（W3）
 

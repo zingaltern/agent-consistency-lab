@@ -40,13 +40,6 @@ class ToolCallRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
 
 
-class ToolResult(BaseModel):
-    tool_call_id: str
-    status: str  # executed | failed | unknown | rejected | superseded
-    result: dict[str, Any] | None = None
-    error_class: str | None = None
-
-
 class ProbeOutcome(StrEnum):
     """下游按键读回的三种结论；UNKNOWN 表示"读不出真实状态"。"""
 
@@ -110,9 +103,16 @@ class ToolRegistry:
         return len(self._tools)
 
 
-def idempotency_key(run_id: str, tool_call_id: str) -> str:
-    """确定性的幂等键；同一 run 内同一 tool_call_id 必须得到同一键。"""
-    digest = hashlib.sha256(f"{run_id}\x1f{tool_call_id}".encode())
+def idempotency_key(run_id: str, branch_id: str, tool_call_id: str) -> str:
+    """确定性的幂等键 = hash(run_id, branch_id, tool_call_id)。
+
+    为什么含 branch：分叉出的分支会**重新决策**同一个 tool_call_id（例如"拒绝并
+    人工处置"分支上模型提出同样的调用），那是两次不同的逻辑调用，键必须不同。
+    早期版本只用 (run_id, tool_call_id)，结果子分支会命中父分支的去重行，
+    静默复用另一组参数的执行结果、并跳过审批门（审计实测的 P0）。
+    键仍然不含 step（会漂移）与参数（改参由新 tool_call_id 表达）。
+    """
+    digest = hashlib.sha256(f"{run_id}\x1f{branch_id}\x1f{tool_call_id}".encode())
     return f"idem_{digest.hexdigest()[:32]}"
 
 

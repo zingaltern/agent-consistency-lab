@@ -56,6 +56,8 @@ class ModelResponse(BaseModel):
     view_fingerprint: str
     context_tokens: int
     cost_usd: float = 0.0
+    cache_config_version: str = ""
+    price_version: str = ""
 
 
 class LLMClient(Protocol):
@@ -100,6 +102,8 @@ class ScriptedLLMClient:
             cache=outcome,
             view_fingerprint=view.fingerprint(),
             context_tokens=input_tokens,
+            cache_config_version=self.cache.config.version,
+            price_version=self.price.version,
         )
         if self._budget is not None:
             response.cost_usd = self._budget.charge(bucket=Bucket.MAIN, usage=usage)

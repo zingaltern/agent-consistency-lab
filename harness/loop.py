@@ -44,7 +44,7 @@ from .context import ViewBuilder
 from .events import ArtifactEventType, Event, NewEvent, Source, TreeEventType
 from .ids import new_id
 from .llm import ContextOverflow, LLMClient, ModelResponse
-from .model import Message, Model, ModelTurn
+from .model import Model, ModelTurn
 from .prompts import DEFAULT_OPS_SYSTEM_PROMPT
 from .state import DerivedState, RunStatus, reduce_events
 from .store.checkpoints import SqliteCheckpointSaver, Write
@@ -53,6 +53,7 @@ from .store.tool_calls import ToolCallRecord, ToolCallStore
 from .tools import (
     Effect,
     ProbeOutcome,
+    ProbeResult,
     Tool,
     ToolCallRequest,
     ToolRegistry,
@@ -84,6 +85,8 @@ class RunOutcome(BaseModel):
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
     view_violations: int = 0
+    tool_failures: int = 0
+    checkpoint_mismatches: int = 0
 
 
 class InterruptRequest(BaseModel):
@@ -94,6 +97,10 @@ class InterruptRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     args_sha256: str
     reason: str = ""
+
+
+class LoopError(RuntimeError):
+    """调用方误用（例如在非空分支上 start、在终态上 resume 且期望有副作用）。"""
 
 
 class InterruptSignal(Exception):
@@ -131,6 +138,8 @@ class _Counters:
     cache_write_tokens: int = 0
     cost_usd: float = 0.0
     view_violations: int = 0
+    tool_failures: int = 0
+    checkpoint_mismatches: int = 0
 
     def to_outcome(self, status: str, step: int) -> RunOutcome:
         return RunOutcome(
@@ -150,6 +159,8 @@ class _Counters:
             cache_write_tokens=self.cache_write_tokens,
             cost_usd=round(self.cost_usd, 8),
             view_violations=self.view_violations,
+            tool_failures=self.tool_failures,
+            checkpoint_mismatches=self.checkpoint_mismatches,
         )
 
 
@@ -200,6 +211,10 @@ class Loop:
         task: str,
     ) -> RunOutcome:
         ctx = _Ctx(run_id, thread_id, branch_id)
+        if self._log(ctx):
+            raise LoopError(
+                f"branch {branch_id} already has events; use resume() or fork a new branch"
+            )
         self._store.append(
             NewEvent.tree(
                 run_id=run_id,
@@ -221,6 +236,12 @@ class Loop:
         ctx = _Ctx(run_id, thread_id, branch_id)
         counters = _Counters()
         state = self._state(ctx)
+        if state.status in (RunStatus.COMPLETED, RunStatus.FAILED):
+            # 终态是吸收态：不允许通过 resume 追加树节点把 run "复活"
+            # （否则 fatal 之后还能执行工具、甚至再开审批门，日志会累积 INV-006）。
+            counters.checkpoint_mismatches = self._checkpoint_cross_check(ctx)
+            return counters.to_outcome(state.status.value, state.step)
+        counters.checkpoint_mismatches = self._checkpoint_cross_check(ctx)
         if state.pending_interrupt_id is not None:
             return counters.to_outcome(state.status.value, state.step)
         try:
@@ -368,6 +389,8 @@ class Loop:
                 break
         final = self._state(ctx)
         counters.view_violations = self._last_view_violations
+        # runs.status 是给外部查询/看板用的运行摘要（权威仍是事件日志的折叠结果）
+        self._store.set_run_status(ctx.run_id, final.status.value)
         return counters.to_outcome(final.status.value, final.step)
 
     # ------------------------------------------------------------------- model
@@ -441,8 +464,7 @@ class Loop:
         registry: ToolRegistry,
         counters: _Counters,
     ) -> None:
-        tool = registry.get(request.tool)
-        key = idempotency_key(ctx.run_id, request.tool_call_id)
+        key = idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id)
         args_sha256 = canonical_args_sha256(request.args)
 
         # 1) 日志权威：已有结论的调用只重放，不再产生副作用
@@ -450,11 +472,35 @@ class Loop:
             counters.replayed += 1
             return
 
-        # 2) 补记决策（幂等）
+        # 2) 工具解析：模型幻觉出的工具名也是一次失败调用，必须被记录并闭合，
+        #    而不是让 KeyError 穿透 loop（否则 run 永远停在 RUNNING、调用悬挂）。
+        try:
+            tool = registry.get(request.tool)
+        except KeyError:
+            self._append_tool_call_event(ctx, request, None, None)
+            counters.tool_failures += 1
+            self._append_error_artifact(ctx, "unknown_tool", f"{request.tool!r} is not registered")
+            self._append_tool_result(ctx, request.tool_call_id, "failed", None, "unknown_tool")
+            return
+
+        # 3) 补记决策（幂等）
         self._ensure_tool_call_event(ctx, request, tool.effect, key, args_sha256)
 
         # 3) 既有意图行处置
         existing = self._tool_calls.lookup(key) if (self._dedup or self._outbox) else None
+        if existing is not None and existing.args_sha256 != args_sha256:
+            # 同键不同参：旁路校验字段在这里起作用——绝不允许把另一次参数的执行结果
+            # 当成本次调用的重放（那是静默的错误答案，比报错危险得多）。
+            counters.rejected += 1
+            self._append_error_artifact(
+                ctx,
+                "args_sha256_mismatch",
+                f"key {key} recorded args {existing.args_sha256[:12]} != actual {args_sha256[:12]}",
+            )
+            self._append_tool_result(
+                ctx, request.tool_call_id, "rejected", None, "args_sha256_mismatch"
+            )
+            return
         if existing is not None:
             if existing.status == "executed":
                 counters.replayed += 1
@@ -520,7 +566,11 @@ class Loop:
 
         # 7) 执行与记录：权威记录（事件）先落，意图行后闭合
         self._chaos.hit("pre_tool_exec")
-        result = tool.fn(request.args, key)
+        try:
+            result = tool.fn(request.args, key)
+        except Exception as exc:
+            self._handle_tool_failure(ctx, request, tool, exc, counters, outbox_path=outbox_path)
+            return
         self._chaos.hit("post_tool_effect_pre_record")
         self._append_tool_result(ctx, request.tool_call_id, "executed", result)
         if outbox_path:
@@ -541,6 +591,48 @@ class Loop:
         counters.executed += 1
         self._chaos.hit("post_record_pre_commit")
 
+    def _handle_tool_failure(
+        self,
+        ctx: _Ctx,
+        request: ToolCallRequest,
+        tool: Tool,
+        exc: Exception,
+        counters: _Counters,
+        *,
+        outbox_path: bool,
+    ) -> None:
+        """工具抛异常时的分类处置。
+
+        关键判断：异常**不代表效果未发生**（可能写完才抛）。因此
+        非幂等写（有 outbox 意图行）一律按 ``unknown`` 处置、等探针对账；
+        只读/幂等工具按 ``failed`` 处置。两种情况都记录 error artifact，
+        并且绝不把异常抛给调用方——否则 run 会永久停在 RUNNING、调用悬挂、
+        每次 resume 重放同一副作用（审计实测的重试风暴）。
+        """
+        error_class = f"tool_error:{type(exc).__name__}"
+        key = idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id)
+        if outbox_path:
+            self._tool_calls.mark_unknown(key, error_class)
+            status = "unknown"
+        else:
+            self._tool_calls.record(
+                tool_call_id=request.tool_call_id,
+                run_id=ctx.run_id,
+                branch_id=ctx.branch_id,
+                tool=request.tool,
+                args=request.args,
+                args_sha256=canonical_args_sha256(request.args),
+                idempotency_key=key,
+                effect=tool.effect.value,
+                status="failed",
+                result=None,
+                error_class=error_class,
+            )
+            status = "failed"
+        counters.tool_failures += 1
+        self._append_error_artifact(ctx, error_class, f"{request.tool}: {exc}")
+        self._append_tool_result(ctx, request.tool_call_id, status, None, error_class)
+
     def _resolve_pending(
         self,
         ctx: _Ctx,
@@ -558,7 +650,13 @@ class Loop:
             )
             self._append_tool_result(ctx, request.tool_call_id, "unknown", None, "unknown_effect")
             return False
-        probe = tool.probe(request.args, existing.idempotency_key)
+        try:
+            probe = tool.probe(request.args, existing.idempotency_key)
+        except Exception as exc:
+            probe = ProbeResult(
+                outcome=ProbeOutcome.UNKNOWN,
+                detail={"probe_error": f"{type(exc).__name__}: {exc}"},
+            )
         counters.probes += 1
         if probe.outcome is ProbeOutcome.APPLIED:
             result = {
@@ -618,18 +716,46 @@ class Loop:
 
     def _find_approval(self, ctx: _Ctx, tool_call_id: str, tool: str) -> ApprovalBinding | None:
         """最近一条可用于该调用的批准（once 绑定调用；session 绑定工具+参数）。"""
-        found: ApprovalBinding | None = None
+        candidates: list[tuple[tuple[int, int, float], ApprovalBinding]] = []
         for event in self._log(ctx):
             if event.type != ArtifactEventType.APPROVAL.value:
                 continue
             binding = ApprovalBinding.model_validate(event.payload)
-            if binding.tool_call_id == tool_call_id or (
-                binding.scope == SCOPE_SESSION and binding.tool == tool
-            ):
-                found = binding
-        return found
+            exact = binding.tool_call_id == tool_call_id
+            reusable = binding.scope == SCOPE_SESSION and binding.tool == tool
+            if not (exact or reusable):
+                continue
+            approved = 1 if binding.decision == DECISION_APPROVED else 0
+            # 排序优先级：精确绑定 > 可复用；批准 > 拒绝；同档取最新。
+            # 否则一条更晚的 session 拒绝会否决更早的、精确绑定本调用的批准。
+            candidates.append(((int(exact), approved, binding.issued_at), binding))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[0])[1]
 
     # ------------------------------------------------------------------ helpers
+
+    def _checkpoint_cross_check(self, ctx: _Ctx) -> int:
+        """把 checkpoint 当作**交叉校验**而不是权威：权威永远是事件日志。
+
+        唯一能发现的真实不一致是"checkpoint 指向了一个不存在的事件"
+        （例如数据库被手工改过、或 checkpoint 与日志被分开恢复）。
+        分叉场景下 checkpoint 属于父分支，跳过检查（thread 级 checkpoint 不跨分支复用）。
+        """
+        latest = self._saver.get_latest(ctx.thread_id, self._ns)
+        if latest is None or latest.checkpoint.branch_id != ctx.branch_id:
+            return 0
+        last_event_id = latest.checkpoint.channel_values.get("last_event_id")
+        if not last_event_id:
+            return 0
+        if any(event.event_id == last_event_id for event in self._log(ctx)):
+            return 0
+        self._append_error_artifact(
+            ctx,
+            "checkpoint_log_mismatch",
+            f"checkpoint {latest.checkpoint.id} references missing event {last_event_id}",
+        )
+        return 1
 
     def _commit(
         self,
@@ -728,7 +854,7 @@ class Loop:
                     "args": request.args,
                     "args_sha256": canonical_args_sha256(request.args),
                     "idempotency_key": idempotency_key_value
-                    or idempotency_key(ctx.run_id, request.tool_call_id),
+                    or idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id),
                     "effect": effect.value if effect is not None else None,
                 },
             )
@@ -787,6 +913,8 @@ class Loop:
                     "cache_read_tokens": response.usage.cache_read_tokens,
                     "cache_write_tokens": response.usage.cache_write_tokens,
                     "cost_usd": response.cost_usd,
+                    "cache_config_version": response.cache_config_version,
+                    "price_version": response.price_version,
                 },
             )
         )
@@ -811,7 +939,6 @@ __all__ = [
     "InterruptRequest",
     "InterruptSignal",
     "Loop",
-    "Message",
     "Model",
     "ModelTurn",
     "RunOutcome",

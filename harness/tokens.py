@@ -92,8 +92,3 @@ class Usage(BaseModel):
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
             estimated=self.estimated and other.estimated,
         )
-
-
-def net_cost_usd(usage: Usage, price: PriceTable) -> float:
-    """净成本：命中读按折扣、写入按溢价，全部计入——不是"命中率越高越省钱"。"""
-    return usage.cost_usd(price)

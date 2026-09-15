@@ -44,6 +44,20 @@
 * **TOCTOU 有实测护栏**：批准之后执行之前改写参数，5/5 拒绝执行、0 副作用；
 * **改参即换键**有端到端证据：改参批准 → 新 tool_call_id → 不同幂等键，账本落的是改后参数。
 
+### 独立审计发现的 P0（已修，含回归测试）
+
+W4 后跑了一次五路只读审计（文档一致性 / 测试有效性含变异测试 / 实验可复现性 /
+状态机正确性 / 工程卫生），发现的 P0 全部修复：
+
+* **视图在审批路径自毁配对**：`interrupt`/`resume` 触发批次收束，"提议写 → 审批 → 执行"
+  的调用与结果被整段丢出模型视图（每次审批都固定产生 2 条违规）；
+* **分叉跨分支复用幂等键**：子分支会命中父分支的去重行，复用**另一组参数**的结果并跳过审批门；
+* **工具异常穿透 loop**：run 永久 RUNNING、调用悬挂、每次 resume 重放副作用；
+* **压缩可能越压越大**：摘要更长时仍写入，触发条件退化成"每步压缩"直至 overflow。
+
+细节与修复对照表见 [w4-report §六](docs/w4-report.md)，回归用例见
+`tests/test_audit_regressions.py`。
+
 ## 核心设计
 
 先读 [`docs/semantics.md`](docs/semantics.md)：它是 runtime 的承诺清单，
@@ -74,6 +88,8 @@ harness/
   approval.py            审批绑定（nonce / 过期 / scope / 参数 hash / TOCTOU）
   chaos.py               命名崩溃窗口 + 确定性 SIGKILL
   loop.py                agent loop（super-step、审批门、outbox、恢复）
+  ids.py                 ID 生成（uuid7 可用则用，否则 uuid4）
+  tokens.py              token 估算 + 版本化价格表
   store/
     schema.py            DDL、schema 版本与迁移、append-only 触发器
     sqlite_store.py      单写者事务、seq 分配、分叉解析
@@ -83,11 +99,13 @@ fakeworld/               受控仿真：副作用账本 + 仿真工具 + 脚本�
 experiments/
   worker.py              run / approve / resume 的子进程入口
   crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
+  context_cost.py        上下文成本实验（缓存纪律 / 卸载 / 压缩 三组对照）
 tests/                   不变量、协议、审批语义、loop 与矩阵小样本
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
 docs/w3-report.md        W3 审批与 outbox 一致性实验报告
 docs/w4-report.md        W4 上下文工程与成本实验报告
+examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 矩阵原始数据与自动生成的报告
 ```
 

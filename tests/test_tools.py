@@ -16,18 +16,23 @@ from harness.tools import (
 
 class TestIdempotencyKey:
     def test_key_is_deterministic(self) -> None:
-        assert idempotency_key("run_demo", "tc_write_1") == idempotency_key(
-            "run_demo", "tc_write_1"
+        assert idempotency_key("run_demo", "br_1", "tc_write_1") == idempotency_key(
+            "run_demo", "br_1", "tc_write_1"
         )
         # golden：键的构造一旦改变，历史记录的键全部失效，因此钉死
-        assert idempotency_key("run_demo", "tc_write_1") == "idem_8e392c24dc52f02c8024aa40ac4cc760"
+        assert (
+            idempotency_key("run_demo", "br_1", "tc_write_1")
+            == "idem_715b38aa215930a13ce007cf517936e8"
+        )
 
-    def test_key_depends_on_run_and_call_id_only(self) -> None:
-        base = idempotency_key("run_a", "tc_1")
-        assert base != idempotency_key("run_b", "tc_1")
-        assert base != idempotency_key("run_a", "tc_2")
-        # 键不含 step、不含参数：改参是"新调用"，由新 tool_call_id 表达
-        assert idempotency_key("run_a", "tc_1") == base
+    def test_key_depends_on_run_branch_and_call_id(self) -> None:
+        base = idempotency_key("run_a", "br_1", "tc_1")
+        assert base != idempotency_key("run_b", "br_1", "tc_1")
+        assert base != idempotency_key("run_a", "br_2", "tc_1")
+        assert base != idempotency_key("run_a", "br_1", "tc_2")
+        # 键不含 step、不含参数：改参是"新调用"，由新 tool_call_id 表达；
+        # 但必须含 branch——分叉分支上的同一 tool_call_id 是另一次逻辑调用
+        assert idempotency_key("run_a", "br_1", "tc_1") == base
 
 
 class TestCanonicalJson:

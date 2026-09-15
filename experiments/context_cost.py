@@ -87,6 +87,9 @@ class Metrics:
     cache_read: int = 0
     cache_write: int = 0
     cost_usd: float = 0.0
+    cost_main_usd: float = 0.0
+    cost_compaction_usd: float = 0.0
+    view_violations: int = 0
     compactions: int = 0
     overflows: int = 0
     view_violations: int = 0
@@ -99,8 +102,13 @@ class Metrics:
         return self.cache_read / self.input_tokens if self.input_tokens else 0.0
 
     @property
+    def total_cost_usd(self) -> float:
+        """账本口径的总成本：主桶 + 压缩桶（含摘要调用）。"""
+        return self.cost_main_usd + self.cost_compaction_usd
+
+    @property
     def cost_per_call(self) -> float:
-        return self.cost_usd / self.calls if self.calls else 0.0
+        return self.total_cost_usd / self.calls if self.calls else 0.0
 
     @property
     def tokens_per_call(self) -> float:
@@ -169,12 +177,22 @@ def collect(name: str, run_dir: Path, summary: dict[str, Any]) -> Metrics:
                 metrics.cost_usd += float(event.payload.get("cost_usd", 0.0) or 0.0)
                 metrics.view_sizes.append(context_tokens)
                 metrics.per_call_read_ratio.append(read / context_tokens if context_tokens else 0.0)
+            elif event.type == "budget_update":
+                # 账本口径：main 与 compaction 必须分开报——压缩摘要也要花钱，
+                # 只统计 agent_message 会低估"压缩的真实成本"（审计实测低估 36%）。
+                bucket = str(event.payload.get("bucket", "main"))
+                cost = float(event.payload.get("cost_usd", 0.0) or 0.0)
+                if bucket == "compaction":
+                    metrics.cost_compaction_usd += cost
+                else:
+                    metrics.cost_main_usd += cost
             elif event.type == "compaction":
                 metrics.compactions += 1
             elif event.type == "error" and event.payload.get("error_class") == "context_overflow":
                 metrics.overflows += 1
         state, _ = reduce_events(events)
         metrics.status = state.status.value
+        metrics.view_violations = _view_violations(events, run_dir)
     finally:
         store.close()
 
@@ -185,23 +203,53 @@ def collect(name: str, run_dir: Path, summary: dict[str, Any]) -> Metrics:
     return metrics
 
 
+def _view_violations(events: list[Any], run_dir: Path) -> int:
+    """用与 worker 相同的视图配置重建一次，统计结构违规。
+
+    视图违规必须为 0：它是模型实际看到的东西，有违规说明"机制在带伤工作"，
+    而这类问题不会体现在任何成本/一致性指标里（审计实测：审批路径曾固定产生 2 条）。
+    """
+    from fakeworld.tools import build_registry
+    from fakeworld.world import World
+    from harness.artifacts import ArtifactStore
+    from harness.context import ViewBuilder
+    from harness.loop import DEFAULT_SYSTEM_PROMPT
+
+    with World(run_dir / "world.db") as world:
+        registry = build_registry(
+            world,
+            idempotent_impl=False,
+            probe_enabled=True,
+            artifacts=ArtifactStore(run_dir / "artifacts"),
+        )
+    builder = ViewBuilder(
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        registry=registry,
+        artifacts=ArtifactStore(run_dir / "artifacts"),
+    )
+    return len(builder.build(events=events).violations)
+
+
 def render(metrics: list[Metrics]) -> str:
     lines = [
-        "| 配置 | 状态 | 调用数 | 输入 token | 命中读 | 缓存写 | 命中率 | 总成本 | 成本/调用 |"
-        " token/调用 | 压缩次数 | 溢出 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| 配置 | 状态 | 调用数 | 输入 token | 命中读 | 缓存写 | 命中率 | 主桶成本 | 压缩桶成本 |"
+        " 合计成本 | 成本/调用 | token/调用 | 压缩 | 溢出 | 视图违规 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for item in metrics:
         lines.append(
             f"| {item.name} | {item.status} | {item.calls} | {item.input_tokens} |"
             f" {item.cache_read} | {item.cache_write} | {item.read_ratio:.1%} |"
-            f" ${item.cost_usd:.5f} | ${item.cost_per_call:.5f} | {item.tokens_per_call:.0f} |"
-            f" {item.compactions} | {item.overflows} |"
+            f" ${item.cost_main_usd:.5f} | ${item.cost_compaction_usd:.5f} |"
+            f" ${item.total_cost_usd:.5f} | ${item.cost_per_call:.5f} |"
+            f" {item.tokens_per_call:.0f} |"
+            f" {item.compactions} | {item.overflows} | {item.view_violations} |"
         )
     return "\n".join(lines)
 
 
 def findings(metrics: list[Metrics]) -> str:
+    """结论只写数据支持的句子；对照的口径与偏差都在这里写清。"""
     by_name = {item.name: item for item in metrics}
     lines: list[str] = []
 
@@ -210,34 +258,47 @@ def findings(metrics: list[Metrics]) -> str:
     if tail and head and tail.calls and head.calls:
         delta = (head.cost_per_call - tail.cost_per_call) / tail.cost_per_call
         lines.append(
-            f"* **E1 缓存纪律**：动态信息塞进前缀后，命中率 "
-            f"{tail.read_ratio:.1%} → {head.read_ratio:.1%}，成本/调用 "
-            f"${tail.cost_per_call:.5f} → ${head.cost_per_call:.5f}（{delta:+.1%}）。"
-            "前缀一旦被每步变化的内容污染，整个上下文都不再是缓存命中。"
+            f"* **E1 缓存纪律**：动态信息塞进前缀后，命中率 {tail.read_ratio:.1%} → "
+            f"{head.read_ratio:.1%}，成本/调用 ${tail.cost_per_call:.5f} → "
+            f"${head.cost_per_call:.5f}（{delta:+.1%}）。原因不只是少读了缓存，"
+            "更在于每个块都要按写溢价重新写入（缓存写 token 显著上升）。"
         )
 
     inline = by_name.get("E2a-大结果内联-小窗口-无压缩")
     compaction = by_name.get("E2b-大结果内联-小窗口-有压缩")
     offload = by_name.get("E2c-结果卸载-小窗口-无压缩")
-    if inline:
+    if inline and offload:
         lines.append(
-            f"* **E2 卸载**：大结果内联、小窗口且不做压缩时任务以 "
-            f"`{inline.status}` 结束（溢出 {inline.overflows} 次）；"
-            + (
-                f"改为卸载后同窗口下 `{offload.status}`、溢出 {offload.overflows} 次（token/调用 "
-                f"{offload.tokens_per_call:.0f} vs {inline.tokens_per_call:.0f}）。"
-                if offload
-                else ""
-            )
+            f"* **E2 卸载**：大结果内联 + 小窗口 + 无压缩时任务在 {inline.calls} 次调用后以 "
+            f"`{inline.status}` 结束（溢出 {inline.overflows} 次）——它的 token/成本是"
+            "**截断期均值**，与完整跑完的运行不可直接比。改为卸载后同窗口下 "
+            f"`{offload.status}`，token/调用 {offload.tokens_per_call:.0f}（对完整跑完的"
+            "内联配置而言，卸载把每步上下文从数千 token 压到千余 token）。"
         )
     if inline and compaction:
         lines.append(
             f"* **E3 压缩**：同样内联、同样小窗口，开压缩后 `{compaction.status}`"
-            f"（压缩 {compaction.compactions} 次，溢出 {compaction.overflows} 次），"
-            f"但成本/调用 ${compaction.cost_per_call:.5f}"
-            f" 高于不压缩的 ${inline.cost_per_call:.5f}，"
-            f"命中率 {compaction.read_ratio:.1%} 低于 {inline.read_ratio:.1%}——"
-            "**压缩是用可用性换成本：它降低 token 消耗，却因为击穿前缀缓存而抬高净成本**。"
+            f"（压缩 {compaction.compactions} 次、溢出 {compaction.overflows} 次），"
+            f"账本口径成本/调用 ${compaction.cost_per_call:.5f}"
+            f"（主桶 ${compaction.cost_main_usd / compaction.calls:.5f} + "
+            f"压缩桶 ${compaction.cost_compaction_usd / compaction.calls:.5f}），"
+            f"命中率 {compaction.read_ratio:.1%}；不压缩的同配置运行是 "
+            f"${inline.cost_per_call:.5f}（截断期均值）/ 命中率 {inline.read_ratio:.1%}。"
+            "结论方向：**压缩用可用性换成本**——它让任务跑完，但每次压缩都会从替换点"
+            "击穿前缀缓存，摘要调用本身也要花钱。"
+        )
+    if compaction and offload:
+        ratio = compaction.cost_per_call / offload.cost_per_call
+        lines.append(
+            f"* **E2xE3 对照**：同样「内容不卸载」的场景下，压缩路径的成本/调用是卸载路径的 "
+            f"{ratio:.1f} 倍（${compaction.cost_per_call:.5f} vs ${offload.cost_per_call:.5f}）。"
+            "因此本任务下正确的顺序是「先卸载、后压缩」：卸载在渲染层完成、不调模型，"
+            "而压缩既要付摘要的钱、又要付缓存击穿的钱。"
+        )
+    if all(item.view_violations == 0 for item in metrics):
+        lines.append(
+            "* **视图健康度**：所有配置的视图结构违规均为 0（审批路径曾固定产生 2 条，"
+            "把已批准写操作的调用与结果整段丢出模型视图——审计发现并已修复）。"
         )
     return "\n".join(lines)
 

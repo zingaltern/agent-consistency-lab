@@ -1,8 +1,9 @@
-"""工具调用记录的持久化（运行时去重表）。
+"""工具调用记录：outbox 意图行（pending → executed / failed / unknown）。
 
-``idempotency_key`` 上的 UNIQUE 约束是运行时去重的唯一依据：写入成功即代表
-"这次调用的结果已经落盘"。注意本模块**不做** intent 预写——那是 W3 outbox 的
-职责，也正是"效果已发生但记录未落盘"窗口无法被本表覆盖的原因。
+``idempotency_key`` 上的 UNIQUE 约束是运行时去重的唯一依据。自 W3 起，非幂等写
+会先 ``begin()`` 预写一行 ``pending`` 意图，执行成功再 ``complete()`` 闭合；
+崩溃留下的 ``pending`` 行是"效果可能已发生"的唯一线索，恢复时必须先探针对账
+（``mark_unknown`` 是探针不可用/不确定时的落点），绝不能直接重跑。
 """
 
 from __future__ import annotations
@@ -94,13 +95,6 @@ class ToolCallStore:
                     idempotency_key,
                 ),
             )
-
-    def list_pending(self, run_id: str) -> list[ToolCallRecord]:
-        rows = self._conn.execute(
-            "SELECT * FROM tool_calls WHERE run_id=? AND status='pending' ORDER BY started_at",
-            (run_id,),
-        ).fetchall()
-        return [self._row_to_record(row) for row in rows]
 
     def record(
         self,

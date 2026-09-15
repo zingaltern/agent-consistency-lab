@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" font-family="system-ui" font-size="11">
+<rect width="720" height="260" fill="white"/>
+<text x="48" y="20" font-size="13" font-weight="600">dev: success / cache hit / cost vs compaction threshold</text>
+<line x1="48" y1="212" x2="672" y2="212" stroke="#999"/>
+<line x1="48" y1="48" x2="48" y2="212" stroke="#999"/>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="48.0,157.3 172.8,48.0 297.6,48.0 422.4,48.0 547.2,48.0 672.0,48.0"/>
+<circle cx="48.0" cy="157.3" r="2.5" fill="#1f77b4"/>
+<circle cx="172.8" cy="48.0" r="2.5" fill="#1f77b4"/>
+<circle cx="297.6" cy="48.0" r="2.5" fill="#1f77b4"/>
+<circle cx="422.4" cy="48.0" r="2.5" fill="#1f77b4"/>
+<circle cx="547.2" cy="48.0" r="2.5" fill="#1f77b4"/>
+<circle cx="672.0" cy="48.0" r="2.5" fill="#1f77b4"/>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="48.0,100.6 172.8,125.4 297.6,125.4 422.4,127.0 547.2,156.6 672.0,200.6"/>
+<circle cx="48.0" cy="100.6" r="2.5" fill="#2ca02c"/>
+<circle cx="172.8" cy="125.4" r="2.5" fill="#2ca02c"/>
+<circle cx="297.6" cy="125.4" r="2.5" fill="#2ca02c"/>
+<circle cx="422.4" cy="127.0" r="2.5" fill="#2ca02c"/>
+<circle cx="547.2" cy="156.6" r="2.5" fill="#2ca02c"/>
+<circle cx="672.0" cy="200.6" r="2.5" fill="#2ca02c"/>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="48.0,112.7 172.8,72.6 297.6,72.6 422.4,71.8 547.2,64.1 672.0,48.0"/>
+<circle cx="48.0" cy="112.7" r="2.5" fill="#d62728"/>
+<circle cx="172.8" cy="72.6" r="2.5" fill="#d62728"/>
+<circle cx="297.6" cy="72.6" r="2.5" fill="#d62728"/>
+<circle cx="422.4" cy="71.8" r="2.5" fill="#d62728"/>
+<circle cx="547.2" cy="64.1" r="2.5" fill="#d62728"/>
+<circle cx="672.0" cy="48.0" r="2.5" fill="#d62728"/>
+<text x="48.0" y="228" text-anchor="middle">off</text>
+<text x="172.8" y="228" text-anchor="middle">0.95</text>
+<text x="297.6" y="228" text-anchor="middle">0.85</text>
+<text x="422.4" y="228" text-anchor="middle">0.70</text>
+<text x="547.2" y="228" text-anchor="middle">0.50</text>
+<text x="672.0" y="228" text-anchor="middle">0.30</text>
+<rect x="48" y="22" width="10" height="10" fill="#1f77b4"/>
+<text x="63" y="31">success</text>
+<rect x="178" y="22" width="10" height="10" fill="#2ca02c"/>
+<text x="193" y="31">cache hit</text>
+<rect x="308" y="22" width="10" height="10" fill="#d62728"/>
+<text x="323" y="31">cost/max</text>
+<text x="8" y="52">1.0</text>
+<text x="8" y="216">0.0</text>
+</svg>

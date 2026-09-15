@@ -18,7 +18,7 @@
 | W4 | 上下文视图 + 卸载 + 压缩 + 缓存纪律 + 预算 | 完成 |
 | W5 | 运维壳 + 场景集（64 个）+ 三基线（含 LangGraph 对照） | 完成 |
 | W6 | 分段汇报 + 统计口径（配对 CI）+ 门禁（含实验假设自检）+ CI | 完成 |
-| W7 | 缓存净收益 × 压缩冲突实验 | 未开始 |
+| W7 | 压缩阈值扫描（三维曲线）+ trace 收口 + 开源整理 | 完成 |
 | W8 | 长文 ×3 + 文档 + demo | 未开始 |
 
 ## 已产出的实测结论
@@ -64,6 +64,10 @@
 * **门禁自己也要被验证**：第一版门禁抓不到"静默丢弃破坏性动作"的退化（指标完美、机制已死），
   补上对称自检（有 gate 的系统必须真的拦下过东西）后，退化的实现会让 CI 变红；
 * holdout 与 dev 无落差（本轮无调参），考卷留到 W7 的阈值扫描用。
+
+**W7**（[w7-report.md](docs/w7-report.md)，阈值扫描 6 档 × 8 变体 × 2 次）：压缩买的是完成率、不是省钱——
+不压缩只有 33% 变体能跑完（成本 $0.066），压缩后 100% 完成但成本 +40%；压缩次数与缓存命中率严格反向
+（0 次 68.0% → 6.67 次 7.0%）；**阈值应贴近上限（0.85–0.95），"早点压更安全"被数据否定**。
 
 ### 独立审计发现的 P0（已修，含回归测试）
 
@@ -111,6 +115,7 @@ harness/
   loop.py                agent loop（super-step、审批门、outbox、恢复）
   ids.py                 ID 生成（uuid7 可用则用，否则 uuid4）
   tokens.py              token 估算 + 版本化价格表
+  trace.py               事件日志 → span 树投影（OTel 形状导出 + 排障 CLI）
   store/
     schema.py            DDL、schema 版本与迁移、append-only 触发器
     sqlite_store.py      单写者事务、seq 分配、分叉解析
@@ -122,6 +127,7 @@ experiments/
   worker.py              run / approve / resume 的子进程入口
   crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
   context_cost.py        上下文成本实验（缓存纪律 / 卸载 / 压缩 三组对照）
+  context_sweep.py       压缩阈值扫描（完成率 × 缓存命中 × 净成本，含自绘 SVG）
 tests/                   不变量、协议、审批语义、loop 与矩阵小样本
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
@@ -129,8 +135,11 @@ docs/w3-report.md        W3 审批与 outbox 一致性实验报告
 docs/w4-report.md        W4 上下文工程与成本实验报告
 docs/w5-report.md        W5 运维壳、场景集与三基线对照报告
 docs/w6-report.md        W6 统计口径、分段汇报与门禁报告
+docs/w7-report.md        W7 阈值扫描、trace 收口与开源整理
+LICENSE                  MIT
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
-reports/                 矩阵原始数据与自动生成的报告
+reports/                 自动生成的报告（*.md 表格 + 汇总 JSON；逐次运行明细
+                         用 --runs-out 再生，不入库）
 ```
 
 ## 运行
@@ -165,6 +174,36 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
     # 进程被 SIGKILL（退出码 137）
 .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
 ```
+
+## 如何复现全部结论
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
+
+.venv/bin/pytest -q                       # 214 个测试：不变量、协议、审批、异常、评测、门禁
+.venv/bin/ruff check .                    # lint
+
+.venv/bin/python -m experiments.crash_matrix --repeats 5 \
+    --json-out reports/w4_crash_matrix.json --md-out reports/w4_crash_matrix.md
+    # → W2–W4：崩溃窗口矩阵（重复副作用只由下游幂等/outbox 决定）
+
+.venv/bin/python -m experiments.context_cost \
+    --md-out reports/w4_context_cost.md --json-out reports/w4_context_cost.json
+    # → W4：缓存纪律 / 卸载 / 压缩 三组对照
+
+.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate \
+    --md-out reports/w6_eval.md --json-out reports/w6_eval.json --runs-out /tmp/runs.json
+    # → W5/W6：四系统 × 64 场景 × 2 推理器；--gate 不通过则非零退出
+
+.venv/bin/python -m experiments.context_sweep --repeats 2 \
+    --md-out reports/w7_sweep.md --json-out reports/w7_sweep.json --svg-out reports/w7_sweep.svg
+    # → W7：压缩阈值 → 完成率 / 缓存命中 / 净成本 三维曲线
+
+.venv/bin/python -m harness.trace --run-dir <worker 的 run 目录>   # 排障：事件日志 → span 树
+```
+
+入库的是**报告表格与汇总 JSON**；逐次运行明细（`--runs-out`）不入库——体积大且可由上面
+这些命令再生。仓库里 `reports/*.md` 就是各轮报告引用到的证据表。
 
 ## 边界声明
 

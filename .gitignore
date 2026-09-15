@@ -12,4 +12,7 @@ build/
 *.db-wal
 *.db-shm
 .artifacts/
+
+# 逐次运行明细：体积大且可由一条命令再生（报告表格与汇总入库）
+reports/*_runs.json
 .DS_Store

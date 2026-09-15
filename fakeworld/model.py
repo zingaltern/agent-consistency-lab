@@ -15,8 +15,8 @@ from .tools import scripted_turns
 
 
 class ScriptedModel:
-    def __init__(self, scenario: str) -> None:
-        self._script: list[dict[str, Any]] = scripted_turns(scenario)
+    def __init__(self, scenario: str, *, steps: int = 8, lines: int = 60) -> None:
+        self._script: list[dict[str, Any]] = scripted_turns(scenario, steps=steps, lines=lines)
         self.calls: int = 0
 
     def next_turn(self, *, step: int, view: Any = None) -> ModelTurn:

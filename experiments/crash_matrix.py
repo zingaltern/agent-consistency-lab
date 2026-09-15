@@ -488,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--workroot", default="")
     parser.add_argument("--json-out", default="")
+    parser.add_argument("--runs-out", default="", help="逐次运行明细（不入库）")
     parser.add_argument("--md-out", default="")
     args = parser.parse_args(argv)
 
@@ -502,11 +503,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_out:
         Path(args.json_out).write_text(
             json.dumps(
-                {"summary": summary, "cells": [c.__dict__ for c in cells], "runs": rows},
+                {
+                    "summary": summary,
+                    "cells": [c.__dict__ for c in cells],
+                    "note": "逐次明细用 --runs-out 生成（体积大且可再生，不入库）",
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
+        )
+    if args.runs_out:
+        Path(args.runs_out).write_text(
+            json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     if args.md_out:
         Path(args.md_out).write_text(markdown + "\n", encoding="utf-8")

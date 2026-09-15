@@ -51,6 +51,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--mode", choices=("run", "approve", "resume"), default="run")
     parser.add_argument("--scenario", default=SCENARIO_POOL_EXHAUSTION)
+    parser.add_argument("--long-steps", type=int, default=8, help="长任务场景的取证轮数")
+    parser.add_argument("--long-lines", type=int, default=60, help="长任务场景每次日志行数")
     parser.add_argument("--dedup", choices=("on", "off"), default="on")
     parser.add_argument("--outbox", choices=("on", "off"), default="on")
     parser.add_argument("--tool-idem", choices=("on", "off"), default="on")
@@ -58,12 +60,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tamper", choices=("on", "off"), default="off")
     parser.add_argument("--approve-mode", choices=("approve", "reject", "edit"), default="approve")
     parser.add_argument("--compaction", choices=("on", "off"), default="on")
+    parser.add_argument(
+        "--compaction-trigger",
+        type=float,
+        default=None,
+        help="压缩触发阈值（占可用窗口的比例）；缺省用库默认值",
+    )
+    parser.add_argument("--keep-recent-groups", type=int, default=None)
     parser.add_argument("--window-tokens", type=int, default=ModelWindow().context_limit_tokens)
     parser.add_argument("--max-output-tokens", type=int, default=ModelWindow().max_output_tokens)
     parser.add_argument("--dynamic-at-head", choices=("on", "off"), default="off")
     parser.add_argument("--budget-usd", type=float, default=BudgetLimits().total_usd)
     parser.add_argument("--max-inline-tokens", type=int, default=DEFAULT_MAX_INLINE_TOKENS)
     return parser.parse_args(argv)
+
+
+def _policy_from_args(args: argparse.Namespace) -> CompactionPolicy:
+    """把 CLI 参数变成压缩策略；缺省时用库默认值（不要在 CLI 里复制默认值）。"""
+    policy = CompactionPolicy()
+    if args.compaction_trigger is not None:
+        policy = policy.model_copy(update={"trigger_fraction": args.compaction_trigger})
+    if args.keep_recent_groups is not None:
+        policy = policy.model_copy(update={"keep_recent_groups": args.keep_recent_groups})
+    return policy
 
 
 def _tamper_hook(request: ToolCallRequest) -> ToolCallRequest:
@@ -118,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             compactor = Compactor(
                 store,
                 artifacts=artifacts,
-                policy=CompactionPolicy(),
+                policy=_policy_from_args(args),
                 chaos=chaos,
                 budget=budget,
             )
@@ -134,12 +153,12 @@ def main(argv: list[str] | None = None) -> int:
             compactor = Compactor(
                 store,
                 artifacts=artifacts,
-                policy=CompactionPolicy(),
+                policy=_policy_from_args(args),
                 chaos=chaos,
                 budget=budget,
             )
     llm = ScriptedLLMClient(
-        ScriptedModel(args.scenario),
+        ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines),
         cache=PrefixCacheModel(CacheConfig()),
         window=ModelWindow(
             context_limit_tokens=args.window_tokens,

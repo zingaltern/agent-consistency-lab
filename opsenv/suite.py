@@ -25,6 +25,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -266,7 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", choices=("all", "dev", "holdout"), default="all")
     parser.add_argument("--systems", default=",".join(SYSTEMS))
     parser.add_argument("--workroot", default="")
-    parser.add_argument("--json-out", default="")
+    parser.add_argument("--json-out", default="", help="汇总 JSON（入库）")
+    parser.add_argument(
+        "--runs-out", default="", help="逐次运行明细 JSON（体积大，不入库，可一条命令再生）"
+    )
     parser.add_argument("--md-out", default="")
     parser.add_argument(
         "--gate",
@@ -313,11 +317,41 @@ def main(argv: list[str] | None = None) -> int:
                     "catalog": summary,
                     "cells": [cell.model_dump() for cell in cells],
                     "gates": [gate.model_dump() for gate in gates],
-                    "runs": [r.model_dump() for r in results],
+                    "statistics": {
+                        "min_detectable_effect": round(
+                            min_detectable_effect(max(c.runs for c in cells), p=0.9), 4
+                        ),
+                        "paired_harness_vs_single_shot": {
+                            "correct": asdict(
+                                paired_compare(
+                                    results,
+                                    system_a="harness",
+                                    system_b="single_shot",
+                                    predicate=lambda r: r.correct,
+                                    profile="weak-guesser",
+                                )[0]
+                            ),
+                            "red_line": asdict(
+                                paired_compare(
+                                    results,
+                                    system_a="harness",
+                                    system_b="single_shot",
+                                    predicate=lambda r: r.red_line,
+                                    profile="weak-guesser",
+                                )[0]
+                            ),
+                        },
+                    },
+                    "note": "逐次运行明细请用 --runs-out 生成（不入库，避免可再生的体积膨胀）",
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
+            encoding="utf-8",
+        )
+    if args.runs_out:
+        Path(args.runs_out).write_text(
+            json.dumps([r.model_dump() for r in results], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     if args.md_out:

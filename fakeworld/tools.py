@@ -136,8 +136,11 @@ def _single_write_script() -> list[dict[str, Any]]:
     ]
 
 
-def scripted_turns(scenario: str) -> list[dict[str, Any]]:
-    """确定性脚本：每个 turn 要么提工具调用，要么给最终答复。"""
+def scripted_turns(scenario: str, *, steps: int = 8, lines: int = 60) -> list[dict[str, Any]]:
+    """确定性脚本：每个 turn 要么提工具调用，要么给最终答复。
+
+    ``steps`` / ``lines`` 只影响长任务场景的体量（W7 的阈值扫描要扫"任务有多长"）。
+    """
     if scenario == SCENARIO_POOL_EXHAUSTION:
         return _single_write_script()
     if scenario == SCENARIO_LONG_INCIDENT:
@@ -148,11 +151,11 @@ def scripted_turns(scenario: str) -> list[dict[str, Any]]:
                     {
                         "tool_call_id": f"tc_logs_{index}",
                         "tool": "fetch_logs",
-                        "args": {"service": "payment", "lines": 60},
+                        "args": {"service": "payment", "lines": lines},
                     }
                 ],
             }
-            for index in range(1, 9)
+            for index in range(1, max(1, steps) + 1)
         ]
         turns.append(_single_write_script()[1])
         turns.append({"text": "多轮取证后确认为连接池耗尽，扩容已完成。", "tool_calls": []})

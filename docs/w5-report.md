@@ -1,7 +1,8 @@
 # W5 实验报告：运维壳、场景集与三基线对照
 
 **日期**：2026-09-16 ｜ **代码**：`opsenv/`（scenario / environment / policy / systems / suite）｜
-**数据**：`reports/w5_eval.json`（64 场景 × 4 系统 × 2 推理器 × 3 次 = 1536 次运行）｜
+**数据**：`reports/w6_eval.json`（64 场景 × 4 系统 × 2 推理器 × 3 次 = 1536 次运行；
+W6 起报告的 JSON 只保留汇总与门禁，逐次明细用 `--runs-out` 再生）｜
 **依赖**：`langgraph 1.2.11`
 
 ---

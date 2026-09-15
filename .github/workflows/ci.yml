@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]  # 声明的最低版本也要真的跑（uuid7 有回退路径）
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+      - name: Lint
+        run: ruff check .
+      - name: Tests
+        # 含崩溃矩阵小样本与四系统对照的单元级断言
+        run: pytest -q
+
+  experiments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+      - name: Crash matrix (W2–W4 consistency semantics)
+        # 退出码非零 ⇔ 出现 prediction-violated（不变量/重复副作用与预期不符）
+        run: |
+          python -m experiments.crash_matrix --repeats 2 \
+            --json-out /tmp/matrix.json --md-out /tmp/matrix.md
+      - name: Context cost experiment (W4)
+        run: python -m experiments.context_cost --json-out /tmp/cost.json --md-out /tmp/cost.md
+      - name: Four-system evaluation with gates (W5/W6)
+        # 门禁包含：红线不变量、审批覆盖率、取证充分性、实验假设自检、配对 CI 方向
+        run: |
+          python -m opsenv.suite --per-fault 8 --repeats 3 --gate \
+            --json-out /tmp/eval.json --md-out /tmp/eval.md
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-reports
+          path: |
+            /tmp/matrix.md
+            /tmp/cost.md
+            /tmp/eval.md

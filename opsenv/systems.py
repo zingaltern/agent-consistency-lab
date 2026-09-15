@@ -56,7 +56,9 @@ class RunResult(BaseModel):
     profile_name: str = ""
     scenario_id: str
     split: str
+    repeat: int = 0
     fault: str
+    expected_action: str = ""
     decisive_channel: str
     diagnosis: str
     action: str
@@ -665,6 +667,7 @@ def _finish(
         scenario_id=scenario.id,
         split=scenario.split,
         fault=scenario.fault,
+        expected_action=scenario.expected_action,
         decisive_channel=scenario.decisive_channel,
         diagnosis=diagnosis.root_cause,
         action=diagnosis.action,

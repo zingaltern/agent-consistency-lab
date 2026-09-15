@@ -13,6 +13,10 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+# 对照基线用的框架：只在跑 W5/W6 的评测时需要，核心 runtime 不依赖它
+eval = [
+    "langgraph>=1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

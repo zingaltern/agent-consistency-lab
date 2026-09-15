@@ -17,7 +17,7 @@
 | W3 | interrupt/resume + 审批绑定（TOCTOU）+ outbox + unknown 对账 | 完成 |
 | W4 | 上下文视图 + 卸载 + 压缩 + 缓存纪律 + 预算 | 完成 |
 | W5 | 运维壳 + 场景集（64 个）+ 三基线（含 LangGraph 对照） | 完成 |
-| W6 | holdout 单列 + 人工校准 + CI 门禁 | 未开始 |
+| W6 | 分段汇报 + 统计口径（配对 CI）+ 门禁（含实验假设自检）+ CI | 完成 |
 | W7 | 缓存净收益 × 压缩冲突实验 | 未开始 |
 | W8 | 长文 ×3 + 文档 + demo | 未开始 |
 
@@ -54,6 +54,16 @@
 * **准确率最高的架构同时是事故率最高的架构**（单次调用基线正确率 93.2%，但零拦截）；
 * **两条 agent 路线能力等价**（步数 3.38 vs 3.38、token 相同、正确率与红线率在噪声内一致），
   差别在崩溃一致性与"工具自述风险"这两层工程属性上。
+
+**W6**（[w6-report.md](docs/w6-report.md)，统计口径 + 门禁）：
+
+* **"谁更准"不可区分，"谁更安全"统计显著**：harness − single_shot 的诊断正确率
+  +0.005（95% CI [−0.099, +0.104]，配对 192 组），红线执行率 −0.203（CI [−0.260, −0.146]）；
+* **代理指标要校准**：`取证充分性` 只对规则基线有效（κ=1.0），对 agent 路线恒为真、
+  没有区分力——**不能拿它当线上监控指标**；
+* **门禁自己也要被验证**：第一版门禁抓不到"静默丢弃破坏性动作"的退化（指标完美、机制已死），
+  补上对称自检（有 gate 的系统必须真的拦下过东西）后，退化的实现会让 CI 变红；
+* holdout 与 dev 无落差（本轮无调参），考卷留到 W7 的阈值扫描用。
 
 ### 独立审计发现的 P0（已修，含回归测试）
 
@@ -118,6 +128,7 @@ docs/w2-crash-windows.md W2 崩溃矩阵实验报告
 docs/w3-report.md        W3 审批与 outbox 一致性实验报告
 docs/w4-report.md        W4 上下文工程与成本实验报告
 docs/w5-report.md        W5 运维壳、场景集与三基线对照报告
+docs/w6-report.md        W6 统计口径、分段汇报与门禁报告
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 矩阵原始数据与自动生成的报告
 ```
@@ -136,9 +147,12 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m experiments.context_cost \
     --md-out reports/w4_context_cost.md --json-out reports/w4_context_cost.json
 
-# W5 四系统对照评测（64 场景 × 4 系统 × 2 推理器 × 3 次，约 8 秒）
+# W5/W6 四系统对照评测（64 场景 × 4 系统 × 2 推理器 × 3 次，约 8 秒）
 .venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 \
-    --md-out reports/w5_eval.md --json-out reports/w5_eval.json
+    --md-out reports/w6_eval.md --json-out reports/w6_eval.json
+
+# 带门禁（CI 用）：任一条不通过则非零退出
+.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate
 ```
 
 单次崩溃可手工复现：

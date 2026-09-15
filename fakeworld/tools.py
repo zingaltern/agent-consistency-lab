@@ -10,16 +10,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from harness.artifacts import ArtifactStore, make_read_artifact_tool
 from harness.tools import Effect, ProbeOutcome, ProbeResult, Tool, ToolRegistry
 
 from .world import World
 
 SCENARIO_POOL_EXHAUSTION = "pool_exhaustion"
 SCENARIO_TWO_WRITES = "pool_exhaustion_two_writes"
+SCENARIO_LONG_INCIDENT = "long_incident"
 
 
 def build_registry(
-    world: World, *, idempotent_impl: bool, probe_enabled: bool = True
+    world: World,
+    *,
+    idempotent_impl: bool,
+    probe_enabled: bool = True,
+    artifacts: ArtifactStore | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -34,6 +40,17 @@ def build_registry(
             idempotency_key=key,
             idempotent_impl=idempotent_impl,
         )
+
+    def fetch_logs(args: dict[str, Any], _key: str) -> dict[str, Any]:
+        service = str(args.get("service", "unknown"))
+        lines = int(args.get("lines", 40))
+        entries = [
+            f"2026-09-16T10:{index:02d}:00Z {service} level=WARN"
+            f" pool_wait_ms={1800 + index * 7} active={40 + index} idle=2"
+            ' msg="connection acquisition slow"'
+            for index in range(lines)
+        ]
+        return {"service": service, "lines": lines, "entries": entries}
 
     def create_ticket(args: dict[str, Any], key: str) -> dict[str, Any]:
         return world.apply(
@@ -72,6 +89,15 @@ def build_registry(
     )
     registry.register(
         Tool(
+            name="fetch_logs",
+            effect=Effect.READ,
+            fn=fetch_logs,
+            description="拉取服务日志（只读，结果可能很大）",
+            tags=("readonly", "big"),
+        )
+    )
+    registry.register(
+        Tool(
             name="create_ticket",
             effect=Effect.WRITE_IDEMPOTENT,
             fn=create_ticket,
@@ -79,6 +105,8 @@ def build_registry(
             tags=("write",),
         )
     )
+    if artifacts is not None:
+        registry.register(make_read_artifact_tool(artifacts))
     return registry
 
 
@@ -112,6 +140,23 @@ def scripted_turns(scenario: str) -> list[dict[str, Any]]:
     """确定性脚本：每个 turn 要么提工具调用，要么给最终答复。"""
     if scenario == SCENARIO_POOL_EXHAUSTION:
         return _single_write_script()
+    if scenario == SCENARIO_LONG_INCIDENT:
+        turns: list[dict[str, Any]] = [
+            {
+                "text": f"第 {index} 轮取证：拉取支付服务日志。",
+                "tool_calls": [
+                    {
+                        "tool_call_id": f"tc_logs_{index}",
+                        "tool": "fetch_logs",
+                        "args": {"service": "payment", "lines": 60},
+                    }
+                ],
+            }
+            for index in range(1, 9)
+        ]
+        turns.append(_single_write_script()[1])
+        turns.append({"text": "多轮取证后确认为连接池耗尽，扩容已完成。", "tool_calls": []})
+        return turns
     if scenario == SCENARIO_TWO_WRITES:
         return [
             *_single_write_script()[:2],

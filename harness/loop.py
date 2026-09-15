@@ -24,9 +24,9 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -38,9 +38,14 @@ from .approval import (
     ApprovalBinding,
     ApprovalError,
 )
+from .budget import BudgetExceeded
 from .chaos import Chaos
+from .context import ViewBuilder
 from .events import ArtifactEventType, Event, NewEvent, Source, TreeEventType
 from .ids import new_id
+from .llm import ContextOverflow, LLMClient, ModelResponse
+from .model import Message, Model, ModelTurn
+from .prompts import DEFAULT_OPS_SYSTEM_PROMPT
 from .state import DerivedState, RunStatus, reduce_events
 from .store.checkpoints import SqliteCheckpointSaver, Write
 from .store.sqlite_store import SqliteStore
@@ -52,28 +57,14 @@ from .tools import (
     ToolCallRequest,
     ToolRegistry,
     canonical_args_sha256,
-    canonical_json,
     idempotency_key,
 )
 
 APPROVAL_TTL_SECONDS = 3600.0
 
-
-class Message(BaseModel):
-    role: str
-    content: str
-
-
-class ModelTurn(BaseModel):
-    text: str = ""
-    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
-    usage: dict[str, Any] = Field(default_factory=dict)
-
-
-class Model(Protocol):
-    """模型接口；本项目的实现是确定性的脚本模型（fakeworld/model.py）。"""
-
-    def next_turn(self, *, step: int, view: Sequence[Message]) -> ModelTurn: ...
+# 刻意写成接近真实的运维处置规范长度：系统提示是"稳定前缀"的主体，
+# 它必须足够大才会进入供应商的最小可缓存长度（本模型设 1024 token）。
+DEFAULT_SYSTEM_PROMPT = DEFAULT_OPS_SYSTEM_PROMPT
 
 
 class RunOutcome(BaseModel):
@@ -86,6 +77,13 @@ class RunOutcome(BaseModel):
     unknown: int = 0
     rejected: int = 0
     probes: int = 0
+    compactions: int = 0
+    overflows: int = 0
+    input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    view_violations: int = 0
 
 
 class InterruptRequest(BaseModel):
@@ -126,6 +124,13 @@ class _Counters:
     unknown: int = 0
     rejected: int = 0
     probes: int = 0
+    compactions: int = 0
+    overflows: int = 0
+    input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    view_violations: int = 0
 
     def to_outcome(self, status: str, step: int) -> RunOutcome:
         return RunOutcome(
@@ -138,6 +143,13 @@ class _Counters:
             unknown=self.unknown,
             rejected=self.rejected,
             probes=self.probes,
+            compactions=self.compactions,
+            overflows=self.overflows,
+            input_tokens=self.input_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            cost_usd=round(self.cost_usd, 8),
+            view_violations=self.view_violations,
         )
 
 
@@ -147,6 +159,11 @@ class Loop:
         store: SqliteStore,
         saver: SqliteCheckpointSaver,
         *,
+        llm: LLMClient,
+        registry: ToolRegistry,
+        builder: ViewBuilder | None = None,
+        compactor: object | None = None,
+        budget: object | None = None,
         dedup: bool = True,
         outbox: bool = True,
         chaos: Chaos | None = None,
@@ -157,12 +174,20 @@ class Loop:
         self._store = store
         self._saver = saver
         self._tool_calls = ToolCallStore(store)
+        self._llm = llm
+        self._registry = registry
+        self._builder = builder or ViewBuilder(
+            system_prompt=DEFAULT_SYSTEM_PROMPT, registry=registry
+        )
+        self._compactor = compactor
+        self._budget = budget
         self._dedup = dedup
         self._outbox = outbox
         self._chaos = chaos or Chaos.disabled()
         self._max_steps = max_steps
         self._ns = checkpoint_ns
         self._tamper = tamper
+        self._last_view_violations = 0
 
     # ------------------------------------------------------------------ public
 
@@ -172,8 +197,6 @@ class Loop:
         run_id: str,
         thread_id: str,
         branch_id: str,
-        model: Model,
-        registry: ToolRegistry,
         task: str,
     ) -> RunOutcome:
         ctx = _Ctx(run_id, thread_id, branch_id)
@@ -186,7 +209,7 @@ class Loop:
                 payload={"text": task},
             )
         )
-        return self._drive(ctx, model, registry, _Counters())
+        return self._drive(ctx, _Counters())
 
     def resume(
         self,
@@ -194,8 +217,6 @@ class Loop:
         run_id: str,
         thread_id: str,
         branch_id: str,
-        model: Model,
-        registry: ToolRegistry,
     ) -> RunOutcome:
         ctx = _Ctx(run_id, thread_id, branch_id)
         counters = _Counters()
@@ -206,13 +227,13 @@ class Loop:
             for call_id in sorted(state.open_tool_calls):
                 request = self._tool_request_from_log(ctx, call_id)
                 if request is not None:
-                    self._execute_tool(ctx, request, registry, counters)
+                    self._execute_tool(ctx, request, self._registry, counters)
         except InterruptSignal:
             self._commit(ctx, f"model:{state.step}", [], step=state.step, counters=counters)
             final = self._state(ctx)
             return counters.to_outcome(final.status.value, final.step)
         self._chaos.hit("after_resume")
-        return self._drive(ctx, model, registry, counters)
+        return self._drive(ctx, counters)
 
     def approve(
         self,
@@ -306,16 +327,16 @@ class Loop:
 
     # ------------------------------------------------------------------- drive
 
-    def _drive(
-        self, ctx: _Ctx, model: Model, registry: ToolRegistry, counters: _Counters
-    ) -> RunOutcome:
+    def _drive(self, ctx: _Ctx, counters: _Counters) -> RunOutcome:
         for _ in range(self._max_steps):
             state = self._state(ctx)
             if state.status in (RunStatus.COMPLETED, RunStatus.FAILED):
                 break
-            view = self._build_view(ctx)
-            turn = model.next_turn(step=state.step, view=view)
-            self._append_agent_message(ctx, turn, final=not turn.tool_calls)
+            response = self._call_model(ctx, state.step, counters)
+            if response is None:
+                break
+            turn = response.turn
+            self._append_agent_message(ctx, turn, response=response, final=not turn.tool_calls)
             task_id = f"model:{state.step}"
             writes = [
                 Write(
@@ -331,7 +352,7 @@ class Loop:
             interrupted = False
             try:
                 for request in turn.tool_calls:
-                    self._execute_tool(ctx, request, registry, counters)
+                    self._execute_tool(ctx, request, self._registry, counters)
                     writes.append(
                         Write(
                             task_id=f"tool:{request.tool_call_id}",
@@ -346,7 +367,70 @@ class Loop:
             if interrupted or not turn.tool_calls:
                 break
         final = self._state(ctx)
+        counters.view_violations = self._last_view_violations
         return counters.to_outcome(final.status.value, final.step)
+
+    # ------------------------------------------------------------------- model
+
+    def _call_model(self, ctx: _Ctx, step: int, counters: _Counters) -> ModelResponse | None:
+        """构建视图、（必要时）压缩、调模型；溢出只重试一次，之后判失败。"""
+        view = self._build_view(ctx, counters)
+        if self._compactor is not None and self._compactor.should_compact(
+            view=view, window=self._llm.window
+        ):
+            record = self._compactor.compact(
+                run_id=ctx.run_id,
+                branch_id=ctx.branch_id,
+                events=self._log(ctx),
+                reason="threshold",
+            )
+            if record is not None:
+                counters.compactions += 1
+                view = self._build_view(ctx, counters)
+        for attempt in (1, 2):
+            try:
+                response = self._llm.complete(step=step, view=view)
+            except ContextOverflow as exc:
+                counters.overflows += 1
+                if self._compactor is None or attempt == 2:
+                    self._append_error_artifact(ctx, "context_overflow", str(exc), fatal=True)
+                    return None
+                record = self._compactor.compact(
+                    run_id=ctx.run_id,
+                    branch_id=ctx.branch_id,
+                    events=self._log(ctx),
+                    reason="overflow",
+                )
+                if record is None:
+                    self._append_error_artifact(ctx, "context_overflow", "无可压缩内容", fatal=True)
+                    return None
+                counters.compactions += 1
+                view = self._build_view(ctx, counters)
+            except BudgetExceeded as exc:
+                self._append_error_artifact(ctx, "budget_exceeded", str(exc), fatal=True)
+                return None
+            else:
+                counters.input_tokens += response.usage.input_tokens
+                counters.cache_read_tokens += response.usage.cache_read_tokens
+                counters.cache_write_tokens += response.usage.cache_write_tokens
+                counters.cost_usd += response.cost_usd
+                return response
+        return None
+
+    def _dynamic_snapshot(self, ctx: _Ctx) -> dict[str, Any]:
+        """每步变化的运行时信息——只能进 tail；进了 prefix 就是每步击穿缓存。"""
+        state = self._state(ctx)
+        snapshot: dict[str, Any] = {"step": state.step, "status": state.status.value}
+        if self._budget is not None:
+            budget = self._budget.snapshot()
+            snapshot["spent_usd"] = budget.spent_usd
+            snapshot["remaining_usd"] = round(budget.remaining_usd, 4)
+        return snapshot
+
+    def _build_view(self, ctx: _Ctx, counters: _Counters):
+        view = self._builder.build(events=self._log(ctx), dynamic=self._dynamic_snapshot(ctx))
+        self._last_view_violations = len(view.violations)
+        return view
 
     # --------------------------------------------------------------- tool path
 
@@ -673,24 +757,37 @@ class Loop:
             )
         )
 
-    def _append_error_artifact(self, ctx: _Ctx, error_class: str, message: str) -> None:
+    def _append_error_artifact(
+        self, ctx: _Ctx, error_class: str, message: str, *, fatal: bool = False
+    ) -> None:
         self._store.append(
             NewEvent.artifact(
                 run_id=ctx.run_id,
                 branch_id=ctx.branch_id,
                 type=ArtifactEventType.ERROR,
-                payload={"error_class": error_class, "message": message, "fatal": False},
+                payload={"error_class": error_class, "message": message, "fatal": fatal},
             )
         )
 
-    def _append_agent_message(self, ctx: _Ctx, turn: ModelTurn, *, final: bool) -> None:
+    def _append_agent_message(
+        self, ctx: _Ctx, turn: ModelTurn, *, response: ModelResponse, final: bool
+    ) -> None:
         self._store.append(
             NewEvent.tree(
                 run_id=ctx.run_id,
                 branch_id=ctx.branch_id,
                 type=TreeEventType.AGENT_MESSAGE,
                 source=Source.AGENT,
-                payload={"text": turn.text, "final": final, "usage": turn.usage},
+                payload={
+                    "text": turn.text,
+                    "final": final,
+                    "usage": turn.usage,
+                    "view_fingerprint": response.view_fingerprint,
+                    "context_tokens": response.context_tokens,
+                    "cache_read_tokens": response.usage.cache_read_tokens,
+                    "cache_write_tokens": response.usage.cache_write_tokens,
+                    "cost_usd": response.cost_usd,
+                },
             )
         )
 
@@ -707,23 +804,15 @@ class Loop:
                 )
         return None
 
-    def _build_view(self, ctx: _Ctx) -> list[Message]:
-        """W2/W3 的最简视图：把树事件摊平成文本。W4 会替换为真正的上下文工程。"""
-        lines: list[str] = []
-        for event in self._log(ctx):
-            if not event.is_tree_node:
-                continue
-            if event.type == TreeEventType.USER_MESSAGE.value:
-                lines.append(f"user: {event.payload.get('text', '')}")
-            elif event.type == TreeEventType.AGENT_MESSAGE.value:
-                lines.append(f"agent: {event.payload.get('text', '')}")
-            elif event.type == TreeEventType.TOOL_CALL.value:
-                args_json = canonical_json(event.payload.get("args", {}))
-                lines.append(f"tool_call {event.payload.get('tool')}: {args_json}")
-            elif event.type == TreeEventType.TOOL_RESULT.value:
-                lines.append(f"tool_result: {canonical_json(event.payload.get('result'))}")
-            elif event.type == TreeEventType.INTERRUPT.value:
-                lines.append(f"interrupt: {event.payload.get('reason', '')}")
-            elif event.type == TreeEventType.RESUME.value:
-                lines.append(f"resume: {event.payload.get('decision', '')}")
-        return [Message(role="transcript", content="\n".join(lines))]
+
+__all__ = [
+    "APPROVAL_TTL_SECONDS",
+    "DEFAULT_SYSTEM_PROMPT",
+    "InterruptRequest",
+    "InterruptSignal",
+    "Loop",
+    "Message",
+    "Model",
+    "ModelTurn",
+    "RunOutcome",
+]

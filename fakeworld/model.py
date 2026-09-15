@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
-from harness.loop import Message, ModelTurn
+from harness.model import ModelTurn
 from harness.tools import ToolCallRequest
 
 from .tools import scripted_turns
@@ -20,7 +19,7 @@ class ScriptedModel:
         self._script: list[dict[str, Any]] = scripted_turns(scenario)
         self.calls: int = 0
 
-    def next_turn(self, *, step: int, view: Sequence[Message]) -> ModelTurn:
+    def next_turn(self, *, step: int, view: Any = None) -> ModelTurn:
         self.calls += 1
         index = min(step, len(self._script) - 1)
         entry = self._script[index]

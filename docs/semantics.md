@@ -13,6 +13,8 @@
 | 效果语义 | **至多一次（效果）仅当下游支持幂等键**；否则产生 `unknown`，进入对账 | 工具声明效果类别 + outbox（W3） |
 | 日志语义 | **不重不漏**：同一事件永不重复写入，已提交事件永不丢失（kill -9 语义下） | 单写者事务 + append-only 触发器 + `UNIQUE(branch_id, seq)` |
 | 状态语义 | 状态**从不被持久化为权威**，只有事件日志是权威；状态 = 日志的折叠 | `harness.state.reduce_events` |
+| 视图语义 | 请求视图由事件日志**纯函数**重建；违反结构不变式时丢弃违规批次而不是发出非法请求 | `harness.context.ViewBuilder` |
+| 成本语义 | 每次模型调用的 token / 缓存读写 / 成本都写进事件，可事后复算；预算超限即硬停 | `harness.llm` + `harness.budget` |
 | 恢复语义 | 已完成任务从 writes 重放（**不重跑副作用**），未完成任务从头重跑 | writes/checkpoint 分离 + `recovery_plan` |
 
 **明确不承诺**：不承诺 exactly-once 效果（任何声称此承诺的系统都在某处依赖下游幂等），
@@ -67,6 +69,35 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
 
+### 2.6 上下文视图、压缩与缓存纪律（W4）
+
+**视图是纯函数**：``ViewBuilder.build(events, dynamic) → View``，块序列分四段：
+
+``prefix``（系统提示 + 工具清单，**永不变化**）→ ``history``（append-only 的对话与工具结果）
+→ ``summary``（压缩摘要，追加在尾部）→ ``tail``（每步变化的运行时信息）。
+
+动态信息**只允许进 ``tail``**：进了 prefix 等于每步重建前缀，缓存全灭。
+
+**结构不变式**（违反即丢弃违规部分并记录，绝不发出会被供应商拒绝的请求）：
+
+* 配对：tool_call 与 tool_result 一一对应；
+* 批次原子：同一次模型响应里的多个调用要么全留要么全删；
+* 观测唯一：同一调用至多一条结果。
+
+**卸载**：工具结果超过 ``max_inline_tokens`` 时写入内容寻址 artifact（sha256），
+上下文里只留摘要 + digest；模型用 ``read_artifact`` 按切片读回。
+内容寻址保证同一结果两次渲染逐字相同，因此卸载不会破坏缓存前缀。
+
+**压缩**：把最老的若干 turn group 换成一段摘要，以 ``compaction`` artifact 事件追加，
+被替换的事件仍在日志里、只是不再进入视图。先写 artifact 再追加事件 ⇒ 崩溃要么
+完整生效要么完全没发生。``compaction_id = sha256(被替换事件集合)`` 使重算可检测。
+
+**注**：压缩一定会在替换点击穿前缀缓存——这是可测的代价（见 docs/w4-report.md），
+所以策略是"先卸载、后压缩，阈值尽量高"。
+
+**预算**：``main / compaction / judge / tools`` 分桶，账本由 ``budget_update`` 事件构成，
+跨进程恢复后重新折叠得到；dispatch 前检查、响应后复核，超限即 fatal。
+
 ### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
 
 一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
@@ -111,7 +142,7 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 | 2 | `post_tool_effect_pre_record` | 工具成功后 / 任何记录前 | 已实现并测（W2/W3） |
 | 3 | `post_record_pre_commit` | 记录后 / 边界 checkpoint 提交前 | 已实现并测（W2/W3） |
 | 4 | `post_approval_pre_exec` | 审批通过后 / 执行前 | 已实现并测（W3） |
-| 5 | `during_compaction` | 压缩进行中 | W4 |
+| 5 | `during_compaction` | 压缩进行中（artifact 已写、事件未追加） | 已实现并测（W4） |
 | 6 | `after_resume` | 恢复之后再次崩溃 | 已实现并测（W3） |
 
 窗口 2 是唯一产生重复副作用的位置，且只能由下游幂等或 outbox+探针兜住
@@ -133,7 +164,7 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 | `error` | artifact | `{error_class, message, fatal?: bool}` |
 | `budget_update` | artifact | `{bucket, tokens_in, tokens_out, cost_usd}` |
 | `lease` | artifact | `{owner, expires_at}` |
-| `compaction` | artifact | `{replaces_event_ids, summary, artifact_ref?}` |
+| `compaction` | artifact | `{compaction_id, replaces_event_ids, summary, artifact_ref, tokens_before, tokens_after, reason, round}` |
 | `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
 | `state_update` | artifact | `{patch}` |
 
@@ -185,5 +216,7 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 1. unknown 集合的收敛条件（何时可判定"不可对账只剩人工"）——W3 给出了产生规则，
    收敛策略待 W5 场景接入后定义。
 2. 租约失效后的接管语义（lease 事件已定义，机制未实现）。
-3. 批量写一半（Saga 补偿）与 `during_compaction` 窗口（W4/W5）。
+3. 批量写一半（Saga 补偿）待 W5 场景集覆盖。
 4. `synchronous=FULL` 的掉电语义实验。
+5. 压缩的长期形态：当前每次压缩产生一条并列摘要，未做"摘要的摘要"；artifact GC 只有
+   `orphan_count` 暴露，未实现回收（W7 之后）。

@@ -30,9 +30,15 @@ from fakeworld.model import ScriptedModel
 from fakeworld.tools import SCENARIO_POOL_EXHAUSTION, build_registry
 from fakeworld.world import World
 from harness.approval import DECISION_APPROVED, DECISION_REJECTED
+from harness.artifacts import ArtifactStore
+from harness.budget import BudgetLedger, BudgetLimits
+from harness.cache import CacheConfig, PrefixCacheModel
 from harness.chaos import Chaos
+from harness.compaction import CompactionPolicy, Compactor
+from harness.context import ViewBuilder
 from harness.ids import new_id
-from harness.loop import Loop
+from harness.llm import ModelWindow, ScriptedLLMClient
+from harness.loop import DEFAULT_SYSTEM_PROMPT, Loop
 from harness.store.checkpoints import SqliteCheckpointSaver
 from harness.store.sqlite_store import SqliteStore
 from harness.tools import ToolCallRequest
@@ -51,6 +57,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--probe", choices=("on", "off"), default="on")
     parser.add_argument("--tamper", choices=("on", "off"), default="off")
     parser.add_argument("--approve-mode", choices=("approve", "reject", "edit"), default="approve")
+    parser.add_argument("--compaction", choices=("on", "off"), default="on")
+    parser.add_argument("--window-tokens", type=int, default=200_000)
+    parser.add_argument("--max-output-tokens", type=int, default=4_096)
+    parser.add_argument("--dynamic-at-head", choices=("on", "off"), default="off")
+    parser.add_argument("--budget-usd", type=float, default=1.0)
+    parser.add_argument("--max-inline-tokens", type=int, default=800)
     return parser.parse_args(argv)
 
 
@@ -73,35 +85,90 @@ def main(argv: list[str] | None = None) -> int:
     world = World(run_dir / "world.db")
     saver = SqliteCheckpointSaver(store)
     chaos = Chaos.from_env(run_dir / "crash_marker.json")
+    artifacts = ArtifactStore(run_dir / "artifacts")
     registry = build_registry(
-        world, idempotent_impl=args.tool_idem == "on", probe_enabled=args.probe == "on"
+        world,
+        idempotent_impl=args.tool_idem == "on",
+        probe_enabled=args.probe == "on",
+        artifacts=artifacts,
+    )
+    builder = ViewBuilder(
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        registry=registry,
+        artifacts=artifacts,
+        max_inline_tokens=args.max_inline_tokens,
+        dynamic_at_head=args.dynamic_at_head == "on",
+    )
+    budget: BudgetLedger | None = None
+    compactor: Compactor | None = None
+    if args.mode == "run":
+        ids = {
+            "run_id": new_id("run"),
+            "thread_id": new_id("thr"),
+            "branch_id": new_id("br"),
+        }
+        ids_path.write_text(json.dumps(ids), encoding="utf-8")
+        budget = BudgetLedger(
+            store,
+            run_id=ids["run_id"],
+            branch_id=ids["branch_id"],
+            limits=BudgetLimits(total_usd=args.budget_usd),
+        )
+        if args.compaction == "on":
+            compactor = Compactor(
+                store,
+                artifacts=artifacts,
+                policy=CompactionPolicy(),
+                chaos=chaos,
+                budget=budget,
+            )
+    else:
+        ids = json.loads(ids_path.read_text(encoding="utf-8"))
+        budget = BudgetLedger(
+            store,
+            run_id=ids["run_id"],
+            branch_id=ids["branch_id"],
+            limits=BudgetLimits(total_usd=args.budget_usd),
+        )
+        if args.compaction == "on":
+            compactor = Compactor(
+                store,
+                artifacts=artifacts,
+                policy=CompactionPolicy(),
+                chaos=chaos,
+                budget=budget,
+            )
+    llm = ScriptedLLMClient(
+        ScriptedModel(args.scenario),
+        cache=PrefixCacheModel(CacheConfig()),
+        window=ModelWindow(
+            context_limit_tokens=args.window_tokens,
+            max_output_tokens=args.max_output_tokens,
+        ),
+        budget=budget,
     )
     loop = Loop(
         store,
         saver,
+        llm=llm,
+        registry=registry,
+        builder=builder,
+        compactor=compactor,
+        budget=budget,
         dedup=args.dedup == "on",
         outbox=args.outbox == "on",
         chaos=chaos,
         tamper=_tamper_hook if args.tamper == "on" else None,
     )
-    model = ScriptedModel(args.scenario)
 
     try:
         if args.mode == "run":
-            ids = {
-                "run_id": new_id("run"),
-                "thread_id": new_id("thr"),
-                "branch_id": new_id("br"),
-            }
-            ids_path.write_text(json.dumps(ids), encoding="utf-8")
             store.create_run(ids["run_id"], thread_id=ids["thread_id"])
             store.create_branch(ids["branch_id"], ids["run_id"])
             outcome = loop.start(
                 run_id=ids["run_id"],
                 thread_id=ids["thread_id"],
                 branch_id=ids["branch_id"],
-                model=model,
-                registry=registry,
                 task=TASK,
             )
         elif args.mode == "approve":
@@ -132,13 +199,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         else:
-            ids = json.loads(ids_path.read_text(encoding="utf-8"))
             outcome = loop.resume(
                 run_id=ids["run_id"],
                 thread_id=ids["thread_id"],
                 branch_id=ids["branch_id"],
-                model=model,
-                registry=registry,
             )
     finally:
         world.close()
@@ -159,6 +223,13 @@ def main(argv: list[str] | None = None) -> int:
                 "rejected": outcome.rejected,
                 "probes": outcome.probes,
                 "checkpoints": outcome.checkpoints,
+                "compactions": outcome.compactions,
+                "overflows": outcome.overflows,
+                "input_tokens": outcome.input_tokens,
+                "cache_read_tokens": outcome.cache_read_tokens,
+                "cache_write_tokens": outcome.cache_write_tokens,
+                "cost_usd": outcome.cost_usd,
+                "view_violations": outcome.view_violations,
                 "effects": world_total_effects(run_dir),
             },
             ensure_ascii=False,

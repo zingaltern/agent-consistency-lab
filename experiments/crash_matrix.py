@@ -48,7 +48,15 @@ PHASE_PLANS: dict[str, tuple[tuple[str, str], ...]] = {
         ("resume", ""),
     ),
     "after_resume": (("run", ""), ("approve", ""), ("resume", "after_resume:1"), ("resume", "")),
+    # 长任务里压缩发生在 run 阶段，所以窗口 5 的崩溃点在 run，恢复后继续走审批与收尾
+    "during_compaction": (
+        ("run", "during_compaction:1"),
+        ("resume", ""),
+        ("approve", ""),
+        ("resume", ""),
+    ),
     "(tamper)": (("run", ""), ("approve", ""), ("resume", "")),
+    "(long-baseline)": (("run", ""), ("approve", ""), ("resume", "")),
 }
 
 
@@ -59,12 +67,19 @@ class Cell:
     tool_idem: bool
     probe: bool = True
     tamper: bool = False
+    extra: tuple[tuple[str, str], ...] = ()
 
     def slug(self) -> str:
-        return (
+        base = (
             f"{self.window}-outbox{int(self.outbox)}-idem{int(self.tool_idem)}"
             f"-probe{int(self.probe)}-tamper{int(self.tamper)}"
         )
+        if not self.extra:
+            return base
+        import hashlib
+
+        digest = hashlib.sha256(repr(self.extra).encode()).hexdigest()[:8]
+        return f"{base}-x{digest}"
 
 
 def build_cells() -> list[Cell]:
@@ -87,6 +102,16 @@ def build_cells() -> list[Cell]:
             cells.append(Cell(window, outbox, tool_idem=False))
     # 篡改控制组：批准之后参数被改写，必须拒绝执行
     cells.append(Cell("(tamper)", outbox=True, tool_idem=False, tamper=True))
+    # 窗口 5：长任务 + 小窗口触发压缩，在压缩中途崩溃（需要压缩真的发生）
+    long_options = (
+        ("--scenario", "long_incident"),
+        ("--window-tokens", "12000"),
+        ("--max-output-tokens", "1024"),
+        ("--max-inline-tokens", "100000"),
+    )
+    cells.append(Cell("during_compaction", outbox=True, tool_idem=False, extra=long_options))
+    # 对照组：同样的长任务但不注入崩溃，证明压缩确实发生且任务能跑完
+    cells.append(Cell("(long-baseline)", outbox=True, tool_idem=False, extra=long_options))
     return cells
 
 
@@ -134,6 +159,8 @@ def run_phases(cell: Cell, run_dir: Path) -> list[dict[str, Any]]:
             "--tamper",
             "on" if cell.tamper else "off",
         ]
+        for flag, value in cell.extra:
+            command.extend([flag, value])
         env = {**os.environ, "CHAOS_WINDOWS": chaos_spec, "PYTHONHASHSEED": "0"}
         proc = subprocess.run(
             command, cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120
@@ -178,6 +205,7 @@ def analyze(run_dir: Path) -> dict[str, Any]:
         findings["unknown_rows"] = _count_where(store, "status='unknown'")
         findings["checkpoints"] = _count(store, "checkpoints")
         findings["orphan_writes"] = _count_orphan_writes(store)
+        findings.update(_compaction_findings(run_dir, events))
     finally:
         store.close()
 
@@ -198,6 +226,38 @@ def analyze(run_dir: Path) -> dict[str, Any]:
         json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None
     )
     return findings
+
+
+def _compaction_findings(run_dir: Path, events: list[Any]) -> dict[str, Any]:
+    """压缩的原子性与引用完整性：被替换的事件不得重复，artifact 必须可读。"""
+    import hashlib
+
+    replaced: list[str] = []
+    digests: list[str] = []
+    for event in events:
+        if event.type == "compaction":
+            replaced.extend(event.payload.get("replaces_event_ids", []))
+            ref = event.payload.get("artifact_ref") or {}
+            if ref.get("digest"):
+                digests.append(ref["digest"])
+    missing = []
+    for digest in digests:
+        path = run_dir / "artifacts" / digest[:2] / digest
+        if not path.exists():
+            missing.append(digest)
+    return {
+        "compactions": sum(1 for e in events if e.type == "compaction"),
+        "compaction_replaced_total": len(replaced),
+        "compaction_replaced_duplicated": len(replaced) - len(set(replaced)),
+        "compaction_artifacts_missing": missing,
+        "compaction_ids": sorted(
+            {
+                hashlib.sha256(e.payload.get("compaction_id", "").encode()).hexdigest()[:8]
+                for e in events
+                if e.type == "compaction"
+            }
+        ),
+    }
 
 
 def _statuses(events: list[Any]) -> dict[str, int]:
@@ -237,7 +297,26 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_unknown_row": False,
             "expect_effects": 0,
             "expect_reconciled_min": 0,
+            "expect_compaction_min": 0,
             "note": "审批后参数被改写：预期拒绝执行，0 副作用",
+        }
+    if cell.window == "during_compaction":
+        return {
+            "expect_duplicate": False,
+            "expect_unknown_row": False,
+            "expect_effects": 1,
+            "expect_reconciled_min": 0,
+            "expect_compaction_min": 1,
+            "note": "压缩中崩溃：压缩要么完整生效要么完全没发生，恢复后仍恰好一次副作用",
+        }
+    if cell.window == "(long-baseline)":
+        return {
+            "expect_duplicate": False,
+            "expect_unknown_row": False,
+            "expect_effects": 1,
+            "expect_reconciled_min": 0,
+            "expect_compaction_min": 1,
+            "note": "长任务对照：不发生崩溃，压缩必须发生且任务跑完",
         }
     if cell.window == "post_tool_effect_pre_record" and not cell.tool_idem:
         if not cell.outbox:
@@ -246,6 +325,7 @@ def expectation(cell: Cell) -> dict[str, Any]:
                 "expect_unknown_row": False,
                 "expect_effects": 2,
                 "expect_reconciled_min": 0,
+                "expect_compaction_min": 0,
                 "note": "W2 基线：效果已发生、无记录 → 恢复时重跑 → 重复",
             }
         if not cell.probe:
@@ -254,6 +334,7 @@ def expectation(cell: Cell) -> dict[str, Any]:
                 "expect_unknown_row": True,
                 "expect_effects": 1,
                 "expect_reconciled_min": 0,
+                "expect_compaction_min": 0,
                 "note": "outbox 有意图行但无按键读回 → 不重跑，转 unknown 待对账",
             }
         return {
@@ -261,6 +342,7 @@ def expectation(cell: Cell) -> dict[str, Any]:
             "expect_unknown_row": False,
             "expect_effects": 1,
             "expect_reconciled_min": 1,
+            "expect_compaction_min": 0,
             "note": "outbox + 按键读回 → 探针确认已生效，重放不重跑",
         }
     return {
@@ -268,6 +350,7 @@ def expectation(cell: Cell) -> dict[str, Any]:
         "expect_unknown_row": False,
         "expect_effects": 1,
         "expect_reconciled_min": 0,
+        "expect_compaction_min": 0,
         "note": "预期恰好一次副作用",
     }
 
@@ -293,11 +376,17 @@ def evaluate(cell: Cell, result: dict[str, Any]) -> dict[str, Any]:
     effects = int(result.get("effects_total", 0))
     closed_ok = not result.get("open_tool_calls")
 
+    compactions = int(result.get("compactions", 0))
+    atomic_ok = result.get("compaction_replaced_duplicated", 0) == 0 and not result.get(
+        "compaction_artifacts_missing"
+    )
     prediction_holds = (
         duplicated == expected["expect_duplicate"]
         and unknown_row == expected["expect_unknown_row"]
         and effects == expected["expect_effects"]
         and reconciled >= expected["expect_reconciled_min"]
+        and compactions >= expected.get("expect_compaction_min", 0)
+        and atomic_ok
     )
     return {
         **expected,
@@ -338,6 +427,7 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "max_per_key": max(r["max_effects_per_key"] for r in group),
                 "unknown_rows": max(r["unknown_rows"] for r in group),
                 "reconciled": max(r["reconciled"] for r in group),
+                "compactions": max(r.get("compactions", 0) for r in group),
                 "expected_dup": group[0]["expect_duplicate"],
                 "verdict": (
                     "as-predicted"
@@ -352,15 +442,14 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def render_markdown(summary: list[dict[str, Any]]) -> str:
     lines = [
         "| 格 | 次数 | 注入/阶段 | 日志一致 | 效果数 | 重复运行 | 单键最大 | unknown 行 |"
-        " 探针对账 | 预期重复 | 判定 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        " 探针对账 | 压缩 | 预期重复 | 判定 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for cell in summary:
         lines.append(
             "| {cell} | {runs} | {crash_ok} | {log_ok} | {effects} | {duplicated} |"
-            " {max_per_key} | {unknown_rows} | {reconciled} | {expected_dup} | {verdict} |".format(
-                **cell
-            )
+            " {max_per_key} | {unknown_rows} | {reconciled} | {compactions} | {expected_dup} |"
+            " {verdict} |".format(**cell)
         )
     return "\n".join(lines)
 

@@ -15,7 +15,7 @@
 | W1 | 事件日志 + state 折叠 + checkpoint/writes 提交协议 + 语义文档 v1 | 完成 |
 | W2 | 最小 loop + 命名崩溃注入器 + 崩溃窗口矩阵（窗口 1-3） | 完成 |
 | W3 | interrupt/resume + 审批绑定（TOCTOU）+ outbox + unknown 对账 | 完成 |
-| W4 | 上下文视图 + 压缩 + 卸载 + 缓存纪律 | 未开始 |
+| W4 | 上下文视图 + 卸载 + 压缩 + 缓存纪律 + 预算 | 完成 |
 | W5 | 运维壳 + 场景集 + 三基线（含 LangGraph 对照） | 未开始 |
 | W6 | 评测台 + 人工校准 + CI 门禁 | 未开始 |
 | W7 | 缓存净收益 × 压缩冲突实验 | 未开始 |
@@ -26,6 +26,14 @@
 **W2**（[w2-crash-windows.md](docs/w2-crash-windows.md)）：
 "效果已发生、记录未落盘"是唯一产生重复副作用的窗口，下游不幂等时 5/5 复现，
 且 runtime 侧去重开关在该窗口完全无效。
+
+**W4**（[w4-report.md](docs/w4-report.md)，同一条长任务 10 次调用）：
+
+* **缓存纪律值 2 倍成本**：运行时信息进前缀 ⇒ 命中率 57.5% → 0%、成本/调用 +105%；
+* **卸载是唯一"纯赚"的杠杆**：token/调用 -66%、成本/调用 -62%，且不依赖模型调用；
+* **压缩是拿钱买可用性**：能跑完（7 次压缩、0 溢出），但成本/调用 $0.01197 反而最高，
+  命中率只有 6.7%——每次压缩都从替换点击穿前缀缓存；
+* 崩溃矩阵新增窗口 5：压缩中 SIGKILL 后引用完整、事件不重复替换、副作用仍恰好一次。
 
 **W3**（[w3-report.md](docs/w3-report.md)，70 次崩溃 + 70 次恢复，14 格）：
 
@@ -53,6 +61,14 @@
 ```
 harness/
   events.py              事件模型（扁平日志、kind 分离、type 约束）
+  model.py               模型接口（loop 与 LLM client 共享）
+  prompts.py             系统提示词（稳定前缀的主体）
+  context.py             视图构建：四段布局 + 三条结构不变式 + 卸载
+  cache.py               前缀缓存模型（读/写/普通 token）
+  compaction.py          压缩：turn group 选择 + 摘要事件 + 确定性 id
+  artifacts.py           内容寻址 artifact 存储 + read_artifact 工具
+  budget.py              预算账本（分桶、事件持久化、硬停）
+  llm.py                 唯一模型出口（窗口检查 + 缓存计费 + 预算记账）
   state.py               事件 → 派生状态折叠 + 不变量（INV-001..007）
   tools.py               效果声明、幂等键、参数规范化、探针 ProbeFn
   approval.py            审批绑定（nonce / 过期 / scope / 参数 hash / TOCTOU）
@@ -71,6 +87,7 @@ tests/                   不变量、协议、审批语义、loop 与矩阵小�
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
 docs/w3-report.md        W3 审批与 outbox 一致性实验报告
+docs/w4-report.md        W4 上下文工程与成本实验报告
 reports/                 矩阵原始数据与自动生成的报告
 ```
 
@@ -80,9 +97,13 @@ reports/                 矩阵原始数据与自动生成的报告
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest                                        # 全部测试（含矩阵小样本）
 
-# 完整崩溃矩阵：5 窗口 × outbox × 下游幂等 × 探针 + 篡改控制组（14 格）
+# 崩溃矩阵：6 窗口 × outbox × 下游幂等 × 探针 + 篡改/长任务控制组（16 格）
 .venv/bin/python -m experiments.crash_matrix --repeats 5 \
-    --json-out reports/w3_crash_matrix.json --md-out reports/w3_crash_matrix.md
+    --json-out reports/w4_crash_matrix.json --md-out reports/w4_crash_matrix.md
+
+# 上下文成本实验：缓存纪律 / 卸载 / 压缩 三组对照
+.venv/bin/python -m experiments.context_cost \
+    --md-out reports/w4_context_cost.md --json-out reports/w4_context_cost.json
 ```
 
 单次崩溃可手工复现：

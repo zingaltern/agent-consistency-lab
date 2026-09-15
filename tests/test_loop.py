@@ -11,12 +11,14 @@ from fakeworld.model import ScriptedModel
 from fakeworld.tools import SCENARIO_POOL_EXHAUSTION, SCENARIO_TWO_WRITES, build_registry
 from fakeworld.world import World
 from harness.approval import ApprovalError
+from harness.cache import CacheConfig, PrefixCacheModel
 from harness.chaos import Chaos
 from harness.events import ArtifactEventType, NewEvent, Source, TreeEventType
+from harness.llm import ModelWindow, ScriptedLLMClient
 from harness.loop import Loop, ModelTurn, RunOutcome
 from harness.state import RunStatus, reduce_events
 from harness.store import SqliteCheckpointSaver, SqliteStore, ToolCallStore
-from harness.tools import canonical_args_sha256, idempotency_key
+from harness.tools import ToolRegistry, canonical_args_sha256, idempotency_key
 
 from .conftest import RunCtx
 
@@ -32,29 +34,63 @@ def world(tmp_path: Path) -> World:
     world.close()
 
 
-def _loop(store: SqliteStore, **kwargs) -> Loop:
-    return Loop(store, SqliteCheckpointSaver(store), chaos=Chaos.disabled(), **kwargs)
+def _registry(world: World, *, tool_idem: bool = True, probe: bool = True, artifacts=None):
+    return build_registry(
+        world, idempotent_impl=tool_idem, probe_enabled=probe, artifacts=artifacts
+    )
 
 
-def _registry(world: World, *, tool_idem: bool = True, probe: bool = True):
-    return build_registry(world, idempotent_impl=tool_idem, probe_enabled=probe)
+def _loop(
+    store: SqliteStore,
+    ctx: RunCtx,
+    world: World,
+    *,
+    scenario: str = SCENARIO_POOL_EXHAUSTION,
+    tool_idem: bool = True,
+    probe: bool = True,
+    window: ModelWindow | None = None,
+    **kwargs,
+) -> Loop:
+    registry = _registry(world, tool_idem=tool_idem, probe=probe)
+    llm = ScriptedLLMClient(
+        ScriptedModel(scenario),
+        cache=PrefixCacheModel(CacheConfig()),
+        window=window or ModelWindow(),
+    )
+    return Loop(
+        store,
+        SqliteCheckpointSaver(store),
+        llm=llm,
+        registry=registry,
+        chaos=Chaos.disabled(),
+        **kwargs,
+    )
 
 
 def _start(store: SqliteStore, world: World, ctx: RunCtx, **kwargs) -> RunOutcome:
     tool_idem = kwargs.pop("tool_idem", True)
     probe = kwargs.pop("probe", True)
-    return _loop(store, **kwargs).start(
+    scenario = kwargs.pop("scenario", SCENARIO_POOL_EXHAUSTION)
+    return _loop(
+        store, ctx, world, scenario=scenario, tool_idem=tool_idem, probe=probe, **kwargs
+    ).start(
         run_id=ctx.run_id,
         thread_id=ctx.thread_id,
         branch_id=ctx.branch_id,
-        model=ScriptedModel(SCENARIO_POOL_EXHAUSTION),
-        registry=_registry(world, tool_idem=tool_idem, probe=probe),
         task=TASK,
     )
 
 
 def _approve(store: SqliteStore, ctx: RunCtx, **kwargs):
-    return _loop(store).approve(
+    """审批是纯人工动作：不调模型、不碰工具，因此用一个最小依赖的 Loop。"""
+    loop = Loop(
+        store,
+        SqliteCheckpointSaver(store),
+        llm=ScriptedLLMClient(ScriptedModel(SCENARIO_POOL_EXHAUSTION)),
+        registry=ToolRegistry(),
+        chaos=Chaos.disabled(),
+    )
+    return loop.approve(
         run_id=ctx.run_id, thread_id=ctx.thread_id, branch_id=ctx.branch_id, **kwargs
     )
 
@@ -62,12 +98,13 @@ def _approve(store: SqliteStore, ctx: RunCtx, **kwargs):
 def _resume(store: SqliteStore, world: World, ctx: RunCtx, **kwargs) -> RunOutcome:
     tool_idem = kwargs.pop("tool_idem", True)
     probe = kwargs.pop("probe", True)
-    return _loop(store, **kwargs).resume(
+    scenario = kwargs.pop("scenario", SCENARIO_POOL_EXHAUSTION)
+    return _loop(
+        store, ctx, world, scenario=scenario, tool_idem=tool_idem, probe=probe, **kwargs
+    ).resume(
         run_id=ctx.run_id,
         thread_id=ctx.thread_id,
         branch_id=ctx.branch_id,
-        model=ScriptedModel(SCENARIO_POOL_EXHAUSTION),
-        registry=_registry(world, tool_idem=tool_idem, probe=probe),
     )
 
 
@@ -383,24 +420,11 @@ def test_scripted_model_signature_matches_loop_protocol() -> None:
 
 
 def _start_two_writes(store: SqliteStore, world: World, ctx: RunCtx) -> RunOutcome:
-    return _loop(store).start(
-        run_id=ctx.run_id,
-        thread_id=ctx.thread_id,
-        branch_id=ctx.branch_id,
-        model=ScriptedModel(SCENARIO_TWO_WRITES),
-        registry=_registry(world),
-        task=TASK,
-    )
+    return _start(store, world, ctx, scenario=SCENARIO_TWO_WRITES)
 
 
 def _resume_two_writes(store: SqliteStore, world: World, ctx: RunCtx) -> RunOutcome:
-    return _loop(store).resume(
-        run_id=ctx.run_id,
-        thread_id=ctx.thread_id,
-        branch_id=ctx.branch_id,
-        model=ScriptedModel(SCENARIO_TWO_WRITES),
-        registry=_registry(world),
-    )
+    return _resume(store, world, ctx, scenario=SCENARIO_TWO_WRITES)
 
 
 def test_session_scope_authorizes_second_identical_call(

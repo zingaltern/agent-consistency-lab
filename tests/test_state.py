@@ -260,11 +260,16 @@ def test_inv007_resume_index_mismatch_is_flagged(
     store.append_many(
         [
             NewEvent.tree(
-                run_id=run_id, branch_id=branch_id, type=TreeEventType.INTERRUPT,
-                source=Source.AGENT, payload={"interrupt_id": "int_1", "interrupt_index": 0},
+                run_id=run_id,
+                branch_id=branch_id,
+                type=TreeEventType.INTERRUPT,
+                source=Source.AGENT,
+                payload={"interrupt_id": "int_1", "interrupt_index": 0},
             ),
             NewEvent.tree(
-                run_id=run_id, branch_id=branch_id, type=TreeEventType.RESUME,
+                run_id=run_id,
+                branch_id=branch_id,
+                type=TreeEventType.RESUME,
                 source=Source.USER,
                 payload={"interrupt_id": "int_1", "interrupt_index": 1, "decision": "approved"},
             ),
@@ -279,11 +284,16 @@ def test_inv007_matching_index_passes(store: SqliteStore, run_ctx: tuple[str, st
     store.append_many(
         [
             NewEvent.tree(
-                run_id=run_id, branch_id=branch_id, type=TreeEventType.INTERRUPT,
-                source=Source.AGENT, payload={"interrupt_id": "int_1", "interrupt_index": 3},
+                run_id=run_id,
+                branch_id=branch_id,
+                type=TreeEventType.INTERRUPT,
+                source=Source.AGENT,
+                payload={"interrupt_id": "int_1", "interrupt_index": 3},
             ),
             NewEvent.tree(
-                run_id=run_id, branch_id=branch_id, type=TreeEventType.RESUME,
+                run_id=run_id,
+                branch_id=branch_id,
+                type=TreeEventType.RESUME,
                 source=Source.USER,
                 payload={"interrupt_id": "int_1", "interrupt_index": 3, "decision": "approved"},
             ),
@@ -314,8 +324,11 @@ def test_inv001_missing_call_id_is_flagged(store: SqliteStore, run_ctx: tuple[st
     run_id, branch_id = run_ctx
     store.append(
         NewEvent.tree(
-            run_id=run_id, branch_id=branch_id, type=TreeEventType.TOOL_CALL,
-            source=Source.AGENT, payload={"tool": "query_metrics", "args": {}},
+            run_id=run_id,
+            branch_id=branch_id,
+            type=TreeEventType.TOOL_CALL,
+            source=Source.AGENT,
+            payload={"tool": "query_metrics", "args": {}},
         )
     )
     _, violations = reduce_events(store.effective_events(branch_id))
@@ -331,8 +344,11 @@ def test_inv006_final_with_open_calls_is_flagged(
         [
             _tool_call(run_id, branch_id, "call_1"),
             NewEvent.tree(
-                run_id=run_id, branch_id=branch_id, type=TreeEventType.AGENT_MESSAGE,
-                source=Source.AGENT, payload={"text": "结束了", "final": True},
+                run_id=run_id,
+                branch_id=branch_id,
+                type=TreeEventType.AGENT_MESSAGE,
+                source=Source.AGENT,
+                payload={"text": "结束了", "final": True},
             ),
         ]
     )

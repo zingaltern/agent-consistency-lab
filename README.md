@@ -16,8 +16,8 @@
 | W2 | 最小 loop + 命名崩溃注入器 + 崩溃窗口矩阵（窗口 1-3） | 完成 |
 | W3 | interrupt/resume + 审批绑定（TOCTOU）+ outbox + unknown 对账 | 完成 |
 | W4 | 上下文视图 + 卸载 + 压缩 + 缓存纪律 + 预算 | 完成 |
-| W5 | 运维壳 + 场景集 + 三基线（含 LangGraph 对照） | 未开始 |
-| W6 | 评测台 + 人工校准 + CI 门禁 | 未开始 |
+| W5 | 运维壳 + 场景集（64 个）+ 三基线（含 LangGraph 对照） | 完成 |
+| W6 | holdout 单列 + 人工校准 + CI 门禁 | 未开始 |
 | W7 | 缓存净收益 × 压缩冲突实验 | 未开始 |
 | W8 | 长文 ×3 + 文档 + demo | 未开始 |
 
@@ -43,6 +43,17 @@
   即把"静默重复"变成"显式有界的未知"；
 * **TOCTOU 有实测护栏**：批准之后执行之前改写参数，5/5 拒绝执行、0 副作用；
 * **改参即换键**有端到端证据：改参批准 → 新 tool_call_id → 不同幂等键，账本落的是改后参数。
+
+**W5**（[w5-report.md](docs/w5-report.md)，64 场景 × 4 系统 × 2 推理器 × 3 次 = 1536 次运行）：
+
+* **取证充分性决定正确率上限**：只看 metrics+resources 的规则基线充分率 50%、
+  正确率恰好也是 50%；按通道阶梯取证的 agent 路线充分率 100%、正确率 86–90%；
+* **模型出错时架构决定后果**：无审批门的单次调用基线在 20.3% 的场景里
+  **执行了破坏性动作**（含 2 次静态拒绝列表之外的新动作）；有审批门的两条路线 0.0%，
+  代价是把 20–30% 的出错场景交给人并被拒绝；
+* **准确率最高的架构同时是事故率最高的架构**（单次调用基线正确率 93.2%，但零拦截）；
+* **两条 agent 路线能力等价**（步数 3.38 vs 3.38、token 相同、正确率与红线率在噪声内一致），
+  差别在崩溃一致性与"工具自述风险"这两层工程属性上。
 
 ### 独立审计发现的 P0（已修，含回归测试）
 
@@ -95,7 +106,8 @@ harness/
     sqlite_store.py      单写者事务、seq 分配、分叉解析
     checkpoints.py       checkpoint/writes 提交协议、恢复计划
     tool_calls.py        工具调用记录（运行时去重表 / outbox 意图行）
-fakeworld/               受控仿真：副作用账本 + 仿真工具 + 脚本化模型
+fakeworld/               受控仿真：副作用账本 + 仿真工具 + 脚本化模型（W2–W4 崩溃实验用）
+opsenv/                  运维壳与场景集（W5）：故障分类学、四通道证据、四系统对照评测
 experiments/
   worker.py              run / approve / resume 的子进程入口
   crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
@@ -105,6 +117,7 @@ docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
 docs/w3-report.md        W3 审批与 outbox 一致性实验报告
 docs/w4-report.md        W4 上下文工程与成本实验报告
+docs/w5-report.md        W5 运维壳、场景集与三基线对照报告
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 矩阵原始数据与自动生成的报告
 ```
@@ -122,6 +135,10 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 # 上下文成本实验：缓存纪律 / 卸载 / 压缩 三组对照
 .venv/bin/python -m experiments.context_cost \
     --md-out reports/w4_context_cost.md --json-out reports/w4_context_cost.json
+
+# W5 四系统对照评测（64 场景 × 4 系统 × 2 推理器 × 3 次，约 8 秒）
+.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 \
+    --md-out reports/w5_eval.md --json-out reports/w5_eval.json
 ```
 
 单次崩溃可手工复现：

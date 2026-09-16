@@ -114,6 +114,19 @@ class Metrics:
     def tokens_per_call(self) -> float:
         return self.input_tokens / self.calls if self.calls else 0.0
 
+    def materialize(self) -> dict[str, Any]:
+        """把派生指标写进 ``--json-out``（R-A1：对账脚本不得去"猜"派生值）。
+
+        ``@property`` 不会出现在 ``__dict__`` 里，早期版本因此让
+        ``cost_per_call`` 这类被文档引用的数字无法被机器对账。
+        """
+        return {
+            "read_ratio": round(self.read_ratio, 6),
+            "total_cost_usd": round(self.total_cost_usd, 9),
+            "cost_per_call_usd": round(self.cost_per_call, 9),
+            "tokens_per_call": round(self.tokens_per_call, 3),
+        }
+
 
 def run_config(config: Config, workroot: Path) -> Metrics:
     run_dir = workroot / config.name
@@ -248,6 +261,65 @@ def render(metrics: list[Metrics]) -> str:
     return "\n".join(lines)
 
 
+def findings_numbers(metrics: list[Metrics]) -> dict[str, Any]:
+    """把结论段引用的数字**物化**成 JSON（R-A1：对账脚本不得去猜派生值）。
+
+    与 ``findings()`` 共用同一批输入，因此正文与数据不可能各自漂移。
+    """
+    by_name = {item.name: item for item in metrics}
+    numbers: dict[str, Any] = {
+        "view_violations_total": sum(item.view_violations for item in metrics)
+    }
+
+    tail = by_name.get("E1a-纪律-动态在尾部")
+    head = by_name.get("E1b-反面-动态进前缀")
+    if tail and head and tail.calls and head.calls:
+        numbers["e1_cache_discipline"] = {
+            "hit_ratio_tail": round(tail.read_ratio, 6),
+            "hit_ratio_head": round(head.read_ratio, 6),
+            "cost_per_call_tail_usd": round(tail.cost_per_call, 9),
+            "cost_per_call_head_usd": round(head.cost_per_call, 9),
+            "cost_per_call_delta_ratio": round(
+                (head.cost_per_call - tail.cost_per_call) / tail.cost_per_call, 6
+            ),
+        }
+
+    inline = by_name.get("E2a-大结果内联-小窗口-无压缩")
+    compaction = by_name.get("E2b-大结果内联-小窗口-有压缩")
+    offload = by_name.get("E2c-结果卸载-小窗口-无压缩")
+    if inline and offload:
+        numbers["e2_offload"] = {
+            "inline_status": inline.status,
+            "inline_overflows": inline.overflows,
+            "token_per_call_inline": round(inline.tokens_per_call, 3),
+            "token_per_call_offload": round(offload.tokens_per_call, 3),
+            "token_per_call_delta_ratio": round(
+                (offload.tokens_per_call - inline.tokens_per_call) / inline.tokens_per_call, 6
+            ),
+            "cost_per_call_inline_usd": round(inline.cost_per_call, 9),
+            "cost_per_call_offload_usd": round(offload.cost_per_call, 9),
+            "cost_per_call_delta_ratio": round(
+                (offload.cost_per_call - inline.cost_per_call) / inline.cost_per_call, 6
+            ),
+            "note": "内联小窗口在截断（failed）后停止，其均值是截断期均值，不用于跨配置比绝对值",
+        }
+    if compaction:
+        numbers["e3_compaction"] = {
+            "status": compaction.status,
+            "compactions": compaction.compactions,
+            "overflows": compaction.overflows,
+            "hit_ratio": round(compaction.read_ratio, 6),
+            "total_cost_per_call_usd": round(compaction.cost_per_call, 9),
+            "main_cost_per_call_usd": round(compaction.cost_main_usd / compaction.calls, 9),
+            "compaction_cost_per_call_usd": round(
+                compaction.cost_compaction_usd / compaction.calls, 9
+            ),
+        }
+    if compaction and offload and offload.cost_per_call:
+        numbers["e2xe3_cost_ratio"] = round(compaction.cost_per_call / offload.cost_per_call, 3)
+    return numbers
+
+
 def findings(metrics: list[Metrics]) -> str:
     """结论只写数据支持的句子；对照的口径与偏差都在这里写清。"""
     by_name = {item.name: item for item in metrics}
@@ -320,7 +392,15 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.md_out).write_text(table + "\n\n" + findings(metrics) + "\n", encoding="utf-8")
     if args.json_out:
         Path(args.json_out).write_text(
-            json.dumps([item.__dict__ for item in metrics], ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "configs": [{**item.__dict__, **item.materialize()} for item in metrics],
+                    "findings": findings_numbers(metrics),
+                    "note": "派生指标（cost_per_call 等）已物化；逐次明细不入库",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
     return 0

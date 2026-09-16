@@ -388,9 +388,21 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "catalog": summary,
-                    "cells": [cell.model_dump() for cell in cells],
+                    # rates 是文档直接引用的比率（correct/red_line/... 都是计数），
+                    # 物化进 JSON 才能被 claim 门禁对账（R-A1：不许对账脚本去猜派生值）
+                    "cells": [{**cell.model_dump(), "rates": cell.rates()} for cell in cells],
                     "gates": [gate.model_dump() for gate in gates],
+                    "gate_summary": {
+                        # 门禁条数是**结构性事实**（不随样本量变化），因此可以被轻 claim 对账；
+                        # 它是"14 条不变"这条验收的机器可读载体。
+                        "total": len(gates),
+                        "passed": sum(gate.ok for gate in gates),
+                        "failed": sum(not gate.ok for gate in gates),
+                    },
                     "statistics": {
+                        # 文档里的"静态拒绝列表之外的新动作共 N 次"是**跨格合计**，
+                        # 格子级计数无法表达它，因此在这里物化。
+                        "novel_red_line_total": sum(cell.novel_red_line for cell in cells),
                         "min_detectable_effect": round(
                             min_detectable_effect(max(c.runs for c in cells), p=0.9), 4
                         ),

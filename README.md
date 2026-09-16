@@ -212,6 +212,7 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 | 简历措辞与面试问答映射 | [docs/resume.md](docs/resume.md) |
 | 各轮实验报告 | [docs/w2](docs/w2-crash-windows.md) · [w3](docs/w3-report.md) · [w4](docs/w4-report.md) · [w5](docs/w5-report.md) · [w6](docs/w6-report.md) · [w7](docs/w7-report.md) |
 | 自动生成的报告表格与汇总数据 | [reports/](reports/) |
+| **交给外部测试人员的提示词** | [docs/tester-prompt.md](docs/tester-prompt.md) |
 
 ## 交接与复盘
 

@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 223,
+      "value": 243,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1189,6 +1189,233 @@
       "what": "压缩动作本身占不压缩成本的比重（+38%）",
       "docs": [
         "README.md:W7 段"
+      ]
+    },
+    {
+      "id": "noisy-grader-strict-harness",
+      "value": 0.6666666666666666,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "grader_sensitivity",
+        "strict",
+        "harness"
+      ],
+      "what": "噪声口径（error_rate=0.3, flavor=both）下 harness 的 strict 正确率",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "noisy-grader-cause-only-harness",
+      "value": 0.7760416666666666,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "grader_sensitivity",
+        "cause_only",
+        "harness"
+      ],
+      "what": "同口径下的 cause_only 正确率；strict < cause_only ⇒ 口径敏感性被激活",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "noisy-gate-total",
+      "value": 14,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "gate_summary",
+        "total"
+      ],
+      "what": "噪声口径下门禁条数不变（14 条；只把 4 条敏感性门禁降级为如实汇报）",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "noisy-gate-failed-count",
+      "value": 1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "gate_summary",
+        "failed"
+      ],
+      "what": "噪声口径下如实记录的红色门禁条数（harness.correct[competent] 掉出 [0.80,0.95]）",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "noisy-harness-red-line-weak",
+      "value": 0.0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        1,
+        "rates",
+        "red_line"
+      ],
+      "what": "噪声口径下 harness 的红线执行率仍是 0（机制门禁不因推理器变笨而失效）",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "noisy-harness-blocked-weak",
+      "value": 0.28125,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--reasoner",
+        "noisy",
+        "--error-rate",
+        "0.3",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        1,
+        "rates",
+        "blocked"
+      ],
+      "what": "噪声口径下被人类拦下的比例（对称自检：gate 真的拦下过东西）",
+      "docs": [
+        "reports/noisy_reasoner.md:噪声口径",
+        "docs/noisy-reasoner.md"
+      ]
+    },
+    {
+      "id": "mutation-survivors",
+      "value": 628,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "survivors"
+      ],
+      "what": "变异测试基线：三个语义核心模块的幸存变异数（= 当前测试盲区，防倒退用）",
+      "docs": [
+        "reports/mutation_baseline.json",
+        "docs/testing.md:§3.3"
+      ]
+    },
+    {
+      "id": "mutation-survivor-rate",
+      "value": 0.3857,
+      "tolerance": 0.0001,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "survivor_rate"
+      ],
+      "what": "幸存率（分母只含被判定的变异体；no tests 是另一类盲区，不混入分母）",
+      "docs": [
+        "reports/mutation_baseline.json"
       ]
     }
   ]

@@ -12,6 +12,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    # 变异测试（R-A5）：锁 3.x。本仓库验证过的版本：mutmut 3.8.0（Python 3.14.6）。
+    # 升级大版本前必须重跑基线（reports/mutation_baseline.json）并在 PR 里记录。
+    "mutmut>=3.0,<4",
 ]
 # 对照基线用的框架：只在跑 W5/W6 的评测时需要，核心 runtime 不依赖它
 eval = [
@@ -28,6 +31,20 @@ packages = ["harness"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.mutmut]
+# 变异测试只覆盖"审计/崩溃/审批"三个语义核心模块（R-A5）：
+# 它们是"错一行就悄悄改变承诺"的位置，也正是评审最关心的位置。
+source_paths = ["harness"]
+only_mutate = ["harness/loop.py", "harness/store/checkpoints.py", "harness/approval.py"]
+# harness 之外的包与产物也要复制进 mutants/：测试会 import 它们
+# （缺一个就是 collect error，那是"跑不起来"而不是"存活变异"，必须避免误报）
+also_copy = ["fakeworld", "opsenv", "experiments", "scripts", "reports"]
+pytest_add_cli_args = ["-o", "addopts=", "-p", "no:cacheprovider", "-q"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# 每个变异体都要跑一遍测试集：超时预算给足（默认 15× 基线 + 1s），否则会把慢变异体误判成存活
+timeout_multiplier = 20.0
+timeout_constant = 5.0
 
 [tool.ruff]
 line-length = 100

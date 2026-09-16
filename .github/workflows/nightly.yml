@@ -30,3 +30,29 @@ jobs:
         with:
           name: documented-facts-nightly
           path: /tmp/facts-nightly.json
+
+  mutation:
+    # 变异测试常设化（R-A5）：幸存的变异 = 测试盲区。与 tests/test_audit_regressions.py
+    # （防已知 P0 复活）互补——审计回归防已知，变异测试探盲区。
+    # 语义：**新增**幸存变异 ⇒ 退出 1（盲区扩大）；基线见 reports/mutation_baseline.json。
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+      - name: Mutation gate (survivor regression)
+        # 15 分钟预算写死在脚本参数里：超时不是"跳过"而是"失败"——跑不完就无法判定
+        # 有没有新增盲区。本地实测（8 并行）约 4.7 分钟，CI 用 4 并行并留足余量。
+        run: python scripts/mutation_check.py --timeout 1320 --max-children 4 --json-out /tmp/mutation.json
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: /tmp/mutation.json

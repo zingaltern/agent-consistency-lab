@@ -196,8 +196,13 @@ def run_workflow(
     operator: Operator,
     price: PriceTable | None = None,
     workdir: Any = None,  # 统一接口：只有 harness 需要落盘目录
+    noise_rng: random.Random | None = None,  # 统一接口：规则基线没有推理器，噪声对它不适用
 ) -> RunResult:
-    """规则 + 静态拒绝列表。无模型调用 ⇒ 输出 token 为 0，成本只含取证。"""
+    """规则 + 静态拒绝列表。无模型调用 ⇒ 输出 token 为 0，成本只含取证。
+
+    噪声人格（R-A4）挂在**推理器**上；本条路线是纯规则表，没有推理器可扰动，因此
+    ``noise_rng`` 只是接口占位。报告里必须如实写明这一点，否则「四系统都加了噪声」会是错话。
+    """
     price = price or PriceTable()
     started = time.perf_counter()
     env = OpsEnvironment(scenario=scenario)
@@ -333,6 +338,7 @@ def run_rule_full(
     operator: Operator,
     price: PriceTable | None = None,
     workdir: Any = None,
+    noise_rng: random.Random | None = None,  # 规则基线同理：忽略
 ) -> RunResult:
     """反事实基线：把规则表写全（读 metrics+resources+logs+changes），其余与 workflow 同。"""
     price = price or PriceTable()
@@ -369,6 +375,7 @@ def run_single_shot(
     operator: Operator,
     price: PriceTable | None = None,
     workdir: Any = None,  # 统一接口：只有 harness 需要落盘目录
+    noise_rng: random.Random | None = None,
 ) -> RunResult:
     """一次读全部通道、一次推理、直接执行：没有 gate，没有验证。"""
     price = price or PriceTable()
@@ -377,7 +384,13 @@ def run_single_shot(
     for channel in READ_CHANNELS:
         env.read(channel)
 
-    diagnosis = diagnose(scenario=scenario, channels=env.channels_read, profile=profile, rng=rng)
+    diagnosis = diagnose(
+        scenario=scenario,
+        channels=env.channels_read,
+        profile=profile,
+        rng=rng,
+        noise_rng=noise_rng,
+    )
     if diagnosis.action != "none":
         env.apply_action(diagnosis.action)
     return _finish(
@@ -420,6 +433,7 @@ def run_langgraph(
     operator: Operator,
     price: PriceTable | None = None,
     workdir: Any = None,  # 统一接口：只有 harness 需要落盘目录
+    noise_rng: random.Random | None = None,
 ) -> RunResult:
     """LangGraph 等价图：collect（自适应）→ diagnose → [静态断点] gate → act。"""
     from langgraph.checkpoint.memory import MemorySaver
@@ -446,7 +460,13 @@ def run_langgraph(
         return "diagnose" if anomaly_score(channel, env) >= ANOMALY_THRESHOLD else "collect"
 
     def diagnose_node(state: GraphState) -> GraphState:
-        result = diagnose(scenario=scenario, channels=env.channels_read, profile=profile, rng=rng)
+        result = diagnose(
+            scenario=scenario,
+            channels=env.channels_read,
+            profile=profile,
+            rng=rng,
+            noise_rng=noise_rng,
+        )
         return {
             "diagnosis": result.root_cause,
             "action": result.action,
@@ -517,10 +537,17 @@ class OpsPolicyModel:
     但**不替代** runtime：审批、outbox、事件日志、视图都走真实代码路径。
     """
 
-    def __init__(self, env: OpsEnvironment, profile: ReasonerProfile, rng: random.Random) -> None:
+    def __init__(
+        self,
+        env: OpsEnvironment,
+        profile: ReasonerProfile,
+        rng: random.Random,
+        noise_rng: random.Random | None = None,
+    ) -> None:
         self._env = env
         self._profile = profile
         self._rng = rng
+        self._noise_rng = noise_rng
         self._read_order = list(CHANNEL_ORDER)
         self._proposals = 0
         self.last_diagnosis = ""
@@ -573,6 +600,7 @@ class OpsPolicyModel:
             channels=self._env.channels_read,
             profile=self._profile,
             rng=self._rng,
+            noise_rng=self._noise_rng,
         )
         self.last_diagnosis = result.root_cause
         if result.action == "none":
@@ -651,6 +679,7 @@ def run_harness(
     operator: Operator,
     price: PriceTable | None = None,
     workdir: Any = None,
+    noise_rng: random.Random | None = None,
 ) -> RunResult:
     """本项目的 runtime：自适应取证 + 工具自述风险 → 审批门 + 事件日志 + outbox。"""
     import tempfile
@@ -665,7 +694,7 @@ def run_harness(
     store.setup()
     artifacts = ArtifactStore(directory / "artifacts")
     registry = build_ops_registry(env, artifacts)
-    policy_model = OpsPolicyModel(env, profile, rng)
+    policy_model = OpsPolicyModel(env, profile, rng, noise_rng=noise_rng)
     llm = ScriptedLLMClient(policy_model, window=ModelWindow(), price=price)
     loop = Loop(
         store,

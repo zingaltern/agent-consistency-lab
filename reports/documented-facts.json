@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 254,
+      "value": 274,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1561,6 +1561,68 @@
       "docs": [
         "reports/chaos_fuzz_report.md",
         "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "replay-consistency-identical",
+      "value": true,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/replay_consistency.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "identical"
+      ],
+      "what": "scripted 与 replay 在同一份录制上的白名单字段一致（B-M1 核心验收）",
+      "docs": [
+        "scripts/replay_consistency.py",
+        "docs/model-modes.md:§5"
+      ]
+    },
+    {
+      "id": "replay-cassette-entries",
+      "value": 3,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/replay_consistency.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cassette",
+        "entries"
+      ],
+      "what": "录制条目数（run/approve/resume 三阶段共 3 次模型调用）",
+      "docs": [
+        "scripts/replay_consistency.py",
+        "docs/model-modes.md:§5"
+      ]
+    },
+    {
+      "id": "replay-cassette-has-tool-calls",
+      "value": true,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/replay_consistency.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cassette",
+        "has_tool_calls"
+      ],
+      "what": "录制含 tool_calls（缺了它 loop 走不动）",
+      "docs": [
+        "scripts/replay_consistency.py",
+        "docs/model-modes.md:§5"
       ]
     }
   ]

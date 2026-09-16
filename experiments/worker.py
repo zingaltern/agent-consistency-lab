@@ -36,11 +36,18 @@ from harness.approval import DECISION_APPROVED, DECISION_REJECTED
 from harness.artifacts import ArtifactStore
 from harness.budget import BudgetLedger, BudgetLimits
 from harness.cache import CacheConfig, PrefixCacheModel
+from harness.cassette import CassetteMeta, CassetteStore
 from harness.chaos import Chaos
 from harness.compaction import CompactionPolicy, Compactor
 from harness.context import DEFAULT_MAX_INLINE_TOKENS, ViewBuilder
 from harness.ids import new_id
-from harness.llm import ModelWindow, ScriptedLLMClient
+from harness.llm import (
+    ModelWindow,
+    RecordingLLMClient,
+    ReplayLLMClient,
+    ScriptedLLMClient,
+    ScriptedTransport,
+)
 from harness.loop import DEFAULT_SYSTEM_PROMPT, Loop
 from harness.store.checkpoints import SqliteCheckpointSaver
 from harness.store.sqlite_store import SqliteStore
@@ -81,6 +88,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dynamic-at-head", choices=("on", "off"), default="off")
     parser.add_argument("--budget-usd", type=float, default=BudgetLimits().total_usd)
     parser.add_argument("--max-inline-tokens", type=int, default=DEFAULT_MAX_INLINE_TOKENS)
+    parser.add_argument(
+        "--model",
+        choices=("scripted", "record", "replay"),
+        default="scripted",
+        help="模型模式：scripted=现状（默认）；record=调真实 API 并录制；replay=按录制回放",
+    )
+    parser.add_argument("--record-dir", default="", help="录制目录（record/replay 必需）")
+    parser.add_argument(
+        "--transport",
+        choices=("live", "scripted"),
+        default="live",
+        help="record 模式的传输：live=真实 HTTP（需要 key 与 --budget-usd）；"
+        "scripted=用脚本模型当供应商（无网络，供端到端测试与录制演示）",
+    )
+    parser.add_argument("--model-name", default="gpt-4o-mini", help="record 模式下记录的模型名")
+    parser.add_argument(
+        "--model-key-env", default="OPENAI_API_KEY", help="key 所在的环境变量名（绝不写入仓库）"
+    )
+    parser.add_argument("--model-base-url", default="https://api.openai.com/v1")
     return parser.parse_args(argv)
 
 
@@ -100,6 +126,62 @@ def _tamper_hook(request: ToolCallRequest) -> ToolCallRequest:
         tampered = {**request.args, "size": request.args["size"] + 8}
         return request.model_copy(update={"args": tampered})
     return request
+
+
+def build_llm(args: argparse.Namespace, *, budget: BudgetLedger, run_dir: Path, registry: object):
+    """按 ``--model`` 造客户端。三条模式的边界在这里收口：
+
+    * ``scripted``：默认路径，与既有实现**逐字节相同**（本函数只是把它挪进来）；
+    * ``record``：必须显式给 ``--record-dir``；``--transport live`` 还必须给
+      ``--budget-usd``（真实调用会花钱，无预算拒绝启动）与环境变量里的 key；
+    * ``replay``：只读录制目录，未命中给可读错误。
+    """
+    window = ModelWindow(
+        context_limit_tokens=args.window_tokens, max_output_tokens=args.max_output_tokens
+    )
+    if args.model == "scripted":
+        return ScriptedLLMClient(
+            ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines),
+            cache=PrefixCacheModel(CacheConfig()),
+            window=window,
+            budget=budget,
+        )
+    if not args.record_dir:
+        raise SystemExit(
+            f"--model {args.model} 需要 --record-dir（录制物落在这里，默认不要写仓库）"
+        )
+    store = CassetteStore(args.record_dir)
+    if args.model == "replay":
+        return ReplayLLMClient(store=store, window=window, budget=budget)
+    if args.transport == "live" and args.budget_usd <= 0:
+        raise SystemExit(
+            "live 录制必须显式给 --budget-usd（正数）：真实调用会花钱，无预算拒绝启动"
+        )
+    scripted = ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines)
+    transport = (
+        ScriptedTransport(scripted)
+        if args.transport == "scripted"
+        else _live_transport(args, registry)
+    )
+    meta = CassetteMeta(
+        model=args.model_name if args.transport == "live" else f"scripted/{args.scenario}",
+        provider="live" if args.transport == "live" else "scripted-transport",
+        temperature=0.0,
+        note=f"mode=record transport={args.transport} run_dir={run_dir.name}",
+    )
+    return RecordingLLMClient(transport, store=store, window=window, budget=budget, meta=meta)
+
+
+def _live_transport(args: argparse.Namespace, registry: object):
+    """真实 HTTP transport（延迟 import：CI 路径不会碰它，也不会因为缺配置而炸）。"""
+    from harness.live_transport import LiveChatTransport, tools_schema_from_registry
+
+    return LiveChatTransport(
+        model=args.model_name,
+        base_url=args.model_base_url,
+        key_env=args.model_key_env,
+        tools=tools_schema_from_registry(registry),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,15 +248,7 @@ def main(argv: list[str] | None = None) -> int:
                 chaos=chaos,
                 budget=budget,
             )
-    llm = ScriptedLLMClient(
-        ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines),
-        cache=PrefixCacheModel(CacheConfig()),
-        window=ModelWindow(
-            context_limit_tokens=args.window_tokens,
-            max_output_tokens=args.max_output_tokens,
-        ),
-        budget=budget,
-    )
+    llm = build_llm(args, budget=budget, run_dir=run_dir, registry=registry)
     loop = Loop(
         store,
         saver,

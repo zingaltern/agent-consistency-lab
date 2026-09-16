@@ -1,0 +1,45 @@
+{
+  "identical": true,
+  "diffs": [],
+  "whitelist": [
+    "outcome.status",
+    "outcome.step",
+    "outcome.executed",
+    "outcome.replayed",
+    "outcome.reconciled",
+    "outcome.unknown",
+    "outcome.rejected",
+    "outcome.probes",
+    "outcome.checkpoints",
+    "outcome.compactions",
+    "outcome.overflows",
+    "outcome.cost_usd",
+    "outcome.view_violations",
+    "events.sequence",
+    "events.context_tokens",
+    "events.cache_read_tokens",
+    "events.cache_write_tokens",
+    "events.cost_usd",
+    "tool_calls.structure"
+  ],
+  "excluded": [
+    "created_at / recorded_at / at（时间戳类字段）",
+    "run_id / thread_id / branch_id / event_id / tool_call_id 之外的 id 生成",
+    "avg_wall_ms 等计时噪声",
+    "replay 模式下 view_fingerprint（恢复路径会合法改变视图，见开放问题 §五）"
+  ],
+  "cassette": {
+    "path": "/tmp/replay-consistency/cassette/cassette.json",
+    "entries": 3,
+    "model": "scripted/pool_exhaustion",
+    "provider": "scripted-transport",
+    "schema_version": "cassette/v1",
+    "usage_segments": [
+      "cache_read_tokens",
+      "cache_write_tokens",
+      "completion_tokens",
+      "prompt_tokens"
+    ],
+    "has_tool_calls": true
+  }
+}

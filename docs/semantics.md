@@ -123,6 +123,28 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 
 ---
 
+## 2.7 模型属于测量外部（R-B1）
+
+**承诺以 harness 接口为界**：`docs/semantics.md` 的全部承诺（不重不漏、审批绑定、
+崩溃恢复、预算硬停、效果至多一次）都以 `harness/model.py` 的 `Model` 协议与
+`harness/llm.py` 的 `LLMClient` 协议为界——**模型是什么、跑在哪里、多贵，都不改变这些承诺**。
+由此推出三条与模型接入有关的硬约束：
+
+1. **三种模式语义等价**：`scripted`（默认，脚本模型）/ `record`（真实调用 + 录制）/
+   `replay`（按录制回放）走的是**同一条 loop**。录制与回放只替换"模型那一侧"，
+   不触碰审批、outbox、事件日志、checkpoint 的任何一行。
+2. **录制的 usage 是权威**：真实供应商的服务端缓存账单无法本地复算，因此
+   record/replay 模式的 token/成本**直接采用录制下来的 canonical 四段**
+   （`prompt / completion / cache_read / cache_write`），不重算。
+   `harness/cache.py` 的前缀缓存模型只服务于 scripted 模式（W4/W7 的成本结论都在那个口径下）。
+3. **崩溃语义不变**：`CHAOS_WINDOWS` 与 `--kill-after-ms` 两种注入在三种模式下都可用；
+   录制/回放不新增崩溃窗口，也不改变既有的 at-least-once 与对账语义。
+
+**明确不承诺**：不做模型质量评测、不做供应商路由/重试/降级/缓存网关；
+live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 live 录制）。
+
+---
+
 ## 3. 崩溃语义的边界（重要）
 
 本项目的崩溃实验只对 **kill -9** 语义成立，理由与边界必须写清：

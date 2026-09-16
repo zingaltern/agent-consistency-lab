@@ -30,7 +30,13 @@ packages = ["harness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# 默认不跑 live 主题的用例（CI 用 `pytest -m live` 显式跑其中的反例测试）
+addopts = "-q -m 'not live'"
+# 必须注册 marker：否则 `pytest -m live` 在空选集下以 exit 5（no tests ran）退出，
+# CI 会把"没有测试可跑"误读成"反例测试通过"（设计文档 B 对抗审查第 15 条）。
+markers = [
+    "live: 真实 API 调用相关（默认不跑；CI 不带 key 时跑其中的反例测试）",
+]
 
 [tool.mutmut]
 # 变异测试只覆盖"审计/崩溃/审批"三个语义核心模块（R-A5）：

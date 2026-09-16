@@ -1,5 +1,7 @@
 # agent-consistency-lab
 
+[![ci](https://github.com/zingaltern/agent-consistency-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/zingaltern/agent-consistency-lab/actions/workflows/ci.yml)
+
 面向**崩溃一致性与治理语义**的 Agent runtime 实验台。
 
 不是一个"Agent 应用"，也不是 LangGraph 的替代品。它是一个**被测对象 + 测量仪器**：
@@ -236,6 +238,11 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 | 自动生成的报告表格与汇总数据 | [reports/](reports/) |
 | **给技术面试官的 3–5 分钟项目介绍** | [docs/pitch-4min.md](docs/pitch-4min.md) |
 | 交给外部测试人员的提示词 | [docs/tester-prompt.md](docs/tester-prompt.md) |
+| 独立外部测试报告（2026-09-16） | [docs/independent-test-2026-09-16/](docs/independent-test-2026-09-16/) |
+| 下一波设计文档（待评审） | [docs/design/](docs/design/) |
+| **开发规范（分支流程 / 合并门槛）** | [docs/development.md](docs/development.md) |
+| **测试规范（必跑命令 / 自证作弊清单）** | [docs/testing.md](docs/testing.md) |
+| 给 AI agent 的入口约束 | [AGENTS.md](AGENTS.md) |
 
 ## 交接与复盘
 
@@ -282,3 +289,11 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 * 存储层是单写者模型，跨进程并发需要上层租约（W3）。
 * 本仓库不出现"生产级"字样：它是一个实验台，所有指标以"相对基线的 paired 差值 +
   置信区间"报告，不以绝对值宣称达标。
+
+## 参与开发（人类或 AI agent）
+
+* [`AGENTS.md`](AGENTS.md)：所有 agent 会话的入口约束（红线清单 + 最短工作流）；
+* [`docs/development.md`](docs/development.md)：分支流程、合并门槛、代码与文档纪律；
+* [`docs/testing.md`](docs/testing.md)：必跑命令、改动→测试义务、自证作弊清单。
+
+规矩只有一条：**分支开发，全绿验证，才允许合并进 `main`**；文档里的每个数字都要能被命令再生。

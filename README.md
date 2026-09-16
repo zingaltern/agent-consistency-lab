@@ -136,6 +136,7 @@ docs/w4-report.md        W4 上下文工程与成本实验报告
 docs/w5-report.md        W5 运维壳、场景集与三基线对照报告
 docs/w6-report.md        W6 统计口径、分段汇报与门禁报告
 docs/w7-report.md        W7 阈值扫描、trace 收口与开源整理
+docs/HANDOFF.md          项目状态与交接（压缩上下文 + 复盘）
 LICENSE                  MIT
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 自动生成的报告（*.md 表格 + 汇总 JSON；逐次运行明细
@@ -174,6 +175,12 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
     # 进程被 SIGKILL（退出码 137）
 .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
 ```
+
+## 交接与复盘
+
+**[docs/HANDOFF.md](docs/HANDOFF.md)** 是整个项目的"压缩上下文"：只放不可丢失的硬事实、
+跨轮次口径规则、七轮结论索引、未决清单，以及八次失败的模式化教训。
+新接手（或上下文被清空后重新开工）从这一份开始读，再按需展开到各轮报告。
 
 ## 如何复现全部结论
 

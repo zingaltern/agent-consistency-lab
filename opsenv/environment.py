@@ -19,10 +19,9 @@ from typing import Any
 
 from harness.tokens import estimate_tokens
 
-from .scenario import READ_CHANNELS, Scenario
+from .scenario import Scenario
 
 # 动作风险声明：所有写操作都声明需要审批（运维写操作没有"确定安全"的）。
-WRITE_ACTION_EFFECT = "write_nonidempotent"
 
 
 @dataclass
@@ -133,16 +132,3 @@ READ_TOOL_NAMES: tuple[str, ...] = (
     "list_recent_changes",
     "describe_resource",
 )
-
-
-def channel_of_tool(tool: str) -> str:
-    return {
-        "query_metrics": "metrics",
-        "fetch_logs": "logs",
-        "list_recent_changes": "changes",
-        "describe_resource": "resources",
-    }.get(tool, "")
-
-
-def all_channels() -> tuple[str, ...]:
-    return READ_CHANNELS

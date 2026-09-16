@@ -67,9 +67,19 @@ class Cell:
     input_tokens: int = 0
     cache_read: int = 0
     cache_write: int = 0
-    cost_usd: float = 0.0
+    cost_main_usd: float = 0.0
+    cost_compaction_usd: float = 0.0
     spans: int = 0
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def cost_usd(self) -> float:
+        """账本口径总成本 = 主桶 + 压缩桶。
+
+        ⚠️ 只统计 agent_message 会漏掉摘要调用的费用（W4 的采集器修过同一个坑，
+        审计实测这里又漏了一次，且在"压得最狠"的档漏得最多 ⇒ 系统性压低压缩成本）。
+        """
+        return self.cost_main_usd + self.cost_compaction_usd
 
     @property
     def hit_ratio(self) -> float:
@@ -148,7 +158,10 @@ def collect(cell: Cell, run_dir: Path) -> Cell:
             cell.input_tokens += int(event.payload.get("context_tokens", 0) or 0)
             cell.cache_read += int(event.payload.get("cache_read_tokens", 0) or 0)
             cell.cache_write += int(event.payload.get("cache_write_tokens", 0) or 0)
-            cell.cost_usd += float(event.payload.get("cost_usd", 0.0) or 0.0)
+            cell.cost_main_usd += float(event.payload.get("cost_usd", 0.0) or 0.0)
+        elif event.type == "budget_update":
+            if str(event.payload.get("bucket", "main")) == "compaction":
+                cell.cost_compaction_usd += float(event.payload.get("cost_usd", 0.0) or 0.0)
         elif event.type == "compaction":
             cell.compactions += 1
         elif event.type == "error":
@@ -179,6 +192,8 @@ def aggregate(cells: list[Cell], split: str) -> list[dict[str, Any]]:
                 "avg_input_tokens": round(sum(c.input_tokens for c in group) / n, 1),
                 "hit_ratio": round(sum(c.hit_ratio for c in group) / n, 4),
                 "avg_cost_usd": round(sum(c.cost_usd for c in group) / n, 6),
+                "avg_cost_main_usd": round(sum(c.cost_main_usd for c in group) / n, 6),
+                "avg_cost_compaction_usd": round(sum(c.cost_compaction_usd for c in group) / n, 6),
                 "overflows": sum(c.overflows for c in group),
             }
         )
@@ -258,7 +273,7 @@ def render_markdown(dev: list[dict[str, Any]], holdout: list[dict[str, Any]]) ->
             f"**{title}**",
             "",
             "| 压缩阈值 | 变体数 | 完成率 | 平均压缩次数 | 平均调用数 |"
-            " 平均输入 token | 缓存命中率 | 平均净成本 | 溢出 |",
+            " 平均输入 token | 缓存命中率 | 净成本（主桶+压缩桶） | 溢出 |",
             "|---|---|---|---|---|---|---|---|---|",
         ]
         for row in rows:
@@ -283,10 +298,12 @@ def findings(dev: list[dict[str, Any]], holdout: list[dict[str, Any]], selected:
     highest_hit = max(dev, key=lambda row: row["hit_ratio"])
     lines = [
         f"* **完成率的天花板是 1.0，成本的天花板不是**：dev 上最高完成率 "
-        f"{best_success:.0%}，但达到它所需的成本在 ${cheapest['avg_cost_usd']:.5f}"
+        f"{best_success:.0%}，达到它的成本在 ${cheapest['avg_cost_usd']:.5f}"
         f"（阈值 {cheapest['threshold']}）到 ${most_expensive['avg_cost_usd']:.5f}"
         f"（阈值 {most_expensive['threshold']}）之间摆动，差 "
-        f"{most_expensive['avg_cost_usd'] / max(1e-9, cheapest['avg_cost_usd']):.1f} 倍。",
+        f"{most_expensive['avg_cost_usd'] / max(1e-9, cheapest['avg_cost_usd']):.1f} 倍。"
+        "⚠️ `off` 行是**失败运行的截断成本**（没跑完就溢出），不能与跑完的档位比绝对值："
+        "它的含义是「不压缩的代价是任务失败」，不是「更便宜」。",
         f"* **缓存命中率与压缩频率单调反向**：命中率最高的是 {highest_hit['threshold']}"
         f"（{highest_hit['hit_ratio']:.1%}，平均压缩 {highest_hit['avg_compactions']} 次）——"
         "每一次压缩都从替换点击穿前缀缓存，这条在阈值维度上再次成立。",
@@ -312,25 +329,36 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.workroot) if args.workroot else Path(tempfile.mkdtemp(prefix="w7-sweep-"))
     root.mkdir(parents=True, exist_ok=True)
+    triggers = dict(THRESHOLDS)
+
+    # 阶段一：dev 上扫全部阈值
     cells: list[Cell] = []
     for variant in VARIANTS:
-        if variant["split"] == "holdout" and args.skip_holdout:
+        if variant["split"] != "dev":
             continue
         for name, trigger in THRESHOLDS:
-            if variant["split"] == "holdout" and name not in ("off", "0.85"):
-                # holdout 只在"选定阈值 + 不压缩基线"上确认
-                continue
             for _ in range(args.repeats):
                 cells.append(run_cell(variant, name, trigger, root))
-
     dev_rows = aggregate(cells, "dev")
-    holdout_rows = aggregate(cells, "holdout")
+
     # 选点规则：先满足完成率，再比成本（写死规则，避免"看图挑最好"）
     best_success = max((row["success_rate"] for row in dev_rows), default=0.0)
     candidates = [row for row in dev_rows if row["success_rate"] >= best_success - 1e-9]
     selected = (
         min(candidates, key=lambda row: row["avg_cost_usd"])["threshold"] if candidates else None
     )
+
+    # 阶段二：holdout 只在「off 基线 + 阶段一选出的阈值」上确认。
+    # 早期版本把这里硬编码成 "0.85"，与程序选出的阈值脱钩（审计发现：选点是 0.95，
+    # 却去 0.85 上确认，"holdout 只做确认"的方法论声明不成立）。
+    if not args.skip_holdout and selected is not None:
+        for variant in VARIANTS:
+            if variant["split"] != "holdout":
+                continue
+            for name in ("off", selected):
+                for _ in range(args.repeats):
+                    cells.append(run_cell(variant, name, triggers[name], root))
+    holdout_rows = aggregate(cells, "holdout")
 
     table = render_markdown(dev_rows, holdout_rows)
     text = "\n\n".join(

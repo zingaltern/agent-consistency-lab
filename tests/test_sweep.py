@@ -24,7 +24,7 @@ def _cell(
     cell.input_tokens = 10_000
     cell.cache_read = int(10_000 * hit)
     cell.calls = 10
-    cell.cost_usd = cost
+    cell.cost_main_usd = cost
     return cell
 
 

@@ -21,8 +21,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from .environment import OpsEnvironment
-from .scenario import Fault, Scenario
+from .scenario import Scenario
 
 
 class Disposition(StrEnum):
@@ -126,22 +125,3 @@ def rule_diagnose(metrics: dict, resources: dict) -> Diagnosis:
             detail="规则：延迟高→按下游超时处置",
         )
     return Diagnosis(root_cause="no_known_pattern", action="none", detail="规则未命中，转人工")
-
-
-def rule_diagnose_matches(scenario: Scenario, diagnosis: Diagnosis) -> bool:
-    return diagnosis.root_cause == scenario.fault and diagnosis.action == scenario.expected_action
-
-
-def fault_label(fault: str) -> str:
-    try:
-        return Fault(fault).value
-    except ValueError:
-        return fault
-
-
-def evidence_digest(env: OpsEnvironment) -> str:
-    """把已取证内容压成一段文本（供单次调用基线一次性喂给推理器，也便于审计）。"""
-    parts: list[str] = []
-    for call in env.calls:
-        parts.append(f"{call.tool}: {call.channel} ({call.tokens} tokens)")
-    return "; ".join(parts)

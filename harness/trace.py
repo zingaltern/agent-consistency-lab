@@ -5,18 +5,31 @@
 因此 trace 与语义永远一致，且可以离线重放、可以对历史 run 补投影。
 
 属性命名向 OpenTelemetry GenAI 语义约定靠拢（`gen_ai.*`），但不假装实现了该规范：
-真正接入 OTLP 时，把 ``spans_to_otel`` 的映射换成官方 SDK 即可。
+真正接入 OTLP 时，把 ``Trace.to_otel`` 的映射换成官方 SDK 即可——
+注意当前导出的 ID 不是 32/16 位十六进制、缺 `status`、属性统一字符串化，
+**是"OTel 形状"而不是规范兼容**。
 
 Span 树形状：
 
 ```
 invoke_agent <run>                     ← 整个 run
 ├── chat <model>                       ← 每次模型调用（含 usage / 缓存 / 成本）
-├── execute_tool <tool>                ← 每次工具调用（含效果类别、幂等键、结果状态）
+├── execute_tool <tool>                ← 从 tool_call 到 tool_result 的**墙钟窗口**
 ├── human_approval                     ← 每次人工审批（含决策与参数 hash）
 ├── compact                            ← 每次压缩（含前后 token）
 └── error <class>                      ← 每个错误事实（零时长，便于检索）
 ```
+
+两条必须知道的语义（审计指出早期注释与实现不符，已更正）：
+
+* **`execute_tool` 的时长包含人工审批等待与恢复停机**：span 覆盖 `tool_call → … → tool_result`，
+  而审批（`human_approval` 子窗口）与"崩溃→恢复"都落在这段窗口里。
+  要纯执行时长，请减去 `human_approval` 的时长或按 `resume` 事件切分。
+* **`chat` 的起点是"上一个事件之后"**，因此它覆盖"视图构建 + 模型计算 + 记账簿记"的整段墙钟；
+  属性里的 `harness.duration_is_derived=true` 就是在说"这是推导值，不是模型自报的耗时"。
+
+未知事件类型不会被静默吞掉：`build_trace` 会把它记进根 span 的
+`harness.trace.unhandled_event_types`，便于发现"投影漏了东西"。
 """
 
 from __future__ import annotations
@@ -151,6 +164,7 @@ class Trace(BaseModel):
 
 def build_trace(events: Sequence[Event]) -> Trace:
     """从事件日志投影出 span 树（纯函数，可重复调用）。"""
+    unhandled: dict[str, int] = {}
     run_id = events[0].run_id if events else "unknown"
     branch_id = events[0].branch_id if events else "unknown"
     root = Span(
@@ -296,8 +310,16 @@ def build_trace(events: Sequence[Event]) -> Trace:
                 + float(event.payload.get("cost_usd", 0.0)),
                 8,
             )
+        else:
+            key = f"{event.kind.value}:{event.type}"
+            unhandled[key] = unhandled.get(key, 0) + 1
         previous_at = event.created_at
 
+    if unhandled:
+        # 不静默丢弃：投影漏掉的事件类型会出现在根 span 上（审计指出早期版本什么都不记）
+        root.attributes["harness.trace.unhandled_event_types"] = ", ".join(
+            f"{key}×{count}" for key, count in sorted(unhandled.items())
+        )
     root.end = last_end
     if "harness.budget.spent_usd" not in root.attributes:
         # 没有接预算账本时（评测里常见），成本从 chat span 汇总——两处口径一致：

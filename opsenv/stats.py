@@ -35,14 +35,25 @@ class Interval:
 
 
 def wilson_interval(successes: int, n: int, z: float = 1.96) -> Interval:
-    """Wilson 比例区间（小样本友好）。"""
+    """Wilson 比例区间（小样本友好）。
+
+    边界处理：浮点误差会让 k=n 时上界变成 0.9999999999999999、k=0 时下界变成 1e-17，
+    前者使区间不覆盖点估计、后者让"全零样本"的 `excludes_zero` 变成 True。
+    这里显式钳位到点估计之外，保证 (low ≤ point ≤ high) 与 0/1 边界严格成立。
+    """
     if n == 0:
         return Interval(0.0, 0.0, 0.0, 0)
     p = successes / n
     denominator = 1 + z * z / n
     centre = (p + z * z / (2 * n)) / denominator
     margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
-    return Interval(p, max(0.0, centre - margin), min(1.0, centre + margin), n)
+    low = min(max(0.0, centre - margin), p)
+    high = max(min(1.0, centre + margin), p)
+    if successes == 0:
+        low = 0.0
+    if successes == n:
+        high = 1.0
+    return Interval(p, low, high, n)
 
 
 def paired_bootstrap_diff(
@@ -76,17 +87,40 @@ def paired_bootstrap_diff(
 
 
 def min_detectable_effect(n: int, p: float = 0.5, z: float = 1.96) -> float:
-    """配对/独立比例在给定样本量下能区分的**最小效应**（两点估计的半宽）。
+    """**独立两样本**比例在给定样本量下能区分的最小差值（两点估计的 CI 半宽）。
 
-    用来回答"这个差距是真的吗"：差距小于它就说明样本量不足以支持结论。
+    ⚠️ 不要拿它解释**配对**比较（早期版本犯过这个错）：配对差值的方差取决于
+    不一致对数（discordant pairs），与这里的 2p(1−p)/n 是两回事。
+    配对情形请用 `paired_min_detectable_effect`。
     """
     if n <= 0:
         return 1.0
     return z * math.sqrt(2 * p * (1 - p) / n)
 
 
+def paired_min_detectable_effect(
+    *, discordant: int, pairs: int, alpha_z: float = 1.96, power_z: float = 0.84
+) -> float:
+    """配对（McNemar 型）比较的最小可检测差值。
+
+    差值方差 ≈ (p10 + p01)/n − ((p10 − p01)/n)²；不确定真差时用 discordant/n 估计。
+    返回 80% 功效下的最小可检测差值（含功效项），并在 discordant=0 时返回 1.0
+    （没有任何不一致对 ⇒ 这个样本量下什么都检测不出）。
+    """
+    if pairs <= 0 or discordant <= 0:
+        return 1.0
+    pi_d = discordant / pairs
+    variance = pi_d / pairs
+    return (alpha_z + power_z) * math.sqrt(variance)
+
+
 def cohens_kappa(labels_a: Sequence[bool], labels_b: Sequence[bool]) -> float:
-    """两个二值标注者的一致性（Cohen's κ）。无方差时返回 0.0 并由调用方解释。"""
+    """两个二值标注者的一致性（Cohen's κ）。
+
+    ⚠️ 返回值 0.0 有两种含义：**真的一致率为随机水平**，或**无定义（无方差）**。
+    调用方必须自己区分（见 `opsenv/suite.py::proxy_calibration` 的 `has_variance`），
+    不能把 0.0 直接读成"一致性为零"。
+    """
     if len(labels_a) != len(labels_b) or not labels_a:
         raise ValueError("labels must be non-empty and equally long")
     n = len(labels_a)

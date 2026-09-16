@@ -146,7 +146,7 @@ reports/                 自动生成的报告（*.md 表格 + 汇总 JSON；逐
 ## 运行
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 .venv/bin/pytest                                        # 全部测试（含矩阵小样本）
 
 # 崩溃矩阵：6 窗口 × outbox × 下游幂等 × 探针 + 篡改/长任务控制组（16 格）
@@ -187,7 +187,7 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 
-.venv/bin/pytest -q                       # 214 个测试：不变量、协议、审批、异常、评测、门禁
+.venv/bin/pytest -q                       # 203 个测试：不变量、协议、审批、异常、评测、门禁
 .venv/bin/ruff check .                    # lint
 
 .venv/bin/python -m experiments.crash_matrix --repeats 5 \

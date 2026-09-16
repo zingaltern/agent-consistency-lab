@@ -3,7 +3,7 @@
 # 用法：  REPO=/path/to/agent-consistency-lab bash commands.sh
 # 约定：仓库只读，所有产物写 /tmp/acl-audit/；PYTHONDONTWRITEBYTECODE=1 保持仓库无字节码写入。
 set -uo pipefail
-REPO="${REPO:-/Users/zingaltern/Documents/Default Project/agent-consistency-lab}"
+REPO="${REPO:-$PWD}"   # 默认取当前目录；也可显式 REPO=/path/to/agent-consistency-lab
 PY="$REPO/.venv/bin/python"
 AUD=/tmp/acl-audit
 mkdir -p "$AUD"/{logs,raw,scripts,manual,run}

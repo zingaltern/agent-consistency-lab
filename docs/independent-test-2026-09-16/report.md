@@ -3,7 +3,7 @@
 * 被测版本：`ac651feb2fd94c932aeae6f49fef1218cc57d5ae`（HEAD，2026-09-16）
 * 测试时间：2026-09-16 22:03–22:25（UTC+8）
 * 环境：macOS arm64，Python 3.14.6（仓库自带 `.venv`），pydantic 2.x / pytest 8 / langgraph 1.2.11
-* 测试纪律：仓库只读（我的任何命令都没有写入仓库，所有产物写 `/tmp`）。**工作区在测试窗口内有本会话之外的活动**：`packaging/`（`leader-brief.md` 等）于 22:06/22:21 出现，`docs/pitch-4min.md` 与 `docs/resume.md` 于 22:28–22:29 被移出工作区（`git status --porcelain` 快照见 `logs/git_status_*.txt`；两者都属于被测提交 `ac651fe`，可用 `git show ac651fe:<path>` 复核）。我的全部结论锚定在提交 `ac651fe` 的内容上，不受这些重排影响；README 命令默认写 `reports/`，本报告一律改为 `--md-out/--json-out /tmp/...`。
+* 测试纪律：仓库只读（我的任何命令都没有写入仓库，所有产物写 `/tmp`）。**工作区在测试窗口内有本会话之外的活动**（`git status --porcelain` 快照见 `logs/git_status_*.txt`）——我的全部结论锚定在被测提交 `ac651fe` 的内容上，不受工作区重排影响；README 命令默认写 `reports/`，本报告一律改为 `--md-out/--json-out /tmp/...`。
 * 黑盒顺序：先只读"规格"（README、`docs/semantics.md`、`docs/HANDOFF.md`、全部源码与 `--help`），完成本报告的 1–9 节之后才读 `docs/w2..w7`、`docs/posts/`、`docs/resume.md`、`reports/`、`tests/`，随后单独补"与作者声称的差异"一节。
 
 **结论概览**：A–F 六个方向全部执行完；**未发现 P0**（没有一条机制性结论被证伪：崩溃窗口语义、outbox/探针、审批绑定、append-only、门禁抓退化、区间覆盖率全部实测成立，且 `reports/*.json` 与我的重跑逐字一致）。发现 **P1 ×1**（评测 CLI 的 `--systems` 子集直接崩溃而不是走门禁，含 `--operator lazy` 的子集组合）与 **P2 ×8**（README/HANDOFF 正文的多组数字停留在两轮审计修复之前：W4/W5/W6/W7 统计数字、崩溃次数、门禁条数、代码行数；以及 posts/pitch 的两处小数字）。读完作者材料后可以确认：机制结论无冲突，**差异集中在"审计修复没有回灌到最外层文档"**（详见 §12）。

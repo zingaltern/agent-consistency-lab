@@ -19,14 +19,14 @@
 
 ### 1. 被测对象
 
-* 路径：`/Users/zingaltern/Documents/Default Project/agent-consistency-lab`
+* 路径：`<仓库根目录>`（下文命令中的 `$REPO` 均指该路径）
 * 它是什么：**面向崩溃一致性与治理语义的 Agent runtime 实验台**。自研精简内核作为被测对象与
   测量仪器；用真实 `kill -9` 做崩溃注入；用四系统对照（规则/单次调用/LangGraph/自研）
   做架构消融；所有指标以配对置信区间与可执行门禁呈现。
 * 环境（Python 3.11–3.14 任一）：
 
   ```bash
-  cd "/Users/zingaltern/Documents/Default Project/agent-consistency-lab"
+  cd "<仓库根目录>"
   python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
   ```
 

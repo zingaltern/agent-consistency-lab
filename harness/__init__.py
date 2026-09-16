@@ -25,7 +25,7 @@ from .tools import (
     idempotency_key,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",

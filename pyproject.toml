@@ -1,6 +1,6 @@
 [project]
 name = "agent-consistency-lab"
-version = "0.4.0"
+version = "0.8.0"
 description = "面向崩溃一致性与治理语义的 Agent runtime 实验台"
 readme = "README.md"
 requires-python = ">=3.11"

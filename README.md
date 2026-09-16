@@ -8,6 +8,32 @@
 
 运维故障处置（IT 运维场景）只是验证壳，可替换。
 
+## 它长什么样
+
+```
+                    ┌─────────────────────────────────────────────┐
+   scenario ────────▶│  评测层 opsenv/                              │
+（64 个合成故障）      │  四通道证据 · 四条技术路线 · 配对统计 · 门禁    │
+                    └──────────────┬──────────────────────────────┘
+                                   │ 用公开 API 驱动
+                    ┌──────────────▼──────────────────────────────┐
+   tools ──────────▶│  内核 harness/                              │
+   (读/写/审批)      │  loop 状态机 ── tools 注册表 ── context 视图  │
+                    │       │              │            │          │
+                    │       ▼              ▼            ▼          │
+                    │  事件日志(权威)   权限/审批    压缩/卸载/预算    │
+                    │       │                                        │
+                    │       ├─▶ checkpoint/writes（快照 + 交叉校验） │
+                    │       └─▶ trace 投影（span 树 / OTel 形状）    │
+                    └───────────────────────────────────────────────┘
+```
+
+一条命令看它跑起来（告警 → 取证 → 审批 → 执行 → trace 回放，含消融对照）：
+
+```bash
+.venv/bin/python -m examples.ops_demo
+```
+
 ## 状态
 
 | 里程碑 | 内容 | 状态 |
@@ -175,6 +201,17 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
     # 进程被 SIGKILL（退出码 137）
 .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
 ```
+
+## 文档索引
+
+| 想了解什么 | 读哪份 |
+|---|---|
+| 项目状态与复盘（**从这开始**） | [docs/HANDOFF.md](docs/HANDOFF.md) |
+| 运行时承诺清单（语义） | [docs/semantics.md](docs/semantics.md) |
+| 三篇长文（崩溃语义 / 审批绑定 / 缓存会计） | [docs/posts/](docs/posts/) |
+| 简历措辞与面试问答映射 | [docs/resume.md](docs/resume.md) |
+| 各轮实验报告 | [docs/w2](docs/w2-crash-windows.md) · [w3](docs/w3-report.md) · [w4](docs/w4-report.md) · [w5](docs/w5-report.md) · [w6](docs/w6-report.md) · [w7](docs/w7-report.md) |
+| 自动生成的报告表格与汇总数据 | [reports/](reports/) |
 
 ## 交接与复盘
 

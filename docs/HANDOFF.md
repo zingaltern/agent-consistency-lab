@@ -4,7 +4,7 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W7 完成（commit `1268ff6`）｜ 代码量 11,939 行（harness/fakeworld/opsenv/experiments/tests/examples）｜ 测试 203 全绿
+更新时间：W8 完成（收尾周：三篇长文 + demo + 简历措辞 + 文档定稿）｜ 代码量 11,939 行（harness/fakeworld/opsenv/experiments/tests/examples）｜ 测试 203 全绿
 
 ---
 
@@ -120,7 +120,16 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 
 ---
 
-## 七、W8 的输入（开工时只需要这些）
+## 七、W8 产出（已完成）
+
+* 三篇长文：[docs/posts/01-crash-semantics.md](posts/01-crash-semantics.md)、
+  [02-approval-semantics.md](posts/02-approval-semantics.md)、
+  [03-cache-accounting.md](posts/03-cache-accounting.md)（每篇含实测数字与复现命令）；
+* demo：`python -m examples.ops_demo`（告警 → 取证 → 审批 → 执行 → trace + 消融对照）；
+* 简历措辞与面试问答映射：[docs/resume.md](resume.md)（含"不能写的词"与必须主动交代的边界）；
+* 版本 0.8.0；README 定稿（架构图 + 文档索引 + 一条命令跑通）。
+
+## 附：W8 之前的输入清单（保留备查）
 
 **计划里的 W8 = 三篇长文 + 文档收口 + demo + 简历措辞。** 素材已经全部就位：
 

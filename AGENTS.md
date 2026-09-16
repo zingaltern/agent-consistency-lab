@@ -40,7 +40,9 @@ git switch -c feat/<slug>
 .venv/bin/python -m experiments.crash_matrix --repeats 5
 .venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate
 git add -A && git commit
-git switch main && git merge --no-ff <branch> && git push origin main
+# 合并（二选一，取决于 main 是否已开启 branch protection，见 docs/development.md §2.2/§2.4）：
+git push -u origin <branch>                                     # ← 受保护：推分支后在 GitHub 开 PR 合并
+git switch main && git merge --no-ff <branch> && git push origin main  # ← 未受保护：本地合并直推
 ```
 
 不确定某件事该不该做时，先问自己：**这条改动让什么变得可验证了？** 答不上来就先别动手。

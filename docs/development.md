@@ -70,8 +70,16 @@ git switch main && git merge --no-ff <branch>
 git push origin main
 ```
 
-**有 GitHub 协作时优先走 PR**：推送分支 → 开 PR → CI 全绿 → squash 合并。
-CI 不绿禁止合并；评审意见属于 P0/P1 的必须修复后才能合并。
+**开启远端 branch protection 后（推荐，见 §2.4），流程强制切换为 PR 模式**：
+
+```bash
+git push -u origin <branch>        # 推分支
+# 在 GitHub 上开 PR → CI 全绿 → 用 merge 按钮合并 → 删分支
+```
+
+此时本地 `git merge` 后再 `git push origin main` 会被服务端**拒绝**——这是有意的：
+它把"禁止直推 main"从人工约定变成服务端强制。CI 不绿禁止合并；
+评审意见属于 P0/P1 的必须修复后才能合并。
 
 ### 2.3 合并门槛（Definition of Done）
 
@@ -99,7 +107,14 @@ Settings → Branches → **Add branch protection rule**：
 * ✅ Do not allow bypassing the above settings
 * ❌ 关闭 force push / 禁止删除分支
 
-配置完成后，"禁止直推 main" 就由远端服务端强制，而不只是靠约定。
+配置完成后，"禁止直推 main" 就由远端服务端强制，而不只是靠约定。两个后果要提前知道：
+
+* 开启 **Require a pull request** 后，任何直接推送到 `main` 的操作（包括本地 merge 后的 push）
+  都会被拒绝——所有合并必须走 PR；
+* 开启 **Require status checks** 后，PR 只有在 CI（`verify (3.11)`、`verify (3.12)`）全绿时
+  才能点亮 merge 按钮。
+
+需要临时绕过时（例如紧急修文档），在提交信息里写明原因，或临时关闭规则并在合并后立即恢复。
 
 ---
 

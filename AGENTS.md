@@ -34,7 +34,7 @@
 git switch main && git pull
 git switch -c feat/<slug>
 # ... 开发 ...
-.venv/bin/pytest -o addopts= -p no:cacheprovider -q    # 208+ 全绿
+.venv/bin/pytest -o addopts= -p no:cacheprovider -q    # 全绿（用例数用脚本计数，不手写）
 .venv/bin/ruff check .
 # 语义相关改动还要跑：
 .venv/bin/python -m experiments.crash_matrix --repeats 5

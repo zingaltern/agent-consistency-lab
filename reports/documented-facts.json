@@ -1,0 +1,1170 @@
+{
+  "schema": "documented-facts/v1",
+  "note": "文档引用的结论数字与其可再生命令的绑定。对账入口：scripts/check_facts.py（CI job: facts）。{out} 是输出路径占位符（由脚本决定，默认 /tmp/facts/），{python} 是当前解释器。run=verify 的 claim 在每次 push/PR 上对账；run=nightly 的整量跑进 nightly 作业。数字口径见 docs/testing.md §5：每个进入文档的数字必须有再生命令 + 分母口径 + 出处文件。",
+  "claims": [
+    {
+      "id": "tests-collected",
+      "value": 223,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "pytest 收集到的用例数（演进类 claim：随代码走，文档处引用 claim id，永不手写）",
+      "docs": [
+        "README.md:如何复现全部结论",
+        "docs/development.md:§2.3 门槛 1",
+        "docs/design/2026-09-17-test-hardening.md:§R-A1（演进类 claim）"
+      ]
+    },
+    {
+      "id": "suite-gate-count",
+      "value": 14,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "2",
+        "--repeats",
+        "1",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "gate_summary",
+        "total"
+      ],
+      "what": "评测门禁条数（结构性事实，不随样本量变化）：本包要求「14 条不变」",
+      "docs": [
+        "docs/development.md:§2.3 门槛 4",
+        "docs/testing.md:§7"
+      ]
+    },
+    {
+      "id": "w4-e1-hit-ratio-tail",
+      "value": 0.573812,
+      "tolerance": 1e-06,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e1_cache_discipline",
+        "hit_ratio_tail"
+      ],
+      "what": "E1 动态信息放尾部时的缓存命中率（57.4%）",
+      "docs": [
+        "README.md:W4 段",
+        "docs/w4-report.md"
+      ]
+    },
+    {
+      "id": "w4-e1-hit-ratio-head",
+      "value": 0.0,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e1_cache_discipline",
+        "hit_ratio_head"
+      ],
+      "what": "E1 动态信息进前缀时的缓存命中率（0%）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e1-cost-per-call-delta-ratio",
+      "value": 1.046145,
+      "tolerance": 1e-05,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e1_cache_discipline",
+        "cost_per_call_delta_ratio"
+      ],
+      "what": "E1 动态进前缀导致的成本/调用相对增量（+104.6%）",
+      "docs": [
+        "README.md:W4 段",
+        "docs/posts/03-cache-accounting.md"
+      ]
+    },
+    {
+      "id": "w4-e2-token-per-call-delta-ratio",
+      "value": -0.6608,
+      "tolerance": 0.0001,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e2_offload",
+        "token_per_call_delta_ratio"
+      ],
+      "what": "E2 卸载相对内联的 token/调用增量（-66%；内联侧是截断期均值，口径见 findings 注）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e2-cost-per-call-delta-ratio",
+      "value": -0.615201,
+      "tolerance": 1e-05,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e2_offload",
+        "cost_per_call_delta_ratio"
+      ],
+      "what": "E2 卸载相对内联的成本/调用增量（-62%）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e2-inline-overflows",
+      "value": 1,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e2_offload",
+        "inline_overflows"
+      ],
+      "what": "E2 内联 + 小窗口 + 无压缩时的溢出次数（任务以 failed 结束）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e3-total-cost-per-call-usd",
+      "value": 0.014307435,
+      "tolerance": 1e-09,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e3_compaction",
+        "total_cost_per_call_usd"
+      ],
+      "what": "E3 压缩路径的账本口径总成本/调用（$0.01431 = 主桶 + 压缩桶）",
+      "docs": [
+        "README.md:W4 段",
+        "docs/w4-report.md"
+      ]
+    },
+    {
+      "id": "w4-e3-main-cost-per-call-usd",
+      "value": 0.010734435,
+      "tolerance": 1e-09,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e3_compaction",
+        "main_cost_per_call_usd"
+      ],
+      "what": "E3 主桶成本/调用（$0.01073）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e3-compaction-cost-per-call-usd",
+      "value": 0.003573,
+      "tolerance": 1e-09,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e3_compaction",
+        "compaction_cost_per_call_usd"
+      ],
+      "what": "E3 压缩桶成本/调用（$0.00357，摘要调用本身也要花钱）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e3-hit-ratio",
+      "value": 0.349584,
+      "tolerance": 1e-06,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e3_compaction",
+        "hit_ratio"
+      ],
+      "what": "E3 压缩路径的缓存命中率（35.0%）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-e3-compactions",
+      "value": 3,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e3_compaction",
+        "compactions"
+      ],
+      "what": "E3 压缩次数（3 次压缩、0 溢出 ⇒ 任务跑完）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w4-view-violations-total",
+      "value": 0,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "view_violations_total"
+      ],
+      "what": "五组配置的视图结构违规总数（必须为 0：视图是模型实际看到的东西）",
+      "docs": [
+        "README.md:W4 段",
+        "docs/testing.md:§3"
+      ]
+    },
+    {
+      "id": "w4-e2xe3-cost-ratio",
+      "value": 4.939,
+      "tolerance": 0.001,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_cost",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "e2xe3_cost_ratio"
+      ],
+      "what": "同样不卸载时，压缩路径的成本/调用是卸载路径的 N 倍（先卸载、后压缩的依据）",
+      "docs": [
+        "README.md:W4 段"
+      ]
+    },
+    {
+      "id": "w3-real-kills",
+      "value": 70,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_kills",
+        "real_kill_count"
+      ],
+      "what": "崩溃矩阵的真实 SIGKILL 次数（16 格 × 5 次 = 80 次运行，两个对照格按设计不注入）",
+      "docs": [
+        "README.md:W3 段",
+        "docs/HANDOFF.md:§一"
+      ]
+    },
+    {
+      "id": "w3-matrix-cells",
+      "value": 16,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_kills",
+        "cells"
+      ],
+      "what": "崩溃矩阵格子数（6 个命名窗口 + 两个对照 + 主对照的 outbox/幂等交叉）",
+      "docs": [
+        "docs/development.md:§2.3 门槛 3",
+        "README.md:如何复现全部结论"
+      ]
+    },
+    {
+      "id": "w3-matrix-runs",
+      "value": 80,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_kills",
+        "runs"
+      ],
+      "what": "崩溃矩阵总运行次数（16 格 × 5 次）",
+      "docs": [
+        "README.md:W3 段",
+        "docs/HANDOFF.md:§一"
+      ]
+    },
+    {
+      "id": "w3-matrix-prediction-violations",
+      "value": 0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_kills",
+        "prediction_violations"
+      ],
+      "what": "与预期模型不符的运行数（门槛 3：逐格 as-predicted）",
+      "docs": [
+        "docs/development.md:§2.3 门槛 3"
+      ]
+    },
+    {
+      "id": "w3-window2-no-outbox-duplicates",
+      "value": 5,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "post_tool_effect_pre_record outbox=0 idem=0 probe=1 tamper=0",
+        "duplicated_runs"
+      ],
+      "what": "窗口 2 + 关 outbox：5/5 重复副作用（下游不幂等时 runtime 侧去重无效）",
+      "docs": [
+        "README.md:W2 段",
+        "docs/w2-crash-windows.md"
+      ]
+    },
+    {
+      "id": "w3-window2-no-outbox-max-per-key",
+      "value": 2,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "post_tool_effect_pre_record outbox=0 idem=0 probe=1 tamper=0",
+        "max_per_key"
+      ],
+      "what": "同上格：单键最大效果行数 = 2（重复的直接证据，口径为外部账本 world.db）",
+      "docs": [
+        "README.md:W2 段"
+      ]
+    },
+    {
+      "id": "w3-window2-outbox-duplicates",
+      "value": 0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "post_tool_effect_pre_record outbox=1 idem=0 probe=1 tamper=0",
+        "duplicated_runs"
+      ],
+      "what": "窗口 2 + outbox 开 + 探针：0/5 重复（恢复路径由探针确认，不重跑）",
+      "docs": [
+        "README.md:W3 段",
+        "docs/w3-report.md"
+      ]
+    },
+    {
+      "id": "w3-window2-outbox-reconciled",
+      "value": 1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "post_tool_effect_pre_record outbox=1 idem=0 probe=1 tamper=0",
+        "reconciled"
+      ],
+      "what": "同上格：探针对账次数 ≥1（证明是「确认已发生」而不是「碰巧没重复」）",
+      "docs": [
+        "README.md:W3 段"
+      ]
+    },
+    {
+      "id": "w3-window2-no-probe-unknown-rows",
+      "value": 1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "post_tool_effect_pre_record outbox=1 idem=0 probe=0 tamper=0",
+        "unknown_rows"
+      ],
+      "what": "无读回能力时收敛为恰好 1 行 unknown（把静默重复变成显式有界的未知）",
+      "docs": [
+        "README.md:W3 段",
+        "docs/w3-report.md"
+      ]
+    },
+    {
+      "id": "w3-tamper-effects",
+      "value": 0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.crash_matrix",
+        "--repeats",
+        "5",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary_by_cell",
+        "(tamper) outbox=1 idem=0 probe=1 tamper=1",
+        "effects"
+      ],
+      "what": "TOCTOU 控制组：批准后改参，5/5 拒绝执行、账本 0 行副作用",
+      "docs": [
+        "README.md:W3 段",
+        "docs/w3-report.md"
+      ]
+    },
+    {
+      "id": "w5-catalog-total",
+      "value": 64,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "catalog",
+        "total"
+      ],
+      "what": "合成故障场景总数（64 = 8 故障类型 × dev/holdout 分段）",
+      "docs": [
+        "README.md:W5 段",
+        "docs/HANDOFF.md:§一"
+      ]
+    },
+    {
+      "id": "w5-catalog-holdout",
+      "value": 16,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "catalog",
+        "by_split",
+        "holdout"
+      ],
+      "what": "holdout 场景数（冻结考卷，不参与调参）",
+      "docs": [
+        "README.md:W6 段",
+        "docs/testing.md:§4"
+      ]
+    },
+    {
+      "id": "w5-workflow-sufficient",
+      "value": 0.5,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        6,
+        "rates",
+        "sufficient"
+      ],
+      "what": "只看 metrics+resources 的规则基线充分率（50%，取证覆盖决定正确率上限）",
+      "docs": [
+        "README.md:W5 段",
+        "docs/w5-report.md"
+      ]
+    },
+    {
+      "id": "w5-harness-correct-competent",
+      "value": 0.901042,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        0,
+        "rates",
+        "correct"
+      ],
+      "what": "harness × competent-honest 的 strict 正确率（90.1%）",
+      "docs": [
+        "README.md:W5 段",
+        "docs/w5-report.md"
+      ]
+    },
+    {
+      "id": "w5-harness-correct-weak",
+      "value": 0.614583,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        1,
+        "rates",
+        "correct"
+      ],
+      "what": "harness × weak-guesser 的 strict 正确率（61.5%）",
+      "docs": [
+        "README.md:W5 段",
+        "docs/w5-report.md"
+      ]
+    },
+    {
+      "id": "w5-harness-gated-weak",
+      "value": 1.0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        1,
+        "rates",
+        "gated"
+      ],
+      "what": "harness 的写操作 100% 交给人工（gate 覆盖率）",
+      "docs": [
+        "README.md:W5 段",
+        "opsenv/suite.py::check_gates"
+      ]
+    },
+    {
+      "id": "w5-single-shot-red-line-weak",
+      "value": 0.208333,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        5,
+        "rates",
+        "red_line"
+      ],
+      "what": "无 gate 的单次调用基线在 weak 人格下执行破坏性动作的比例（20.8%）",
+      "docs": [
+        "README.md:W5 段",
+        "docs/w5-report.md"
+      ]
+    },
+    {
+      "id": "w5-novel-red-line-total",
+      "value": 3,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "novel_red_line_total"
+      ],
+      "what": "静态拒绝列表之外的**新**破坏性动作被执行的总次数（competent 1 + weak 2）",
+      "docs": [
+        "README.md:W5 段"
+      ]
+    },
+    {
+      "id": "w5-agent-routes-avg-steps",
+      "value": 3.38,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        2,
+        "avg_steps"
+      ],
+      "what": "langgraph 路线的平均步数（与 harness 的 3.38 逐格相同：两条 agent 路线能力等价）",
+      "docs": [
+        "README.md:W5 段",
+        "opsenv/suite.py::findings"
+      ]
+    },
+    {
+      "id": "w6-paired-red-line-point",
+      "value": -0.20833333333333334,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "paired_harness_vs_single_shot",
+        "red_line",
+        "point"
+      ],
+      "what": "harness − single_shot 的红线执行率配对差值（weak 人格，配对键：场景 × 人格 × 重复序号）",
+      "docs": [
+        "README.md:W6 段",
+        "docs/HANDOFF.md:§四"
+      ]
+    },
+    {
+      "id": "w6-paired-red-line-ci-high",
+      "value": -0.15104166666666666,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "paired_harness_vs_single_shot",
+        "red_line",
+        "high"
+      ],
+      "what": "同一配对差值的 95% CI 上界（<0 ⇒ 可区分；门禁用它判方向）",
+      "docs": [
+        "README.md:W6 段",
+        "opsenv/suite.py::check_gates"
+      ]
+    },
+    {
+      "id": "w6-paired-correct-point",
+      "value": 0.0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "paired_harness_vs_single_shot",
+        "correct",
+        "point"
+      ],
+      "what": "harness − single_shot 的诊断正确率配对差值（0.000，CI [0,0]：不可区分）",
+      "docs": [
+        "README.md:W6 段"
+      ]
+    },
+    {
+      "id": "w6-paired-pairs",
+      "value": 192,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "paired_harness_vs_single_shot",
+        "red_line",
+        "n"
+      ],
+      "what": "配对组数（weak-guesser：64 场景 × 3 次重复 = 192 对；配对键 = 场景 × 人格 × 重复序号）",
+      "docs": [
+        "README.md:W6 段",
+        "docs/development.md:§4.3"
+      ]
+    },
+    {
+      "id": "w6-min-detectable-effect",
+      "value": 0.06,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "min_detectable_effect"
+      ],
+      "what": "独立两样本口径的最小可检测效应（小于它的差距必须写「不可区分」）",
+      "docs": [
+        "README.md:W6 段",
+        "docs/testing.md:§4.6"
+      ]
+    },
+    {
+      "id": "w7-off-success-rate",
+      "value": 0.3333,
+      "tolerance": 0.0001,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "off",
+        "success_rate"
+      ],
+      "what": "不压缩时能跑完的 dev 变体比例（33%，其余溢出）",
+      "docs": [
+        "README.md:W7 段",
+        "docs/w7-report.md"
+      ]
+    },
+    {
+      "id": "w7-off-avg-cost-usd",
+      "value": 0.066083,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "off",
+        "avg_cost_usd"
+      ],
+      "what": "不压缩的平均成本（$0.066——失败运行的截断成本，不能读成「更便宜」）",
+      "docs": [
+        "README.md:W7 段"
+      ]
+    },
+    {
+      "id": "w7-selected-threshold",
+      "value": "0.70",
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "selected_threshold"
+      ],
+      "what": "程序按规则选出的压缩阈值（先满足完成率、再比成本）",
+      "docs": [
+        "README.md:W7 段",
+        "docs/w7-report.md"
+      ]
+    },
+    {
+      "id": "w7-selected-success-rate",
+      "value": 1.0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "selected",
+        "success_rate"
+      ],
+      "what": "选定阈值上 dev 的完成率（100%）",
+      "docs": [
+        "README.md:W7 段"
+      ]
+    },
+    {
+      "id": "w7-selected-avg-cost-usd",
+      "value": 0.118337,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "selected",
+        "avg_cost_usd"
+      ],
+      "what": "选定阈值的平均净成本（$0.1183，主桶 + 压缩桶）",
+      "docs": [
+        "README.md:W7 段"
+      ]
+    },
+    {
+      "id": "w7-net-cost-delta-ratio",
+      "value": 0.790733,
+      "tolerance": 1e-05,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "net_cost_delta_ratio"
+      ],
+      "what": "压缩相对不压缩的净成本增量（+79%：压缩买的是完成率，不是省钱）",
+      "docs": [
+        "README.md:W7 段",
+        "docs/HANDOFF.md:§四"
+      ]
+    },
+    {
+      "id": "w7-main-cost-delta-ratio",
+      "value": 0.411634,
+      "tolerance": 1e-05,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "main_cost_delta_ratio"
+      ],
+      "what": "其中主桶成本的相对增量（+41%）",
+      "docs": [
+        "README.md:W7 段"
+      ]
+    },
+    {
+      "id": "w7-compaction-share-of-off-cost",
+      "value": 0.379099,
+      "tolerance": 1e-05,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "findings",
+        "compaction_share_of_off_cost"
+      ],
+      "what": "压缩动作本身占不压缩成本的比重（+38%）",
+      "docs": [
+        "README.md:W7 段"
+      ]
+    }
+  ]
+}

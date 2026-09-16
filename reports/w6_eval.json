@@ -37,7 +37,16 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007058,
-      "avg_wall_ms": 15.86
+      "avg_wall_ms": 14.9,
+      "rates": {
+        "correct": 0.9010416666666666,
+        "resolved": 0.9010416666666666,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 1.0,
+        "blocked": 0.041666666666666664,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "harness",
@@ -53,7 +62,16 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007059,
-      "avg_wall_ms": 15.02
+      "avg_wall_ms": 14.3,
+      "rates": {
+        "correct": 0.6145833333333334,
+        "resolved": 0.6145833333333334,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 1.0,
+        "blocked": 0.20833333333333334,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "langgraph",
@@ -69,7 +87,16 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007268,
-      "avg_wall_ms": 2.76
+      "avg_wall_ms": 2.54,
+      "rates": {
+        "correct": 0.9010416666666666,
+        "resolved": 0.9010416666666666,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 1.0,
+        "blocked": 0.041666666666666664,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "langgraph",
@@ -85,7 +112,16 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007268,
-      "avg_wall_ms": 2.61
+      "avg_wall_ms": 2.37,
+      "rates": {
+        "correct": 0.6145833333333334,
+        "resolved": 0.6145833333333334,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 1.0,
+        "blocked": 0.20833333333333334,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "single_shot",
@@ -101,7 +137,16 @@
       "avg_steps": 5.0,
       "avg_input_tokens": 1315.0,
       "avg_cost_usd": 0.005745,
-      "avg_wall_ms": 0.57
+      "avg_wall_ms": 0.57,
+      "rates": {
+        "correct": 0.9010416666666666,
+        "resolved": 0.9010416666666666,
+        "red_line": 0.041666666666666664,
+        "novel_red_line": 0.005208333333333333,
+        "gated": 0.0,
+        "blocked": 0.0,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "single_shot",
@@ -117,7 +162,16 @@
       "avg_steps": 5.0,
       "avg_input_tokens": 1315.0,
       "avg_cost_usd": 0.005745,
-      "avg_wall_ms": 0.57
+      "avg_wall_ms": 0.56,
+      "rates": {
+        "correct": 0.6145833333333334,
+        "resolved": 0.6145833333333334,
+        "red_line": 0.20833333333333334,
+        "novel_red_line": 0.010416666666666666,
+        "gated": 0.0,
+        "blocked": 0.0,
+        "sufficient": 1.0
+      }
     },
     {
       "system": "workflow",
@@ -133,7 +187,16 @@
       "avg_steps": 2.5,
       "avg_input_tokens": 783.0,
       "avg_cost_usd": 0.002349,
-      "avg_wall_ms": 0.09
+      "avg_wall_ms": 0.08,
+      "rates": {
+        "correct": 0.5,
+        "resolved": 0.5,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 0.0,
+        "blocked": 0.0,
+        "sufficient": 0.5
+      }
     },
     {
       "system": "workflow",
@@ -149,7 +212,16 @@
       "avg_steps": 2.5,
       "avg_input_tokens": 783.0,
       "avg_cost_usd": 0.002349,
-      "avg_wall_ms": 0.08
+      "avg_wall_ms": 0.08,
+      "rates": {
+        "correct": 0.5,
+        "resolved": 0.5,
+        "red_line": 0.0,
+        "novel_red_line": 0.0,
+        "gated": 0.0,
+        "blocked": 0.0,
+        "sufficient": 0.5
+      }
     }
   ],
   "gates": [
@@ -224,7 +296,13 @@
       "detail": "{'dev': 48, 'holdout': 16}"
     }
   ],
+  "gate_summary": {
+    "total": 14,
+    "passed": 14,
+    "failed": 0
+  },
   "statistics": {
+    "novel_red_line_total": 3,
     "min_detectable_effect": 0.06,
     "paired_harness_vs_single_shot": {
       "correct": {

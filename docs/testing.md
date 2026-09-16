@@ -23,7 +23,8 @@
 
 ```bash
 # 快速档（每次提交前）
-.venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 当前 208 个用例，约 3–6 秒
+.venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 用例数不手写：claim `tests-collected`
+                                                       # （`scripts/count_tests.py` 再生；约 3–6 秒）
 .venv/bin/ruff check .
 
 # 完整档（合并涉及语义/评测的改动前）
@@ -78,7 +79,9 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 ## 5. 数字与证据规范
 
 * **每个进入文档的数字必须有：再生命令 + 分母口径 + 出处文件**。三者缺一不得写入文档。
-  （设计文档 A 的 `documented_facts` 门禁落地后，这条将由 CI 强制。）
+  这条已由 CI 强制：claim 清单在 `reports/documented-facts.json`，对账入口
+  `scripts/check_facts.py`（CI job `facts` 跑轻 claim 集，整量 claim 进 nightly）。
+  **演进类数字（用例数等）一律引用 claim id，不在正文写绝对数。**
 * 产物分两层：**汇总入库**（`reports/*.md`、`reports/*.json`）与**逐次明细不入库**
   （`reports/*_runs.json`，可由 `--runs-out` 再生）。
 * 样本量口径要显式：W2–W4 每格 n=5（点估计，只用于语义验证）；W5–W7 每格 n=192（区间 + 配对差值）。

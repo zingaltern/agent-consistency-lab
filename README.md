@@ -178,6 +178,9 @@ experiments/
   crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
   context_cost.py        上下文成本实验（缓存纪律 / 卸载 / 压缩 三组对照）
   context_sweep.py       压缩阈值扫描（完成率 × 缓存命中 × 净成本，含自绘 SVG）
+scripts/
+  check_facts.py         claim 对账入口：文档里的数字 ↔ 再生命令（CI job `facts`）
+  count_tests.py         用例计数（演进类 claim 的来源，文档不手写绝对数）
 tests/                   不变量、协议、审批语义、loop 与矩阵小样本
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
@@ -191,6 +194,7 @@ LICENSE                  MIT
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 自动生成的报告（*.md 表格 + 汇总 JSON；逐次运行明细
                          用 --runs-out 再生，不入库）
+reports/documented-facts.json  文档引用的结论数字与再生命令的绑定（claim 清单）
 ```
 
 ## 运行
@@ -255,7 +259,8 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 
-.venv/bin/pytest -q                       # 208 个测试：不变量、协议、审批、异常、评测、门禁
+.venv/bin/pytest -q                       # 全部测试（用例数不手写：claim tests-collected
+                                          # 由 scripts/count_tests.py 再生）
 .venv/bin/ruff check .                    # lint
 
 .venv/bin/python -m experiments.crash_matrix --repeats 5 \

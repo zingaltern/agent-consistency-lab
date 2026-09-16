@@ -203,20 +203,25 @@ def findings(cells: Sequence[Cell], results: Sequence[RunResult]) -> str:
         p = item.rates()[key]
         return (p * (1 - p) / item.runs) ** 0.5
 
+    def present(*names: str) -> bool:
+        """该结论句子引用的每个系统都必须在场（--systems 子集时缺席的句子跳过）。"""
+        return all(cell(name, "competent-honest") is not None for name in names)
+
     lines: list[str] = []
     n = cell("harness", "competent-honest").runs if cell("harness", "competent-honest") else 0
 
-    # 1) 取证充分性 → 正确率上限
-    wf = rate("workflow", "competent-honest", "sufficient")
-    agents = rate("harness", "competent-honest", "sufficient")
-    lines.append(
-        f"* **取证充分性决定正确率上限**（n={n}/格）：workflow 只看 metrics+resources，"
-        f"取证充分率 {wf:.0%}（决定性证据在 logs/changes 的故障它看不见），"
-        f"诊断正确率恰好也是 {rate('workflow', 'competent-honest', 'correct'):.0%}；"
-        f"agent 路线按通道阶梯取证，充分率 {agents:.0%}，正确率随之到 "
-        f"{rate('harness', 'competent-honest', 'correct'):.0%}。"
-        "差距几乎完全由这一点解释——**不是模型更聪明，而是证据更全**。"
-    )
+    # 1) 取证充分性 → 正确率上限（需要 workflow 与 harness 同时在场）
+    if present("workflow", "harness"):
+        wf = rate("workflow", "competent-honest", "sufficient")
+        agents = rate("harness", "competent-honest", "sufficient")
+        lines.append(
+            f"* **取证充分性决定正确率上限**（n={n}/格）：workflow 只看 metrics+resources，"
+            f"取证充分率 {wf:.0%}（决定性证据在 logs/changes 的故障它看不见），"
+            f"诊断正确率恰好也是 {rate('workflow', 'competent-honest', 'correct'):.0%}；"
+            f"agent 路线按通道阶梯取证，充分率 {agents:.0%}，正确率随之到 "
+            f"{rate('harness', 'competent-honest', 'correct'):.0%}。"
+            "差距几乎完全由这一点解释——**不是模型更聪明，而是证据更全**。"
+        )
 
     # 2) 正确率的可比性：**所有两两配对比较**，不再只挑一对（审计发现早期版本
     #    只算了 harness−single_shot 就写成"三条路线不可区分"，而遗漏的那一对
@@ -228,6 +233,8 @@ def findings(cells: Sequence[Cell], results: Sequence[RunResult]) -> str:
         ("langgraph", "single_shot"),
         ("harness", "langgraph"),
     ):
+        if not present(left, right):
+            continue  # --systems 子集：缺席一方不参与配对，也不输出"全 0"的假数据
         interval, pairs = paired_compare(
             results,
             system_a=left,
@@ -242,59 +249,76 @@ def findings(cells: Sequence[Cell], results: Sequence[RunResult]) -> str:
             f"  * {left} − {right}：{interval.point:+.3f}，95% CI "
             f"[{interval.low:+.3f}, {interval.high:+.3f}]（配对 {pairs} 组）⇒ {verdict}"
         )
-    lines.append(
-        "* **诊断正确率的两两比较**（weak-guesser，配对 bootstrap）：\n"
-        + "\n".join(pair_lines)
-        + (
-            f"\n  其中 {', '.join(distinguishable)} 的 CI 不含 0——**不能说"
-            "「三条路线都不可区分」**；但把 3 组比较做多重校正后（Bonferroni 阈值 "
-            "0.0167）它们都落在边缘，因此更准确的表述是「差距很小、处于本样本量的"
-            "分辨边界上」。"
-            if distinguishable
-            else "\n  所有配对的 CI 都含 0 ⇒ 本样本量下三条路线的诊断正确率不可区分。"
+    if pair_lines:
+        lines.append(
+            "* **诊断正确率的两两比较**（weak-guesser，配对 bootstrap）：\n"
+            + "\n".join(pair_lines)
+            + (
+                f"\n  其中 {', '.join(distinguishable)} 的 CI 不含 0——**不能说"
+                "「三条路线都不可区分」**；但把 3 组比较做多重校正后（Bonferroni 阈值 "
+                "0.0167）它们都落在边缘，因此更准确的表述是「差距很小、处于本样本量的"
+                "分辨边界上」。"
+                if distinguishable
+                else "\n  所有配对的 CI 都含 0 ⇒ 本样本量下三条路线的诊断正确率不可区分。"
+            )
         )
-    )
 
-    # 3) 红线：架构决定模型出错的后果
-    red = {name: rate(name, "weak-guesser", "red_line") for name in SYSTEMS}
-    lines.append(
-        "* **模型出错时，架构决定它会不会变成事故**（weak-guesser 人格，"
-        f"总出诊率 {1 - rate('single_shot', 'weak-guesser', 'correct'):.0%} 上下）："
-        f"红线动作执行率 single-shot **{red['single_shot']:.1%}**"
-        f"（其中 {cell('single_shot', 'weak-guesser').novel_red_line} 次是"
-        "静态拒绝列表里没有的新破坏性动作），"
-        "harness / langgraph / workflow 均为 "
-        f"{red['harness']:.1%}。两条 agent 路线把 "
-        f"{blocked_share('harness'):.0%} / {blocked_share('langgraph'):.0%} 的**出错场景**"
-        "交给了人工并被拒绝——**gate 的价值不是它自己判断对错，而是它把决定权交到人手里**。"
-    )
+    # 3) 红线：架构决定模型出错的后果（基准是 single-shot，缺席则整段跳过）
+    if present("single_shot"):
+        red = {name: rate(name, "weak-guesser", "red_line") for name in SYSTEMS}
+        agent_names = [name for name in ("harness", "langgraph", "workflow") if present(name)]
+        red_text = "、".join(f"{name} {red[name]:.1%}" for name in agent_names)
+        gate_tail = ""
+        agent_gates = [name for name in ("harness", "langgraph") if present(name)]
+        if agent_gates:
+            shares = " / ".join(f"{blocked_share(name):.0%}" for name in agent_gates)
+            subject = (
+                "两条 agent 路线把" if len(agent_gates) == 2 else f"{agent_gates[0]} 路线把"
+            )
+            gate_tail = (
+                f"{subject} {shares} 的**出错场景**交给了人工并被拒绝——"
+                "**gate 的价值不是它自己判断对错，而是它把决定权交到人手里**。"
+            )
+        lines.append(
+            "* **模型出错时，架构决定它会不会变成事故**（weak-guesser 人格，"
+            f"红线基准 = single-shot **{red['single_shot']:.1%}**，"
+            f"其中 {cell('single_shot', 'weak-guesser').novel_red_line} 次是"
+            "静态拒绝列表里没有的新破坏性动作）："
+            + (f"红线执行率——{red_text}。" if red_text else "")
+            + gate_tail
+        )
 
-    # 4) 成本
-    lines.append(
-        f"* **成本口径**（同一 token 估算与价格表；累计口径 = 每步重发前缀+已读证据）："
-        f"workflow ${cell('workflow', 'competent-honest').avg_cost_usd:.5f}（无模型调用）、"
-        f"single-shot ${cell('single_shot', 'competent-honest').avg_cost_usd:.5f}"
-        "（读全部证据但只付一次前缀）、"
-        f"harness ${cell('harness', 'competent-honest').avg_cost_usd:.5f}、"
-        f"langgraph ${cell('langgraph', 'competent-honest').avg_cost_usd:.5f}（每步重发）。"
-        "本口径**不计前缀缓存折扣**：真实供应商的缓存会把重复前缀降到 0.1×，"
-        "那属于 W4 的实验范围，这里刻意不加，以免把两件事混在一起。"
-    )
+    # 4) 成本（只报在场系统的成本；全部缺席则跳过）
+    cost_items = [
+        ("workflow", "无模型调用"),
+        ("single_shot", "读全部证据但只付一次前缀"),
+        ("harness", "每步重发"),
+        ("langgraph", "每步重发"),
+    ]
+    present_cost = [(name, note) for name, note in cost_items if present(name)]
+    if present_cost:
+        cost_text = "、".join(
+            f"{name} ${cell(name, 'competent-honest').avg_cost_usd:.5f}" for name, _ in present_cost
+        )
+        lines.append(
+            "* **成本口径**（同一 token 估算与价格表；累计口径 = 每步重发前缀+已读证据）："
+            + cost_text
+            + "。本口径**不计前缀缓存折扣**：真实供应商的缓存会把重复前缀降到 0.1×，"
+            "那属于 W4 的实验范围，这里刻意不加，以免把两件事混在一起。"
+        )
 
-    # 5) 两条 agent 路线的等价性
-    ls = (
-        cell("langgraph", "competent-honest").avg_steps
-        if cell("langgraph", "competent-honest")
-        else 0
-    )
-    hs = cell("harness", "competent-honest").avg_steps if cell("harness", "competent-honest") else 0
-    lines.append(
-        f"* **两条 agent 路线的能力等价**：LangGraph 图与自研 Loop 的平均步数 {ls} vs {hs}、"
-        "输入 token 相同、正确率与红线率在噪声内一致。也就是说本项目的 runtime 并没有靠"
-        "「更聪明的策略」取胜——它买到的是 LangGraph 用声明式 API 提供的同一类能力，"
-        "外加**崩溃一致性**（W2–W4 的 checkpoint/outbox/探针）与**工具自述风险**"
-        "（本轮的否决点：审批门挂在工具元数据上，而不是某个动作名黑名单上）。"
-    )
+    # 5) 两条 agent 路线的等价性（需要两条路线同时在场）
+    lg_c = cell("langgraph", "competent-honest")
+    h_c = cell("harness", "competent-honest")
+    if lg_c is not None and h_c is not None:
+        lines.append(
+            f"* **两条 agent 路线的能力等价**：LangGraph 图与自研 Loop 的平均步数"
+            f" {lg_c.avg_steps} vs {h_c.avg_steps}、"
+            "输入 token 相同、正确率与红线率在噪声内一致。也就是说本项目的 runtime 并没有靠"
+            "「更聪明的策略」取胜——它买到的是 LangGraph 用声明式 API 提供的同一类能力，"
+            "外加**崩溃一致性**（W2–W4 的 checkpoint/outbox/探针）与**工具自述风险**"
+            "（本轮的否决点：审批门挂在工具元数据上，而不是某个动作名黑名单上）。"
+        )
     return "\n".join(lines)
 
 
@@ -683,6 +707,9 @@ def grader_sensitivity(cells: Sequence[Cell], results: Sequence[RunResult]) -> s
             subset = [
                 r for r in results if r.system == system and r.profile_name == "competent-honest"
             ]
+            if not subset:
+                row.append(" n/a |")  # --systems 子集：缺席系统不打印误导性 0.0%
+                continue
             interval = rate_with_interval(subset, lambda r, g=grader: grade(r, g))
             row.append(f" {interval.point:.1%} |")
         lines.append("".join(row))
@@ -702,6 +729,14 @@ def statistical_notes(cells: Sequence[Cell], results: Sequence[RunResult]) -> st
     if not cells or not results:
         return "* 无数据：不做任何统计陈述（早期版本会把「没有数据」打印成「不可区分」）。"
 
+    # --systems 子集：配对结论写死了 harness vs single_shot，双方不在场时不输出假数据
+    present_systems = {cell.system for cell in cells}
+    can_pair = {"harness", "single_shot"} <= present_systems
+    if not can_pair:
+        lines.append(
+            f"* 本轮只评测了 {'、'.join(sorted(present_systems))}，"
+            "写死的 harness − single_shot 配对统计与最小可检测效应不适用。"
+        )
     _, pairs = paired_compare(
         results,
         system_a="harness",
@@ -721,11 +756,12 @@ def statistical_notes(cells: Sequence[Cell], results: Sequence[RunResult]) -> st
     )
     mde_paired = paired_min_detectable_effect(discordant=discordant, pairs=pairs)
     mde_independent = min_detectable_effect(max(c.runs for c in cells), p=0.5)
-    lines.append(
-        f"* **最小可检测效应**：n={pairs} 对。配对口径（80% 功效）约 **{mde_paired:.1%}**"
-        f"（不一致对 {discordant} 个）；独立两样本口径约 {mde_independent:.1%}。"
-        "小于它的差距在本样本量下不可区分——报告只用前者解释配对结论。"
-    )
+    if can_pair:
+        lines.append(
+            f"* **最小可检测效应**：n={pairs} 对。配对口径（80% 功效）约 **{mde_paired:.1%}**"
+            f"（不一致对 {discordant} 个）；独立两样本口径约 {mde_independent:.1%}。"
+            "小于它的差距在本样本量下不可区分——报告只用前者解释配对结论。"
+        )
     for predicate, label in (
         (lambda r: r.correct, "诊断正确率"),
         (lambda r: r.red_line, "红线执行率"),
@@ -738,11 +774,12 @@ def statistical_notes(cells: Sequence[Cell], results: Sequence[RunResult]) -> st
             profile="weak-guesser",
         )
         verdict = "可区分（CI 不含 0）" if interval.excludes_zero else "**不可区分（CI 含 0）**"
-        lines.append(
-            f"* **harness − single_shot 的{label}**（weak-guesser，配对 {pairs_n} 组）："
-            f"{interval.point:+.3f}，95% CI [{interval.low:+.3f}, {interval.high:+.3f}]"
-            f" ⇒ {verdict}。"
-        )
+        if can_pair and pairs_n:
+            lines.append(
+                f"* **harness − single_shot 的{label}**（weak-guesser，配对 {pairs_n} 组）："
+                f"{interval.point:+.3f}，95% CI [{interval.low:+.3f}, {interval.high:+.3f}]"
+                f" ⇒ {verdict}。"
+            )
     return "\n".join(lines)
 
 
@@ -757,6 +794,8 @@ def proxy_section(cells: Sequence[Cell], results: Sequence[RunResult]) -> str:
         "|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
+        if not row["n"]:
+            continue  # --systems 子集：缺席系统不打印 n=0 的假校准行
         lines.append(
             f"| {row['system']} | {row['profile']} | {row['n']} | {row['proxy_positive']} |"
             f" {row['truth_positive']} | {'是' if row['proxy_variance'] else '否'} |"

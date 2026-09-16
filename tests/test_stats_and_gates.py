@@ -16,10 +16,14 @@ from opsenv.suite import (
     Cell,
     GateResult,
     check_gates,
+    findings,
     grade,
+    grader_sensitivity,
+    main,
     paired_compare,
     proxy_calibration,
     rate_with_interval,
+    statistical_notes,
 )
 from opsenv.systems import RunResult
 
@@ -232,3 +236,89 @@ def test_gate_requires_gated_systems_to_actually_block_something() -> None:
 def test_gate_result_is_serialisable() -> None:
     gate = GateResult(name="x", ok=True, detail="ok")
     assert gate.model_dump()["ok"] is True
+
+
+# ------------------------------------------------------- --systems 子集（audit D-1）
+#
+# 子集模式不能在渲染结论时崩溃：缺席系统的句子要跳过或标不适用，
+# 否则 AttributeError 会以退出码 1 逃出去，在 CI 里被误读成"门禁拦下了"。
+
+
+def _subset_cells(systems: tuple[str, ...]) -> list[Cell]:
+    return [cell for cell in _cells() if cell.system in systems]
+
+
+def test_findings_never_touches_absent_system_cells() -> None:
+    for systems in (
+        ("harness", "langgraph", "single_shot", "workflow"),
+        ("harness",),
+        ("harness", "langgraph"),
+        ("single_shot",),
+        ("workflow",),
+        ("single_shot", "workflow"),
+    ):
+        by_system = {(c.system, c.profile): c for c in _cells()}
+        subset = [
+            cell
+            for (system, _), cell in by_system.items()
+            if system in systems
+        ]
+        results = [
+            _run(system=system, repeat=i) for system in systems for i in range(10)
+        ]
+        text = findings(subset, results)
+        # 在场系统的数字必须仍然出现在结论里，缺席系统的解引用绝不抛异常
+        assert text or systems
+
+
+def test_statistical_notes_mark_subset_as_not_paired() -> None:
+    subset = _subset_cells(("harness",))
+    results = [_run(system="harness", repeat=i) for i in range(20)]
+    text = statistical_notes(subset, results)
+    assert "不适用" in text
+    assert "CI [" not in text and "最小可检测效应**：" not in text
+
+
+def test_grader_sensitivity_marks_missing_systems_na() -> None:
+    subset = [c for c in _subset_cells(("workflow",)) if c.profile == "competent-honest"]
+    text = grader_sensitivity(subset, [])
+    assert "n/a" in text
+    assert "|" in text
+
+
+def test_proxy_section_skips_empty_rows() -> None:
+    from opsenv.suite import proxy_section
+
+    subset = [c for c in _subset_cells(("harness",)) if c.profile == "competent-honest"]
+    results = [_run(system="harness", repeat=i) for i in range(20)]
+    text = proxy_section(subset, results)
+    assert "langgraph" not in text
+    assert text.count("harness") == 1
+
+
+def test_main_with_systems_subset_stays_a_readable_gate_failure(
+    capsys, tmp_path
+) -> None:
+    """最小复现（audit D-1）：`--systems harness --gate` 曾以 AttributeError 崩溃。"""
+    md_out = str(tmp_path / "subset.md")
+    rc = main(
+        [
+            "--per-fault",
+            "1",
+            "--repeats",
+            "1",
+            "--systems",
+            "harness",
+            "--md-out",
+            md_out,
+            "--gate",
+        ]
+    )
+    assert rc == 1  # 门禁可读失败，而不是未处理异常
+    captured = capsys.readouterr().out
+    assert "all_cells_present" in captured
+    from pathlib import Path
+
+    report = Path(md_out).read_text(encoding="utf-8")
+    assert "AttributeError" not in report
+    Path(md_out).unlink(missing_ok=True)

@@ -259,6 +259,21 @@ lease 首版不做过期接管、pyproject 注册 live marker（防 exit 5 误�
 * 建议顺序：A 的 M1（数字再生门禁）先行——B 每一步都会产出新的"结论数字"，
   先立起再生机制，B 的验收数字天然被覆盖。
 
+**A §4.1 裁决回写（2026-09-17，裁决全文见
+[2026-09-17-open-questions-answered.md](2026-09-17-open-questions-answered.md) §一）**：
+
+> **新增独立 flag `experiments.worker --kill-after-ms <ms>`；`CHAOS_WINDOWS` 的语法与语义一字不改。**
+> 理由：`CHAOS_WINDOWS` 是 HANDOFF §一 记录的外部契约（`harness/chaos.py::parse_spec` 的
+> `name[:occurrence]` 语法 + 封闭窗口集合），把墙钟毫秒塞进同一字符串必须改解析器；
+> 且"第 N 次命中窗口"与"墙钟定时"是两个不同的注入维度。
+> 新注入族在 `crash_marker.json` 里以 `injection_kind: "window" | "time_hit"` 区分
+> （`time_hit` 额外记 `kill_after_ms`；`window` 的既有字段只增不改）。
+
+因此 B-M1 的"崩溃兼容"验收按**两条独立路径**做，两包对注入面的假设一致：
+
+1. `CHAOS_WINDOWS`（既有命名窗口，按现有语义复跑不变）；
+2. `--kill-after-ms`（新路径，A-M3 交付后可用；交付前该条验收以第 1 条为准并在 PR 说明）。
+
 ## 8. 边界纪律（触碰即停、上报）
 
 * 出现"生产级 / 高可用 / 服务化"口径或对外可靠性承诺；

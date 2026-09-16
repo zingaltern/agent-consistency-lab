@@ -59,27 +59,42 @@
 
 * **定位**：把文档引用的结论数字从"叙述"搬进一份机器可读的 claim 清单，
   每条 claim 指向其可再生命令与输出路径，由脚本逐条对账。
-* **claim 文件**（`reports/documented-facts.json`，入库、人可读）：
+* **claim 文件**（`reports/documented-facts.json`，入库、人可读）。**schema 规则
+  （对抗审查后收紧，逐条强制）**：
+  1. `source_cmd` 必须携带 `--json-out /tmp/facts/<claim-id>.json` 等写盘参数——
+     现有两个生成器默认只往 stdout 打 markdown，没有 JSON 输出，对账无从下手；
+  2. `source_path` 必须指向 `--json-out` **真正存在的字段**。现状核查发现：
+     `crash_matrix` 的 JSON 没有 real-kill 总数字段（需在本需求里物化一个
+     `summary_kills` 汇总对象）；`context_cost` 的 `cost_per_call`/`total_cost_usd`
+     是 `@property`（不会出现在 `--json-out` 的 `__dict__` 序列化里）——凡此情况，
+     **把派生指标物化进 JSON 属于本需求的交付物**，不允许对账脚本去"猜"。
+  3. `run` 字段决定对账跑在哪个 CI job：轻 claim 在 verify，重 claim 打 `nightly`。
 
   ```json
   {
     "claims": [
       {
-        "id": "W4-E2b-cost-per-call",
-        "value": 0.01431,
-        "tolerance": 0.00005,
-        "source_cmd": ["python3", "-m", "experiments.context_cost"],
-        "source_path": ["E2b-大结果内联-小窗口-有压缩", "total_cost_per_call"],
-        "what": "E2b 总成本/调用（主桶 + 压缩桶）",
-        "docs": ["README.md:W4 段", "docs/HANDOFF.md:§四"]
+        "id": "W6-paired-red-line-point",
+        "value": -0.2083,
+        "tolerance": 0.005,
+        "run": "verify",
+        "source_cmd": [".venv/bin/python", "-m", "opsenv.suite",
+                        "--per-fault", "2", "--repeats", "1",
+                        "--json-out", "/tmp/facts/w6_eval.json"],
+        "source_path": ["statistics", "paired_harness_vs_single_shot", "red_line", "point"],
+        "what": "harness − single_shot 红线配对差值",
+        "docs": ["README.md:W6 段", "docs/HANDOFF.md:§四"]
       },
       {
         "id": "crash-matrix-real-kills",
         "value": 70,
         "tolerance": 0,
-        "source_cmd": ["python3", "-m", "experiments.crash_matrix"],
-        "source_path": ["summary", "real_kill_count"],
-        "what": "崩溃矩阵真实 SIGKILL 计数",
+        "run": "nightly",
+        "source_cmd": [".venv/bin/python", "-m", "experiments.crash_matrix",
+                        "--repeats", "5",
+                        "--json-out", "/tmp/facts/crash_matrix.json"],
+        "source_path": ["real_kill_count"],
+        "what": "崩溃矩阵真实 SIGKILL 计数（需先在 crash_matrix JSON 里物化此字段）",
         "docs": ["README.md:W3 段", "docs/HANDOFF.md:§一"]
       }
     ]
@@ -89,13 +104,19 @@
 * **对账脚本**（`scripts/check_facts.py`）：逐条 claim 执行 `source_cmd`
   （输出写 `/tmp`，绝不写仓库），沿 `source_path` 逐层取 JSON 字段，
   与 `value` 差值 ≤ `tolerance` 判过。通过退出 0；失败逐条列出偏离值，退出 1。
-* **成本控制**：耗时命令（`crash_matrix`、`context_sweep`）在 claim 里用快速档
-  （`--repeats 1` / `--per-fault 2`）；必须附带一个 smoke 测试断言"快速档与全量档
-  在相关字段上一致"，防止快速档悄悄测的那部分口径失真。
+* **成本控制（对抗审查第 8 条后收紧）**：
+  * verify job 只跑 `run: "verify"` 的轻 claim 集（`opsenv.suite`、`context_cost`
+    的快速参数）；
+  * 标记 `run: "nightly"` 的重 claim（crash_matrix、context_sweep 整量跑）进
+    nightly 作业；
+  * 快速档 flag 按工具实际支持写：`opsenv.suite` 用 `--per-fault/--repeats`；
+    `crash_matrix`/`context_sweep` 只有 `--repeats`（sweep 另有 `--skip-holdout`）
+    ——**不存在 `--per-fault`，不要编造 flag**；且 `crash_matrix` 的计数类 claim
+    会随 `--repeats` 变化，这类 claim 一律归入 `nightly` 并注明档位。
 * **两类 claim 分别处理**：
   * 稳定类（成本、命中率、格子数、SIGKILL 计数、门禁条数）：正常对账。
-  * 演进类（测试数量等随代码走）：`source_cmd` 用 `pytest --collect-only -q` 之类的
-    计数命令，数值由命令产生、文档处引用 claim id——**永远不手写**。
+  * 演进类（测试数量等随代码走）：`source_cmd` 用 `pytest --collect-only -q` 计数
+    之类的命令产生，文档处引用 claim id——**永远不手写**。
 * **验收**：
   * `python3 scripts/check_facts.py` 退出 0；claim 覆盖 ≥ 20 条，包含全部
     W3/W4/W5/W6/W7 结论段数字与上述两类。
@@ -109,7 +130,10 @@
   能让"藏在命名窗口之外的重复路径"无处可藏，并且几乎免费地提供更大的 n。
 * **注入机制**：`experiments/chaos_fuzz.py` 按 seed 生成 `--kill-after-ms` 值；
   `experiments/worker.py` 新增 `--kill-after-ms`（SIGKILL），与 `CHAOS_WINDOWS`
-  语义保持独立且互不干扰（现有窗口注入一字不改）。
+  语义保持独立且互不干扰（现有窗口注入一字不改）。`harness/chaos.py` 的实现
+  纪律（"参数化命名窗口，不是随机 kill"）因此需要一条明确的扩展：**墙钟定时注入
+  属于新的注入族，`crash_marker.json` 必须多记 `injection_kind: "time_hit"` 与
+  `kill_after_ms` 值**，便于与命名窗口区分排查。
 * **oracle（全部由外部 `world.db` + run 目录 `runtime.db` 事后判定）**：
 
   | 不变量 | 判定 |
@@ -117,7 +141,7 @@
   | inv_no_tamper | seq 连续、event_id 唯一（复用既有审计口径 b3 的判定逻辑） |
   | inv_closed_calls | 不存在"executed/failed 工具行但无 tool_result 事件"（含 -wal 一起快照读） |
   | inv_effect_accounting | 恢复终态后，每个故障动作的账本效果行数 ∈ {恰好 1，或恢复路径显式报告 1 行 unknown}；两者之外（如 >1 行且无 unknown 呈报）记为 fuzz 发现 |
-  | inv_recovery_terminates | 任意 seed 下 resume 后 run 必达终态（completed/failed），不允许无限 RUNNING |
+  | inv_recovery_terminates | fuzz 驱动器按 run/approve/resume 阶段推进，直至到达**合法终态集合**（completed / failed / waiting_human(审批等待，属脚本计划内的合法驻留)）；resume 循环无 limit 次"重跑仍未达合法终态"记为发现 |
 
 * **对照面**：注入时刻 × 保护组合沿用崩溃矩阵的开关面（outbox × 探针 × 幂等
   的代表性组合：全开、全关、outbox 开无读回）。预期映射：全开 ⇒ 恰好 1 行；

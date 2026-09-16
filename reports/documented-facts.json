@@ -1097,6 +1097,31 @@
       ]
     },
     {
+      "id": "w7-row-085-avg-cost-usd",
+      "value": 0.118443,
+      "tolerance": 1e-06,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.context_sweep",
+        "--repeats",
+        "2",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "dev",
+        2,
+        "avg_cost_usd"
+      ],
+      "what": "0.85 档（与 0.95 同值）的净成本 $0.11844——w7 报告结论句引用的就是这一行的值",
+      "docs": [
+        "docs/w7-report.md:§结论",
+        "README.md:W7 段"
+      ]
+    },
+    {
       "id": "w7-net-cost-delta-ratio",
       "value": 0.790733,
       "tolerance": 1e-05,

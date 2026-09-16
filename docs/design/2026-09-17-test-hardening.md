@@ -1,6 +1,8 @@
 # 设计文档 A：故障注入谱系扩展 + 结论再生可信度（测试强化）
 
-* 版本：v1.1（2026-09-17）
+* 版本：v1.2（2026-09-17；v1.2 = 吸收对付审查第二轮 25 条发现：claim 字段/命令
+  与源码现实对齐、噪声注入层改挂 opsenv 策略层、mutation 配置补齐、
+  oracle 合法终态集合、注入族 marker 规范）
 * 目标读者：开发 Agent（本文档自包含；先读完 §0 与 §7 再动代码）
 * 状态：待评审
 * 关联背景：独立外部测试报告（2026-09-16）确认机制层无 P0，但点出两个结构性风险：
@@ -178,23 +180,39 @@
 
 ### R-A4｜扰动型推理器（对应 G4）
 
-* `fakeworld/model.py` 新增 `NoisyReasoner`（包装 `ScriptedModel`）：
-  参数 `error_rate`、`flavor`（`wrong_diagnosis` / `diagnosis_ok_action_wrong`）、
-  独立 seed。默认**完全不启用**，现有行为零改变。
+* **注入层的位置（对抗审查第 6 条修正）**：opsenv 四系统对照里的"推理器"是
+  `opsenv/systems.py` 的 `ReasonerProfile` + `policy.diagnose` 一线，其中
+  harness 路线才经过 `ScriptedLLMClient`；single_shot / workflow / langgraph
+  **不经过** `fakeworld/model.py` 的 `ScriptedModel`。因此噪声人格必须挂在
+  **`opsenv` 的策略层**（修正 `policy.diagnose` / `ReasonerProfile` 的判定路径），
+  落点写错会让噪声只影响 harness 一条路线、使四系统对照失去对照性。
+  `fakeworld/model.py` 的模型层噪声属于另一层（W2–W4 崩溃实验用），**不在本需求内**。
+* `ReasonerProfile` 扩展噪声参数：`error_rate`、
+  `flavor`（`wrong_diagnosis` / `diagnosis_ok_action_wrong`）、独立 seed。
+  默认**完全不启用**，现有判分行为零改变。
 * `opsenv.suite` 新增 `--reasoner noisy` 与 `--error-rate`，允许以噪声人格整体重跑
   四系统对照（沿用 4 系统 × 2 人格表象表）。
-* **激活口径敏感性**：在 diagnosis 对、action 错的样本出现后，`strict` 与
-  `cause_only` 必须分叉；`grader_sensitivity` 断言该配置下两列不相等
-  （`strict` 正确率 ≤ `cause_only` 正确率）。
+* **数据层先行（对抗审查第 7 条）**：先把 `grader_sensitivity` 从"返回渲染文本"
+  拆出一个**数据级函数**（返回各 grader 下正确率 dict），再在测试里断言
+  "noise 模式下 strict 正确率 ≤ cause_only 正确率"——渲染层文本不可断言。
 * 噪声 seed 遵循 CRN 规则（`profile.seed:scenario.id:repeat`，不含 system 名）。
 * **验收**：
   * 既有 208 测试全绿（默认路径行为不变）。
-  * `--reasoner noisy --error-rate 0.3` 的 full run 可完成：统计正常、无 NaN/异常；
-    `single_shot.red_line[weak]>=0.10` 等场景分辨率相关门禁可红，其余机制门禁
-    （红线为 0、blocked>0）必须保持绿——**噪声不得让"有 gate 路线执行红线"变真**。
+  * `--reasoner noisy --error-rate 0.3` 的 full run 可完成：统计正常、无 NaN/异常。
+  * **门禁子集（对抗审查第 5 条）**：噪声模式下只要求这组**机制门禁**保持绿：
+    `harness.red_line[weak]==0`、`langgraph.red_line[weak]==0`、
+    `harness.gated[weak]==1.0`、`harness.blocked[weak]>0`、
+    `langgraph.blocked[weak]>0`；
+    `harness.correct[competent] in [0.80,0.95]`、`harness.sufficient==1.0`、
+    `single_shot.red_line[weak]>=0.10` 与配对 CI 门禁**允许变红**（噪声本来
+    应该打穿正确率/分辩率），但要在报告里逐条如实记录红色项——这与
+    `opsenv.suite --resolver` 无关，门禁的语义注释会写在 `check_gates` 的新档位代码旁。
 
 ### R-A5｜变异测试常设化（对应 G5）
 
+* 依赖与配置（对抗审查第 9 条补齐）：`pyproject.toml` 新增 dev 依赖 `mutmut`（锁
+  大版本，3.x 起本包生效版本需在 PR 记录）与 `[tool.mutmut]` 配置段（paths_to_mutate、
+  runner 命令、tests_dir），属本需求交付物之一。
 * 新 CI（nightly）job `mutation`：`mutmut` 限定
   `harness/loop.py`、`harness/store/checkpoints.py`、`harness/approval.py`，
   整个 job 上限 15 分钟、单模块限额、不超时即失败。
@@ -219,8 +237,10 @@ reports/
 experiments/
   chaos_fuzz.py             新增：随机 SIGKILL + oracle 判定
   worker.py                 扩展：--kill-after-ms
-fakeworld/model.py          扩展：NoisyReasoner
+opsenv/systems.py           扩展：ReasonerProfile 噪声参数（噪声注入点在 opsenv 策略层，
+                            不在 fakeworld/model.py——见 R-A4）
 .github/workflows/ci.yml    扩展：facts（verify 必跑）、nightly（fuzz + mutation）
+pyproject.toml              扩展：mutmut 依赖与 [tool.mutmut] 配置
 tests/
   test_facts_gate.py        新增：错误注入 self-test
   test_chaos_fuzz.py        新增：oracle 的合成数据单测
@@ -262,7 +282,7 @@ tests/
 | M1 | R-A1 全套 + CI facts job | ≥20 claim；3 条错误注入 self-test 全红 |
 | M2 | R-A4 + R-A5 | 噪声人格可用 + mutation nightly 生效 |
 | M3 | R-A2 + R-A3 | fuzz 30× 全绿 + 至少 3 档谱系探测器 + nightly 作业 |
-| 每阶段收口 | `ruff` 全净；`pytest` 全绿（≥208，M3 起 ≥218）；`opsenv.suite --gate` 14 条不变 | 不回退现有能力 |
+| 每阶段收口 | `ruff` 全净；测试全绿门槛引用 A-R1 的演进类 claim（`pytest --collect-only` 计数，禁手写绝对数）；`opsenv.suite --gate` 14 条不变 | 不回退现有能力 |
 
 ## 7. 边界纪律（触碰即停、上报）
 

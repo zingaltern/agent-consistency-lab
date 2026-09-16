@@ -20,6 +20,12 @@ dev = [
 eval = [
     "langgraph>=1.0",
 ]
+# 真实 OTLP 导出（R-B4）：只在显式 --otlp-endpoint 时需要；缺它时 import harness.trace
+# 与全部既有行为不变（OTel 的 import 全在函数体内）
+otel = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
 
 [build-system]
 requires = ["hatchling"]

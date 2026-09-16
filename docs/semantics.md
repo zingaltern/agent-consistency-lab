@@ -147,6 +147,12 @@ UPDATE 仍被拒"（`tests/test_hash_chain.py::test_migration_backfills_the_chai
 **注**：压缩一定会在替换点击穿前缀缓存——这是可测的代价（见 docs/w4-report.md），
 所以策略是"先卸载、后压缩，阈值尽量高"。
 
+**artifact 回收（R-B5）**：``harness.artifacts.sweep(dry_run=True)`` **只能由显式 CLI 调用**
+（runtime loop 内绝不自动删——删除与"读到半个文件"之间没有事务可用）。引用枚举**全量扫描**
+事件 payload + ``checkpoints.state_json`` + ``checkpoint_writes.payload_json`` 里的 ``digest``；
+只被 checkpoint 引用的对象**禁止回收**。卸载产生的 artifact 是**派生缓存**：没被任何 payload
+提到过的可以删——下一次渲染会用同样的内容算出同样的 digest 并重新落盘（内容寻址 ⇒ 幂等）。
+
 **预算**：``main / compaction / judge / tools`` 分桶，账本由 ``budget_update`` 事件构成，
 跨进程恢复后重新折叠得到；dispatch 前检查、响应后复核，超限即 fatal。
 
@@ -172,6 +178,10 @@ UPDATE 仍被拒"（`tests/test_hash_chain.py::test_migration_backfills_the_chai
 **明确不承诺**：不做模型质量评测、不做供应商路由/重试/降级/缓存网关；
 live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 live 录制）。
 
+**OTLP 导出（R-B4）**：``harness.trace --otlp-endpoint URL`` 才启用真实导出；
+不装 ``[otel]`` extra、不传该参数时，``import harness.trace`` 与全部既有行为不变
+（OTel 的 import 全在函数体内）。endpoint 每次显式传入，不启动守护、不做重试队列。
+
 ---
 
 ## 3. 崩溃语义的边界（重要）
@@ -186,8 +196,15 @@ live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 l
   未来工作。
 
 并发边界：存储层是**单写者**模型（进程内互斥 + `BEGIN IMMEDIATE`）。
-跨进程并发需要上层租约：`lease` 事件类型已登记但**尚未实现**（没有生产者/消费者），
-因此双进程跑同一 thread 目前是未定义行为——这一点在 README 与报告中口径一致。
+跨进程并发需要上层租约：`lease` 事件类型自 R-B6 起有**最小实现**（`harness/lease.py`：
+acquire / renew / require，权威 = 日志里最后一条 `lease` 事件的折叠物）。
+
+租约是**入场条件**，不是新的权威，也不是并发承诺：
+
+* 持有有效租约的进程可以写；未持有 / 已过期 / 被别人持有 ⇒ **可读失败**（绝不静默放行）；
+* 校验在 checkpoint 事务**之外**（先证权、后写；把两者缠在一起会让"写租约也要持租约"变成自指）；
+* **不做**过期接管（显式 acquire 才是接管方式）、不做分布式协调；`state_update` 仍是"已登记未实现"；
+* 双进程同时写同一 run 的**实际后果**仍由外部账本裁决，租约只回答"这个进程有没有写权限"。
 
 ### 3.1 命名崩溃窗口
 
@@ -220,7 +237,7 @@ live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 l
 | `resume` | tree | `{interrupt_id, interrupt_index, approval_id, decision, tool_call_id}` |
 | `error` | artifact | `{error_class, message, fatal?: bool}` |
 | `budget_update` | artifact | `{bucket, cost_usd, price_version, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, note}` |
-| `lease` | artifact | `{owner, expires_at}` |
+| `lease` | artifact | `{owner, expires_at, acquired_at, lease_id}`（R-B6 起有生产者与消费者） |
 | `compaction` | artifact | `{compaction_id, replaces_event_ids, summary, artifact_ref, tokens_before, tokens_after, reason, round}` |
 | `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
 | `state_update` | artifact | 类型已登记但**当前无生产者**（保留给未来的外部状态注入） |
@@ -295,7 +312,8 @@ live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 l
 
 1. unknown 集合的收敛条件（何时可判定"不可对账只剩人工"）——W3 给出了产生规则，
    收敛策略待 W5 场景接入后定义。
-2. 租约失效后的接管语义（lease 事件已定义，机制未实现）。
+2. ~~租约失效后的接管语义~~：R-B6 已实现最小版（持有/续租/过期失活 + 可读失败），
+   **过期接管仍是开放的**（本包只做显式 acquire）。
 3. 批量写一半（Saga 补偿）待 W5 场景集覆盖。
 4. `synchronous=FULL` 的掉电语义实验。
 5. 压缩的长期形态：当前每次压缩产生一条并列摘要，未做"摘要的摘要"；artifact GC 只有

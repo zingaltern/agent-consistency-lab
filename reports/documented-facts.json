@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 297,
+      "value": 316,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1705,6 +1705,71 @@
       "docs": [
         "docs/semantics.md:§4.0",
         "tests/test_arg_policy.py"
+      ]
+    },
+    {
+      "id": "lease-test-count",
+      "value": 9,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_lease.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "lease 的用例数（含双进程冒烟：未持有租约即可读失败）",
+      "docs": [
+        "docs/governance-extras.md",
+        "docs/semantics.md:§3"
+      ]
+    },
+    {
+      "id": "artifact-sweep-test-count",
+      "value": 5,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_artifact_sweep.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "artifact sweep 的用例数（验收要求 ≥4）",
+      "docs": [
+        "docs/governance-extras.md",
+        "harness/artifacts.py::sweep"
+      ]
+    },
+    {
+      "id": "otel-test-count",
+      "value": 5,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_otel.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "OTLP 用例数（缺 extra 时自动跳过，装了就验证映射逐位对齐）",
+      "docs": [
+        "docs/governance-extras.md"
       ]
     }
   ]

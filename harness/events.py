@@ -17,6 +17,8 @@ payload 的规范形状见 docs/semantics.md「事件目录」一节。
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from enum import StrEnum
 from typing import Any
@@ -136,7 +138,65 @@ class Event(NewEvent):
 
     seq: int = Field(ge=0)
     created_at: float = Field(default_factory=time.time)
+    prev_hash: str = ""
+    event_hash: str = ""
 
     @property
     def is_tree_node(self) -> bool:
         return self.kind is EventKind.TREE_NODE
+
+
+# ------------------------------------------------------------------ 事件哈希链（R-B3）
+
+GENESIS_HASH = "0" * 64
+"""链的起点常量。**不是**某一个事件的哈希，而是一个约定常量：
+第一条事件的 ``prev_hash`` 等于它，因此"链从哪里开始"本身也是可校验的。"""
+
+CHAIN_FIELDS: tuple[str, ...] = (
+    "event_id",
+    "run_id",
+    "branch_id",
+    "seq",
+    "kind",
+    "type",
+    "source",
+    "parent_id",
+    "payload",
+    "created_at",
+)
+"""参与哈希的字段清单（唯一正则化定义，写进 semantics.md）。
+
+刻意**不含** ``trace_id`` / ``span_id``（投影层标注，见 harness/trace.py）
+与 ``event_hash`` / ``prev_hash``（链自身）。``payload`` 用**解析后的 dict**而不是
+原始字符串：字符串里的空白差异不该被当成篡改。
+"""
+
+
+def event_record(event: Event) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "run_id": event.run_id,
+        "branch_id": event.branch_id,
+        "seq": event.seq,
+        "kind": event.kind.value,
+        "type": event.type,
+        "source": event.source.value,
+        "parent_id": event.parent_id,
+        "payload": event.payload,
+        "created_at": event.created_at,
+    }
+
+
+def record_bytes(event: Event) -> str:
+    """``json.dumps(record, sort_keys=True, ensure_ascii=False)``——与存储层同一种序列化。
+
+    为什么不用 ``tools.canonical_json``：它用 ``separators=(",", ":")``，与存储层写
+    payload 的字节表示不同；两套并存时，改动其中一套会静默让历史链失效。
+    """
+    return json.dumps(event_record(event), sort_keys=True, ensure_ascii=False)
+
+
+def compute_event_hash(prev_hash: str, event: Event) -> str:
+    """``event_hash = sha256(prev_hash ‖ record_bytes)``。"""
+    blob = f"{prev_hash}{record_bytes(event)}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()

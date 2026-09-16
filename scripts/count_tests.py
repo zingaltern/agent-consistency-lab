@@ -22,9 +22,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTEST_ARGS = ("-o", "addopts=", "-p", "no:cacheprovider", "--collect-only", "-q")
 
 
-def collect_count(timeout: float = 300.0) -> dict[str, object]:
+def collect_count(path: str = "", timeout: float = 300.0) -> dict[str, object]:
+    """``path`` 缺省 = 全仓；给定路径（文件或目录）= 只数它。"""
+    target = [path] if path else []
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", *PYTEST_ARGS],
+        [sys.executable, "-m", "pytest", *PYTEST_ARGS, *target],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -46,15 +48,17 @@ def collect_count(timeout: float = 300.0) -> dict[str, object]:
     return {
         "collected": collected,
         "exit_code": proc.returncode,
-        "source": " ".join(["pytest", *PYTEST_ARGS]),
+        "path": path or "tests/",
+        "source": " ".join(["pytest", *PYTEST_ARGS, *target]),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scripts/count_tests.py")
     parser.add_argument("--json-out", default="")
+    parser.add_argument("--path", default="", help="只数这个路径（文件或目录）")
     args = parser.parse_args(argv)
-    payload = collect_count()
+    payload = collect_count(args.path)
     print(json.dumps(payload, ensure_ascii=False))
     if args.json_out:
         Path(args.json_out).write_text(

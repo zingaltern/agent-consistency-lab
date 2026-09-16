@@ -75,6 +75,35 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
 
+### 2.4.1 事件哈希链（R-B3）
+
+`events` 表带 `prev_hash` / `event_hash` 两列，构成**静态哈希链**：
+
+```
+record       = {event_id, run_id, branch_id, seq, kind, type, source, parent_id,
+                payload, created_at}                 # 解析后的 payload，不含 trace/span
+record_bytes = json.dumps(record, sort_keys=True, ensure_ascii=False)
+event_hash   = sha256(prev_hash ‖ record_bytes)
+prev_hash    = 同分支上一条的 event_hash
+               分支首条：无父分支 ⇒ 常量 GENESIS_HASH；有父分支 ⇒ fork 点事件的 event_hash
+```
+
+**为什么需要它**：append-only 触发器挡住的是**数据库层面**的改写；链挡住的是**数据库之外**
+的操作——换成一个更旧的副本、绕过触发器改一行、删掉中间一段再拼上。链不阻止篡改，
+只让篡改**无法静默**。
+
+**与既有承诺的关系**：这是**纵深防御**，不是新的权威。日志仍是唯一权威；
+`(branch_id, seq)` 排序、分叉语义、触发器**一个都没变**。验证入口：
+
+* 增量：`harness/state.py::verify_chain`（只查新 seq，起点由调用方给）；
+* 全量：`python -m harness.audit_chain --run-dir <dir>`（读库连 `-wal`/`-shm` 一起快照，
+  报**第一个断点**，退出码 0/1/2 = 完整/断链/读不出来）。
+
+**schema 迁移（v2 → v3）**：存量库一次性补链。回填必须 UPDATE，而 append-only 触发器
+对任何 UPDATE 都 `RAISE(ABORT)`，因此迁移在**一个事务内**先 `DROP TRIGGER`、补链、
+再**原样重建**触发器（payload 与排序一字未动）。迁移自测断言"迁移后触发器存在且
+UPDATE 仍被拒"（`tests/test_hash_chain.py::test_migration_backfills_the_chain_and_recreates_triggers`）。
+
 ### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
 
 一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
@@ -196,6 +225,26 @@ live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 l
 | `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
 | `state_update` | artifact | 类型已登记但**当前无生产者**（保留给未来的外部状态注入） |
 
+### 4.0 参数级安全域（R-B2）
+
+工具可在注册时声明 ``arg_policy``（**一层字段** + ``allowed`` / ``forbidden`` / ``min`` / ``max``），
+声明的是**工具自己的安全域**——与 ``requires_approval`` 同一哲学：工具自述风险，gate 执行它。
+它不是一张外置黑名单（"谁有权定义危险"是工具契约问题，不是运维策略问题）。
+
+执行点是**执行 handler 前的最后一刻**，输入是**实际参数**（不是审批记录里的 hash）：
+审批比的是 ``args_sha256``，人并没有逐字段核对结构化参数，因此
+"批准了越界参数"这条缝隙只能由策略档堵住。
+
+语义（缺字段的处置是语义，不是细节）：
+
+* ``allowed`` / 区间：字段缺失 ⇒ **拒绝**（无法核对不能默认放行）；
+* ``forbidden``：字段缺失 ⇒ 放行（没有危险值出现）；
+* 值域越界 / 类型不符（区间策略收到非数值）⇒ 拒绝，``tool_result.status=rejected``、
+  ``error_class=arg_policy_violation``，且**不写 outbox 意图行、不产生副作用**；
+* 拒绝发生在 outbox 预写之前，因此被拦下的调用在日志里是"被拒绝"，不是"未知"。
+
+本期**不承诺**：嵌套字段（``a.b``）、类型强转、正则、跨字段约束——列为扩展点。
+
 ### 4.1 审批绑定的四条约束（W3）
 
 1. **绑定调用与参数 hash**：批准的是"某次调用 + 某组参数"，不是模糊的授权范围；
@@ -220,6 +269,9 @@ live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 l
 * INV-006 终态（completed/failed）之后不得再出现树节点
 * INV-007 resume 携带的 `interrupt_index` 必须与未闭合 interrupt 的 index 一致
   （index 与 id 双重核验：只对 id 不打分的实现会把 resume 值接到错误的 interrupt 上）
+* INV-008 事件哈希链可续且内容与哈希一致（R-B3）：`event_hash = sha256(prev_hash ‖ record_bytes)`，
+  `prev_hash` 必须等于上一条（或 genesis / fork 点）的 `event_hash`
+  （违反 = 外部篡改指纹；不阻止篡改，只让篡改无法静默）
 
 不变量的违反以 `Violation` 显式返回，调用方决定告警/修复/中止；
 `DerivedState.fingerprint()` 用于重放确定性断言（同一日志 → 同一指纹）。

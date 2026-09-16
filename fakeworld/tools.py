@@ -11,7 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from harness.artifacts import ArtifactStore, make_read_artifact_tool
-from harness.tools import Effect, ProbeOutcome, ProbeResult, Tool, ToolRegistry
+from harness.tools import (
+    ArgPolicy,
+    Effect,
+    ProbeOutcome,
+    ProbeResult,
+    Tool,
+    ToolRegistry,
+)
 
 from .world import World
 
@@ -85,6 +92,11 @@ def build_registry(
             tags=("risky",),
             requires_approval=True,
             probe=scale_pool_probe if probe_enabled else None,
+            # 工具自述的**参数安全域**（R-B2）：扩容大小必须落在 (0, 512]。
+            # 这条策略在每一次 scale_pool 调用上都真实生效（包括崩溃矩阵里的那些运行），
+            # 而既有脚本用的 size 是 64、篡改钩子给的是 72——都在域内，因此既有结论零改变。
+            arg_policy=ArgPolicy(field="size", min=1, max=512,
+                                 note="连接池大小必须为正且在物理上限内"),
         )
     )
     registry.register(

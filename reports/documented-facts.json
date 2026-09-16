@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 274,
+      "value": 297,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1623,6 +1623,88 @@
       "docs": [
         "scripts/replay_consistency.py",
         "docs/model-modes.md:§5"
+      ]
+    },
+    {
+      "id": "chain-mirror-clean-ok",
+      "value": true,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/chain_mirror_check.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "clean_ok"
+      ],
+      "what": "真实写入路径产生的链在干净库上通过全量校验",
+      "docs": [
+        "docs/semantics.md:§2.4.1",
+        "tests/test_hash_chain.py"
+      ]
+    },
+    {
+      "id": "chain-mirror-detects-tamper",
+      "value": false,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/chain_mirror_check.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "tampered_ok"
+      ],
+      "what": "被篡改的副本**必须**校验失败（值 False = 检出）",
+      "docs": [
+        "docs/semantics.md:§2.4.1",
+        "tests/test_hash_chain.py"
+      ]
+    },
+    {
+      "id": "chain-mirror-detection-code",
+      "value": "INV-008",
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/chain_mirror_check.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "detection_code"
+      ],
+      "what": "检出的不变量编号，以及第一个断点的位置（first_break_seq）",
+      "docs": [
+        "docs/semantics.md:§2.4.1",
+        "tests/test_hash_chain.py"
+      ]
+    },
+    {
+      "id": "arg-policy-test-count",
+      "value": 12,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_arg_policy.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "arg_policy 的用例数（验收要求 ≥8 例，脚本计数不手写）",
+      "docs": [
+        "docs/semantics.md:§4.0",
+        "tests/test_arg_policy.py"
       ]
     }
   ]

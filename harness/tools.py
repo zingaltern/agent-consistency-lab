@@ -19,11 +19,11 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Effect(StrEnum):
@@ -67,6 +67,86 @@ ProbeFn = Callable[[dict[str, Any], str], ProbeResult]
 """
 
 
+class ArgPolicyError(ValueError):
+    """策略定义本身不合法（在**注册期**就报错，不留到执行期）。"""
+
+
+class ArgPolicy(BaseModel):
+    """工具自述的**参数安全域**（R-B2）：一层字段 + 三类约束。
+
+    哲学定位与 ``requires_approval`` 一致：**工具在注册时声明自己的安全域**，
+    审批门负责执行它——这不是一张外置的黑名单（那会让"谁有权定义危险"变成运维策略问题，
+    而不是工具契约问题）。
+
+    支持（M2 承诺的深度）：
+
+    * ``allowed``：字段值必须在集合内（**缺字段即拒**：无法核对时不能默认放行）；
+    * ``forbidden``：字段命中集合即拒（缺字段视为通过——没有危险值出现）；
+    * ``min`` / ``max``：数值区间（含端点；非数值或缺失即拒）。
+
+    不支持（扩展点，语义文档写明）：嵌套字段、类型强转、正则、跨字段约束。
+    """
+
+    field: str
+    allowed: list[Any] | None = None
+    forbidden: list[Any] | None = None
+    min: float | None = None
+    max: float | None = None
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _validate_definition(self) -> ArgPolicy:
+        if not self.field or not isinstance(self.field, str):
+            raise ArgPolicyError("arg_policy 必须给出非空的 field")
+        if not any(
+            item is not None
+            for item in (self.allowed, self.forbidden, self.min, self.max)
+        ):
+            raise ArgPolicyError(
+                "arg_policy 至少要声明 allowed / forbidden / min / max 之一，否则等于没有策略"
+            )
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ArgPolicyError(f"arg_policy 区间非法：min={self.min} > max={self.max}")
+        for name, value in (("min", self.min), ("max", self.max)):
+            if value is not None and not isinstance(value, (int, float)):
+                raise ArgPolicyError(f"arg_policy 的 {name} 必须是数字")
+        return self
+
+    def evaluate(self, args: Mapping[str, Any]) -> tuple[bool, str]:
+        """返回 ``(是否放行, 原因)``；原因会进错误事件与 tool_result，必须是稳定标识串。"""
+        present = self.field in args
+        value = args.get(self.field)
+        if self.forbidden is not None and present and value in self.forbidden:
+            return False, f"arg_policy_forbidden_value:{self.field}={value!r}"
+        if self.allowed is not None:
+            if not present:
+                return False, f"arg_policy_field_missing:{self.field}"
+            if value not in self.allowed:
+                return False, f"arg_policy_value_not_allowed:{self.field}={value!r}"
+        if self.min is not None or self.max is not None:
+            if not present:
+                return False, f"arg_policy_field_missing:{self.field}"
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return False, f"arg_policy_not_numeric:{self.field}={value!r}"
+            if self.min is not None and float(value) < float(self.min):
+                return False, f"arg_policy_below_min:{self.field}={value!r}<{self.min}"
+            if self.max is not None and float(value) > float(self.max):
+                return False, f"arg_policy_above_max:{self.field}={value!r}>{self.max}"
+        return True, "ok"
+
+    def describe(self) -> str:
+        parts = []
+        if self.allowed is not None:
+            parts.append(f"allowed={self.allowed}")
+        if self.forbidden is not None:
+            parts.append(f"forbidden={self.forbidden}")
+        if self.min is not None:
+            parts.append(f"min={self.min}")
+        if self.max is not None:
+            parts.append(f"max={self.max}")
+        return f"{self.field}: " + ", ".join(parts)
+
+
 @dataclass(frozen=True)
 class Tool:
     name: str
@@ -76,6 +156,8 @@ class Tool:
     tags: tuple[str, ...] = field(default_factory=tuple)
     requires_approval: bool = False
     probe: ProbeFn | None = None
+    # 参数级安全域（R-B2）：声明在工具上，在执行前一刻用**实际参数**核对
+    arg_policy: ArgPolicy | None = None
 
 
 class ToolRegistry:
@@ -85,6 +167,10 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
             raise ValueError(f"duplicate tool: {tool.name}")
+        if tool.arg_policy is not None and not isinstance(tool.arg_policy, ArgPolicy):
+            # 允许注册时用 dict 声明，但**立刻**校验：策略写错必须在注册期就炸，
+            # 否则会变成"某次执行时才拒绝"——那是把配置错误伪装成运行时事故。
+            tool = replace(tool, arg_policy=ArgPolicy.model_validate(tool.arg_policy))
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:

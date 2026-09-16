@@ -275,6 +275,12 @@ tests/
 | 6 | 注入时刻的随机会不会破坏评测层的确定性 | 随机只存在于**注入时刻**；评测层（`opsenv.suite`）的一切口径与现有 CRN 无关、不受影响。**成立，已吸收**。 |
 | 7 | (该轮未提出的新风险) fuzzer 与外部审计的账本快照纪律（连 `-wal` 读）如果不一致，oracle 本身会产生假发现 | 已在 inv_closed_calls/账本读取中显式要求 `-wal` 一起快照；同时提示词文档 `docs/tester-prompt.md` 已写明该坑，探测器实现注释将引用。**预防性吸收**。 |
 
+**第二轮对抗审查（v1.1 → v1.2）已吸收的关键条目**：R-A1 的 claim 示例引用的字段
+与真实 JSON 输出对齐（`real_kill_count` 需物化、`@property` 不入 JSON、
+`--json-out` 必带上）、快速档 flag 按工具实际支持写、R-A4 注入层从
+`fakeworld/model.py` 改为 `opsenv` 策略层、`grader_sensitivity` 先拆数据级函数、
+mutation 补 pyproject 配置、oracle 定义合法终态集合、`crash_marker` 增加注入族标记。
+
 ## 6. 里程碑与验收门
 
 | 阶段 | 交付 | 验收 |

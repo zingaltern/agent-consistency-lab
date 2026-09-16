@@ -1,6 +1,9 @@
 # 设计文档 B：功能性扩展第一波——真实模型接入与治理能力加深
 
-* 版本：v1.1（2026-09-17）
+* 版本：v1.2（2026-09-17；v1.2 = 吸收对抗审查第二轮 25 条发现：cassette schema 补
+  tool_calls 与 id 再生、canonical usage 归一、一致性比较白名单、迁移 drop/重建
+  触发器、fork 链挂接规则、arg_policy 执行点、sweep 引用枚举规则、lease 首版
+  不做接管、pyproject live marker 注册、测试数门槛走 claim 机制）
 * 目标读者：开发 Agent（自包含；先读 §0 与 §8 再动代码）
 * 状态：待评审
 * 关联背景：外部测试报告确认仓内机制承诺全部成立，但整个评测的地基是
@@ -58,12 +61,27 @@
 
 * **模式**：
   * `scripted`（默认）：现状不动。
-  * `record`:显式 `--model record --record-dir DIR` + `--model-key-env VAR`
-    触发；官方 SDK 调真实 API，把每次调用的 `messages → (text, usage)` 追加写入
-    录制目录；事件 payload 照常记录 usage 与 `cost_usd`（真实 usage 过价格表）。
-  * `replay`：从录制目态按确定性键检索；键 = `(模型调用序号)`，并作
-    prompt 归一化哈希的**警告级**校验（miss 时报"缺哪份录制、期望 prompt 是什么"）；
-    强校验留为开放问题 2。
+  * `record`：显式 `--model record --record-dir DIR` + `--model-key-env VAR`
+    触发；官方 SDK 调真实 API，把每次调用写入录制目录；事件 payload 照常记录
+    usage 与 `cost_usd`（真实 usage 过价格表）。
+  * `replay`：从录制目录按确定性键检索；键 = 第几次 `LLMClient.complete` 调用
+    （**跨 run/approve/resume 的总计数，语法定义见开放问题 1**）；并作 prompt
+    归一化哈希的**警告级**校验（miss 时报"缺哪份录制、期望 prompt 是什么"）。
+* **cassette schema（对抗审查第 12 条）**：录制条目不是 `messages → (text, usage)`
+  ——loop 靠 `tool_calls` 驱动，缺了它接不了工具循环。每条录制必须可序列化三段：
+  `text`、`tool_calls`（含 `tool_call_id / tool / args`）、`usage`。
+  **`tool_call_id` 的再生规则**同理关键：录制时落原始 id，回放同一 run 目录时
+  原样回放；跨 run 重放时 id 重生成规则必须确定（建议沿用 Loop 现有 id 生成器，
+  PR 里说明）。
+* **usage 归一（对抗审查第 13 条）**：录制时同时落**原始 usage json** 与
+  **canonical usage**（`prompt/completion/cache_read/cache_write` 四段，各 SDK 字段
+  映射规则写死并带 PR 样例）；价格表消费 canonical 段 + `price_version`。
+  **replay 的 usage = 录制的 canonical 值直接回放，不做二次重算**（对抗审查第
+  17 条：`ScriptedLLMClient` 的 PrefixCacheModel 是对视图块的估算口径，live 的
+  服务端缓存账单无法复算——两者口径谁权威必须写死：录制为权威，replay 不重算）。
+* **一致性验收的比较白名单（对抗审查第 16 条）**：`created_at`、`run_id`、
+  wall-clock 类字段天然不同。scripted/replay 一致性断言白名单 =
+  `token / cost / 事件序列 / tool_calls 结构`；时间戳类字段不比较。
 * **崩溃兼容性是本需求的验收核心**：`record`/`replay` 两模式都必须接受现有
   `CHAOS_WINDOWS` 注入（以及设计文档 A 的 `--kill-after-ms`，若已交付），
   outbox/探针/审批绑定/预算硬停语义**一个字不改**。
@@ -73,10 +91,12 @@
 * **录制物策略**：默认写 `/tmp`；正式样本入库 `reports/replays/<id>/` 并带 provenance
   （模型名、日期、温度、seed、成本），**永远不会**被评测命令默认拉用。
 * **验收**：
-  * scripted 与 replay 在同一份录制上产出逐字段一致的 `reports/*.json`
-    （token、cost、事件序列）。
+  * scripted 与 replay 在同一份录制上产出**白名单字段一致**（token、cost、
+    事件序列、tool_calls 结构；时间戳类不比对，见上）。
   * replay miss 的报错可读（指明缺哪份录制）。
-  * 无 key 环境下 live 模式启动即给出可读失败并退出（CI 里用 `-m live` 反例测试）。
+  * 无 key 环境下 live 模式启动即给出可读失败并退出（CI 里用 `-m live` 反例测试；
+    **对抗审查第 15 条**：`pyproject.toml` 须先注册 `markers = ["live: ..."]`，
+    否则空选集下 `pytest -m live` 以 exit 5（no tests ran）退出，会把反例误判）。
   * CI 永不执行任何在线调用。
 * **语义文档**：`docs/semantics.md` 增补"模型属于测量外部，承诺以 harness 接口为界"。
 
@@ -85,14 +105,18 @@
 * **形态**：工具注册元数据在 `requires_approval` 之外新增 `arg_policy`：
   `{"field": "role", "allowed": ["api", "worker"], "forbidden": ["billing"]}`
   与数值区间变体。M2 只承诺一层字段；嵌套为扩展点，文档写明。
-* **执行点**：`harness/approval.py` 校验链在 `args_sha256` 校验之外，
-  **实际参数命中 `forbidden` 值时无条件拒绝**（即使是已批准的绑定）；session 复用
-  也必须重新过 arg_policy——不会 session 批准成为参数级越权伞。
+* **执行点（对抗审查第 20 条）**：现有校验链在"approval 时"比对
+  `args_sha256`——参数一变即拒，所以 session 复用路径已天然被 hash 拒掉。
+  arg_policy 的**增量校验点在执行前一刻**（执行 handler 前的最后一道门），
+  输入是**实际 request.args**（而非已 hash 的审批记录）；否则会出现"审批时看不懂
+  结构化参数、批准了被禁止值"的缝隙。PR 用例必须模拟"审批通过时 args 未含
+  forbidden 值的认知、但实际执行含"这一档。
 * **哲学定位**（语义文档同步改写）：arg_policy 依然是"工具自述风险"哲学——
   工具在注册时声明自己的安全域，gate 执行；它不是一张外置黑名单。
 * **验收**：`tests/test_arg_policy.py` ≥ 8 条：allowed 通过、forbidden 拒绝、
-  TOCTOU 改参数后再次校验、session 复用再校验、数值区间边界值、策略缺失回退
-  布尔语义、非法策略定义显式报错；`docs/semantics.md` 审批节同步修订。
+  执行前一刻校验（审批记录里没有 forbidden 值但实际参数含）、session 复用 hash
+  改变被拒、数值区间边界值、策略缺失回退布尔语义、非法策略定义显式报错；
+  `docs/semantics.md` 审批节同步修订。
 
 ### R-B3｜事件哈希链（对应 G3）
 
@@ -100,15 +124,24 @@
   `event_hash = sha256(prev_hash ‖ record_bytes)`，genesis 为常量；
   record_bytes = `json.dumps(record, sort_keys=True, ensure_ascii=False)`
   （唯一正则化定义，写进 semantics）。
-* **迁移**：schema 版本 +1；存量库一次性事务内全量补链（只填 hash 列，
-  不改 payload/排序/分叉语义），迁移自测要求行数与内容逐一相同。
+* **迁移（对抗审查第 14 条）**：schema 版本 +1；存量库一次性补链。**关键坑**：
+  `events` 的 append-only 触发器对任何 UPDATE 都 RAISE ABORT——迁移必须在事务内
+  先 `DROP TRIGGER` 补链、再原样重建触发器（`events_no_update`/`events_no_delete`），
+  且迁移自测必须断言"迁移后触发器存在且再 UPDATE 仍被拒"。这不是绕过边界纪律
+  （payload 与排序未被触碰），但**必须显式写进迁移实现**，否则实现者会硬卡住
+  或误以为违反 §8 边界纪律。
+* **fork 语义下的链挂接规则（对抗审查第 18 条）**：子分支链的第一个事件的
+  `prev_hash` 指向**分叉后最后一条祖先事件**的 `event_hash`（即
+  `effective_events` 祖先前缀截断点的尾部），链校验按同一规则沿 branch-id 展开；
+  规则写进 semantics，`audit_chain` 与 INV-008 都以此为准，否则 mirror test
+  无法写出。
 * **新增 INV-008**：链不可续/不对齐 = 外部篡改指纹；`harness/state.py`
   供增量校验（只查新 seq），离线 CLI `harness/audit_chain.py` 供全量校验。
 * **审计读取纪律**：validator 必须连 `-wal`/`-shm` 一起快照（外部审计实测踩过的坑，
   见 `docs/tester-prompt.md`）。
 * **不改**：append-only 触发器保留（纵深防御）；`(branch_id, seq)` 排序、
   分叉语义不变；链按 branch 内 seq 顺序挂接。
-* **验收**：mirror test（复制副本 → 面部改成一行 → `audit_chain` 非零退出并指出
+* **验收**：mirror test（复制副本 → 篡改一行历史 → `audit_chain` 非零退出并指出
   第一个断点）；genesis/回填/正常/断链四类单元测试。
 
 ### R-B4｜OTLP 导出（对应 G4）
@@ -125,6 +158,13 @@
 
 * `harness/artifacts.py` 增加 `sweep(dry_run=True)`：按引用图删除无引用 artifact，
   返回回收前后 `orphan_count` 与删除清单。
+* **引用枚举的权威规则（对抗审查第 21 条）**：sweep 的引用收集 = **全量扫描
+  事件库 payload 中的 artifact 引用**（`compaction` 的 replaces、`read_artifact`
+  结果引用等；`orphan_count(referenced:...)` 已有接口 `harness/artifacts.py:77`
+  可复用），**不限于当前 run 目录**——同一 artifact 库被多个 run 引用时必须
+  全库一次扫描后再判孤儿，**禁止只扫单 run**（否则会误删被其它 run 引用的 artifact）。
+* 同时**禁止**回收"仅被 checkpoint/checkpoint_writes payload 引用"的对象——
+  枚举规则必须把 checkpoint 类事件也纳入扫描（PR 附引用来源清单）。
 * 分类错误处理：被删文件再次 `read_artifact` 时给出**可读失败**（分类错误语义）。
 * **只能**由显式 CLI 调用；runtime loop 内**绝不自动删**——避免引入新的崩溃窗口。
 * **验收**：≥4 条测试（引用保留、孤儿回收、dry-run 无副作用、删后重读报错）。
@@ -138,9 +178,11 @@
   （持有效租约才允许写），真正的一致性配合仍由外部账本裁决。
 * **交互时序**：lease 持有校验发生在 checkpoint 事务**外**
   （先证权、后写），PR 需带一张时序图说明两层的边界。
-* **验收**：`tests/test_lease.py` 覆盖：正常持锁、过期接管、未持锁写入被拒、
-  双进程 resume 冒烟（复用外部审计"未定义行为需如实记录"的纪律——本包把它
-  变成"已定义行为需如实验证"）。
+* **验收（对抗审查第 22 条收敛）**：首版只验两条——持有效租约写入正常、
+  未持有/已过期租约的写入给出**可读失败（拒绝接管也是合法实现）**；
+  "过期接管"是第二步能力，本包不做，端到端多进程接管列开放问题。
+  `tests/test_lease.py` 附加双进程 resume 冒烟：复用外部审计"未定义行为要如实
+  记录"的纪律——本包把它变成"已定义行为需如实验证"。
 
 ---
 
@@ -157,8 +199,13 @@ harness/
   trace.py             扩展：OTLP 桥
   store/schema.py      扩展：version+1 迁移 + events 两列 + 回填
 docs/semantics.md      扩展：模型边界 / 参数级审批 / 哈希链 / lease 四段
-tests/ (test_arg_policy | test_hash_chain | test_lease | test_artifact_sweep | test_replay_model).py  新增
-pyproject.toml         扩展：[otel] extra
+pyproject.toml         扩展：[otel] extra + pytest live marker 注册
+tests/
+  test_arg_policy.py     新增
+  test_hash_chain.py     新增
+  test_lease.py          新增
+  test_artifact_sweep.py 新增
+  test_replay_model.py   新增（fake transport / in-process exporter）
 ```
 
 ---
@@ -176,13 +223,22 @@ pyproject.toml         扩展：[otel] extra
 | 7 | G1–G6 一起做太大 | §5 给出可独立收口的里程碑；R-B1 允许跨 M2/M3。**成立，已吸收**。 |
 | 8 | （本轮新增预判）回放键若只用调用序号，在分支/恢复形态下可能错位 | 已列为开放问题 1：首版序号键 + 归一化 hash 警告校验给出 sentinel，升级为复合键前必须有 PR 论证。 |
 
+**第二轮对抗审查（v1.1 → v1.2）已吸收的关键条目**：cassette 必须含 `tool_calls`
+与 `tool_call_id` 再生规则、usage 归一为 canonical 四段且 replay 不重算、
+scripted/replay 一致性改为白名单字段比对、events 迁移须事务内 drop/重建 append-only
+触发器并建自测、fork 下 `prev_hash` 指向祖先前缀尾部事件、arg_policy 校验点移到
+执行前一刻、sweep 引用枚举 = 全库事件 payload 扫描且纳入 checkpoint 引用、
+lease 首版不做过期接管、pyproject 注册 live marker（防 exit 5 误判）、
+测试数门槛改走 claim 计数机制、§7 共享面修正为两处。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 验收门 |
 |---|---|---|
 | M1 | R-B1（三种模式 + 成本捕获 + 崩溃兼容，live 永不进 CI） | scripted/replay 双路一致 + `CHAOS_WINDOWS` 语义复跑不变 |
 | M2 | R-B2 + R-B3 | arg_policy ≥8 例 + hash 链 mirror test |
-| M3 | R-B4 + R-B5 + R-B6 + 语义文档同步 | 全部新增测试全绿；`pytest` ≥ 230 全绿；`opsenv.suite --gate` 14 条不变；`ruff` 全净 |
+| M3 | R-B4 + R-B5 + R-B6 + 语义文档同步 | 全部新增测试全绿；测试数门槛引用 A-R1 的演进类 claim（`pytest --collect-only` 计数，禁手写绝对数——对抗审查第 23 条）；`opsenv.suite --gate` 14 条不变；`ruff` 全净 |
+| 每阶段 | **本包交付的任何对外结论数字必须登记为 claim**（入 `reports/documented-facts.json`，依赖 A 的机制；对抗审查第 25 条） | — |
 
 ## 6. 开放问题（开发代理先答再动手）
 
@@ -196,8 +252,10 @@ pyproject.toml         扩展：[otel] extra
 
 ## 7. 与文档 A 的关系
 
-* 独立交接、独立收口；唯一共享面是 R-B1 的崩溃兼容性依赖 A 的 `--kill-after-ms`
-  （A 未交付时验收自然降级到现有 `CHAOS_WINDOWS` 路径）。
+* 独立交接、独立收口；共享面有二（对抗审查第 24 条修正）：其一，R-B1 的崩溃兼容
+  依赖 A 的 `--kill-after-ms`——**A 开放问题 1（新增 flag 还是扩展
+  `CHAOS_WINDOWS` 语法）的裁决结果必须回写本文档**，两包不能各自假设不一致的
+  注入面；其二，B 的验收数字依赖 A 的 claim 再生机制（见 §5）。
 * 建议顺序：A 的 M1（数字再生门禁）先行——B 每一步都会产出新的"结论数字"，
   先立起再生机制，B 的验收数字天然被覆盖。
 

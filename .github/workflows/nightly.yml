@@ -56,3 +56,40 @@ jobs:
         with:
           name: mutation-report
           path: /tmp/mutation.json
+
+  chaos-fuzz:
+    # 随机时刻 SIGKILL fuzz（R-A2）+ 故障谱系探测器（R-A3）。
+    # 判定全部由外部账本 oracle 作出（opsenv/oracle.py；读库连 -wal 一起快照）。
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+      - name: Random-time SIGKILL fuzz (30 seeds x 3 protection combos x 2 phases)
+        # 退出码非零 ⇔ 出现新类违例，或 oracle 的敏感性自检没通过（后者说明这轮全绿没意义）。
+        # 注入窗口是**本机当次标定**出来的：换 runner 会重新标定，不需要人工同步参数。
+        run: |
+          python -m experiments.chaos_fuzz --repeats 30 --seed 20260917 \
+            --workroot /tmp/fuzz --json-out /tmp/chaos_fuzz.json --md-out /tmp/chaos_fuzz.md
+      - name: Fault-spectrum probes (SIGTERM / torn write + SIGSTOP / extra ledger row)
+        run: |
+          python scripts/probe_sigterm.py --json-out /tmp/probe_sigterm.json
+          python scripts/probe_tornwrite.py --mode both --json-out /tmp/probe_tornwrite.json
+          python scripts/probe_extra_ledger_row.py --json-out /tmp/probe_extra_ledger.json
+      - name: Upload chaos reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-fuzz-reports
+          path: |
+            /tmp/chaos_fuzz.md
+            /tmp/chaos_fuzz.json
+            /tmp/probe_sigterm.json
+            /tmp/probe_tornwrite.json
+            /tmp/probe_extra_ledger.json

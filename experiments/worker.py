@@ -15,8 +15,11 @@
     python -m experiments.worker --run-dir /tmp/cell0 --mode approve
     CHAOS_WINDOWS=post_tool_effect_pre_record:1 \\
         python -m experiments.worker --run-dir /tmp/cell0 --mode resume
+    # 墙钟定时注入（R-A2 的新注入族；与 CHAOS_WINDOWS 语义独立、可同时给出）
+    python -m experiments.worker --run-dir /tmp/cell0 --mode resume --kill-after-ms 120
 
-崩溃时进程被 SIGKILL（退出码 137/-9），并留下 ``crash_marker.json``。
+崩溃时进程被 SIGKILL（退出码 137/-9），并留下 ``crash_marker.json``
+（``injection_kind`` 区分 window / time_hit 两个注入族）。
 """
 
 from __future__ import annotations
@@ -58,6 +61,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tool-idem", choices=("on", "off"), default="on")
     parser.add_argument("--probe", choices=("on", "off"), default="on")
     parser.add_argument("--tamper", choices=("on", "off"), default="off")
+    parser.add_argument(
+        "--kill-after-ms",
+        type=int,
+        default=None,
+        help="墙钟定时注入：启动后 N 毫秒 SIGKILL 自身（与 CHAOS_WINDOWS 独立）",
+    )
     parser.add_argument("--approve-mode", choices=("approve", "reject", "edit"), default="approve")
     parser.add_argument("--compaction", choices=("on", "off"), default="on")
     parser.add_argument(
@@ -103,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     store.setup()
     world = World(run_dir / "world.db")
     saver = SqliteCheckpointSaver(store)
-    chaos = Chaos.from_env(run_dir / "crash_marker.json")
+    chaos = Chaos.from_env(run_dir / "crash_marker.json", args.kill_after_ms)
     artifacts = ArtifactStore(run_dir / "artifacts")
     registry = build_registry(
         world,

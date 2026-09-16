@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 243,
+      "value": 254,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1416,6 +1416,151 @@
       "what": "幸存率（分母只含被判定的变异体；no tests 是另一类盲区，不混入分母）",
       "docs": [
         "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "fuzz-killed-injections",
+      "value": 180,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.chaos_fuzz",
+        "--repeats",
+        "30",
+        "--seed",
+        "20260917",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary",
+        "killed"
+      ],
+      "what": "随机时刻 fuzz 里实际注入成功的 SIGKILL 次数（30 seed × 3 保护组合 × 2 注入阶段）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "fuzz-unexpected-findings",
+      "value": 0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.chaos_fuzz",
+        "--repeats",
+        "30",
+        "--seed",
+        "20260917",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary",
+        "unexpected_findings"
+      ],
+      "what": "命名窗口之外的新类违例数（判定来自外部账本 oracle，不是 runtime 自述）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "fuzz-oracle-sensitive",
+      "value": true,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.chaos_fuzz",
+        "--repeats",
+        "30",
+        "--seed",
+        "20260917",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "sensitivity",
+        "sensitive"
+      ],
+      "what": "oracle 敏感性自检：已知会重复的配置下必须报红（否则全绿没有信息量）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "probe-sigterm-max-per-key",
+      "value": 1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "scripts/probe_sigterm.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "ledger_after_resume",
+        "max_per_key"
+      ],
+      "what": "SIGTERM 探测：恢复后单键最大效果行数（SIGTERM 与 SIGKILL 同类，无优雅 flush 语义）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "probe-tornwrite-no-new-effects",
+      "value": true,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "scripts/probe_tornwrite.py",
+        "--mode",
+        "truncate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "truncate",
+        "results",
+        0,
+        "no_new_effects"
+      ],
+      "what": "torn write 探测：主库被截断后 resume 不产生任何新副作用（显式失败而非静默续跑）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
+      ]
+    },
+    {
+      "id": "probe-extra-ledger-row-unchanged",
+      "value": true,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "scripts/probe_extra_ledger_row.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "foreign",
+        "ledger_unchanged"
+      ],
+      "what": "账本外注入探测：runtime 不知道的外部效果行不会触发重跑（账本行数不变）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md"
       ]
     }
   ]

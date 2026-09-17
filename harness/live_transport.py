@@ -11,10 +11,11 @@
    CI 不执行任何在线调用（``tests/test_live_model.py`` 里的在线用例带 ``-m live``）。
 
 已知限制（写在 docstring 而不是报告里，避免它被误当成能力）：
-本 transport 把视图块拼成**一条 user 消息**，工具清单以 ``tools`` 参数下发；
-本仓库没有为真实模型定义工具的参数 schema（`harness/tools.py::Tool` 只有 description），
-因此"真实模型自主选择工具"这条路只在本 transport 与供应商都支持时才能跑通。
-接真实模型的第一版用途是**接口回归与录制**，不是模型质量评测。
+本 transport 把视图块拼成**一条 user 消息**，工具清单以 ``tools`` 参数下发，
+参数 schema 由 ``Tool.parameters`` 声明（未声明的工具下发空参数表——实测空表下
+真实模型倾向于用文字描述"我打算调用哪个工具"而**不真正调用**，因此声明 schema
+是 live 路径可用性的前提）。即便如此，"真实模型自主选择工具"仍取决于供应商对
+工具调用的支持程度；接真实模型的用途是**接口回归、录制与语义验证**，不是模型质量评测。
 """
 
 from __future__ import annotations
@@ -146,10 +147,11 @@ class LiveChatTransport:
 
 
 def tools_schema_from_registry(registry: Any) -> list[dict[str, Any]]:
-    """把工具注册表转成 OpenAI 的 ``tools`` 形态（只有名字与描述）。
+    """把工具注册表转成 OpenAI 的 ``tools`` 形态（名字 + 描述 + 参数 schema）。
 
-    参数 schema 本仓库没有建模（`Tool` 只有 description/tags），因此这里下发的是**空参数表**。
-    真实模型能不能据此正确调用工具，取决于供应商的宽容度——这条限制写在模块 docstring 里。
+    参数 schema 取 ``Tool.parameters``；未声明时回退到空参数表（向后兼容：
+    既有工具不声明 schema 时，下发的形状与从前逐字相同）。schema 是"工具自述"的
+    一部分——它必须与 ``fn`` 实际接受的字段一致，否则真实模型的合法调用会被判成参数错误。
     """
     return [
         {
@@ -157,7 +159,7 @@ def tools_schema_from_registry(registry: Any) -> list[dict[str, Any]]:
             "function": {
                 "name": tool.name,
                 "description": tool.description or tool.name,
-                "parameters": {"type": "object", "properties": {}},
+                "parameters": tool.parameters or {"type": "object", "properties": {}},
             },
         }
         for tool in registry

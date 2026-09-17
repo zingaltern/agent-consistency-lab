@@ -87,21 +87,82 @@ class ArtifactStore:
         )
 
 
-def make_read_artifact_tool(store: ArtifactStore, *, max_limit: int = 8000) -> Tool:
-    """把 artifact 读回注册成工具：模型按需取切片，而不是让全文留在上下文里。"""
+# 与 `harness/context.py::DEFAULT_MAX_INLINE_TOKENS` 同值；不能直接 import 它
+# （context 依赖本模块，反向 import 成环），由 tests 里的一致性用例守住两个常量不漂移。
+DEFAULT_INLINE_TOKEN_BUDGET = 800
+
+
+def make_read_artifact_tool(
+    store: ArtifactStore,
+    *,
+    max_limit: int = 8000,
+    inline_token_budget: int = DEFAULT_INLINE_TOKEN_BUDGET,
+) -> Tool:
+    """把 artifact 读回注册成工具：模型按需取切片，而不是让全文留在上下文里。
+
+    **返回的切片必须装得进内联预算**：渲染层会把超预算的工具结果再次卸载成新的
+    artifact，于是调用方拿到的是"包装"而不是正文——真实模型实测连续 4 次
+    `read_artifact` 都只拿回包装层，取证因此中断。所以这里按 token 预算裁剪，
+    并用 `truncated` / `next_offset` 把"还有多少没读"显式告诉调用方：
+    截断是可读的、可续读的，而不是静默丢数据。
+    """
+    # 留 20% 余量：渲染时还要加字段名等包装，紧贴阈值会再次触发卸载
+    budget = max(1, int(inline_token_budget * 0.8))
+
+    def _trim_to_budget(text: str) -> str:
+        """按估算 token 等比收缩；估算非线性，最多迭代 8 次收敛。"""
+        for _ in range(8):
+            tokens = estimate_tokens(text)
+            if tokens <= budget or not text:
+                return text
+            text = text[: max(1, int(len(text) * budget / tokens))]
+        return text
 
     def read_artifact(args: dict[str, Any], _key: str) -> dict[str, Any]:
         digest = str(args.get("digest", ""))
         offset = int(args.get("offset", 0))
         limit = min(int(args.get("limit", 4000)), max_limit)
-        return store.read_slice(digest, offset=offset, limit=limit)
+        sliced = store.read_slice(digest, offset=offset, limit=limit)
+        content = _trim_to_budget(str(sliced["content"]))
+        next_offset = offset + len(content)
+        total = int(sliced["total_chars"])
+        return {
+            "digest": digest,
+            "offset": offset,
+            "returned_chars": len(content),
+            "total_chars": total,
+            "truncated": next_offset < total,
+            "next_offset": next_offset if next_offset < total else None,
+            "inline_token_budget": budget,
+            "content": content,
+        }
 
     return Tool(
         name="read_artifact",
         effect=Effect.READ,
         fn=read_artifact,
-        description="按 digest 读取被卸载的大结果切片（offset/limit）",
+        description=(
+            "按 digest 读取被卸载的大结果切片（offset/limit）；"
+            "返回内容会按内联预算裁剪，truncated=true 时用 next_offset 续读"
+        ),
         tags=("readonly", "artifact"),
+        parameters={
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string",
+                    "description": "卸载时返回的内容摘要（sha256 十六进制）",
+                },
+                "offset": {"type": "integer", "minimum": 0, "description": "起始偏移（缺省 0）"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": max_limit,
+                    "description": f"切片长度（缺省 4000，上限 {max_limit}）",
+                },
+            },
+            "required": ["digest"],
+        },
     )
 
 

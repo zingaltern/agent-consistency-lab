@@ -112,16 +112,28 @@ class ArgPolicy(BaseModel):
                 raise ArgPolicyError(f"arg_policy 的 {name} 必须是数字")
         return self
 
+    @staticmethod
+    def _matches(value: Any, candidates: list[Any]) -> bool:
+        """集合成员判断，但**布尔只与布尔相等**。
+
+        独立测试 P2-8：`Trueness == 1` 在 Python 里成立，于是 `allowed=[1]` 会把 `True`
+        放进白名单（`forbidden=[1]` 也会顺带把 `True` 拦下——方向相反但同源）。
+        数值白名单里混进布尔值属于"用真值穿透类型"，在安全域判定里必须显式拒绝。
+        """
+        if isinstance(value, bool):
+            return any(isinstance(item, bool) and item is value for item in candidates)
+        return any(not isinstance(item, bool) and item == value for item in candidates)
+
     def evaluate(self, args: Mapping[str, Any]) -> tuple[bool, str]:
         """返回 ``(是否放行, 原因)``；原因会进错误事件与 tool_result，必须是稳定标识串。"""
         present = self.field in args
         value = args.get(self.field)
-        if self.forbidden is not None and present and value in self.forbidden:
+        if self.forbidden is not None and present and self._matches(value, self.forbidden):
             return False, f"arg_policy_forbidden_value:{self.field}={value!r}"
         if self.allowed is not None:
             if not present:
                 return False, f"arg_policy_field_missing:{self.field}"
-            if value not in self.allowed:
+            if not self._matches(value, self.allowed):
                 return False, f"arg_policy_value_not_allowed:{self.field}={value!r}"
         if self.min is not None or self.max is not None:
             if not present:

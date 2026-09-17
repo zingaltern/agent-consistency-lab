@@ -32,13 +32,21 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FACTS = PROJECT_ROOT / "reports" / "documented-facts.json"
-DEFAULT_OUTDIR = Path("/tmp/facts")
+# 每次运行一个独立目录（评审/独立测试 P2-12：固定 `/tmp/facts` 时同机两条会话会互相
+# unlink 对方的再生输出，表现为"命令未写出 …"这种误报）。可用 --outdir 固定。
+DEFAULT_OUTDIR_PREFIX = "facts-"
 REQUIRED_KEYS = ("id", "value", "tolerance", "run", "source_cmd", "source_path", "what", "docs")
+# 可选字段：`doc_literals` 是文档正文里必须**逐字出现**的片段（通常含数字）。
+# 独立测试 P1-2 的最小复现：把 README 里的"命中率 57.4% → 0%"改成 87.4%，门禁仍然 27/27——
+# 因为 Claim 只对齐"再生命令的输出"，从不读正文。doc_literals 把这一跳补上：
+# 正文被改动 ⇒ 字面量消失 ⇒ 变红（而"只改正文不改 claim"正是历史上 P2 的形态）。
+OPTIONAL_KEYS = ("doc_literals",)
 VALID_RUNS = ("verify", "nightly")
 
 
@@ -83,12 +91,14 @@ def load_claims(path: Path) -> list[dict[str, Any]]:
         else:
             for entry in claim["docs"]:
                 problems.extend(_check_doc_reference(label, entry))
+        for entry in claim.get("doc_literals", []):
+            problems.extend(_check_doc_reference(label, entry, kind="doc_literals"))
     if problems:
         raise ClaimError("\n".join(problems))
     return claims
 
 
-def _check_doc_reference(label: str, entry: str) -> list[str]:
+def _check_doc_reference(label: str, entry: str, *, kind: str = "docs") -> list[str]:
     """``路径#锚点`` 必须指到真文件与真锚点（评审 P1-4）。
 
     只校验"文件存在 + 锚点逐字出现"：不做语义比对（那要靠人），但"引用位置写错"
@@ -97,14 +107,14 @@ def _check_doc_reference(label: str, entry: str) -> list[str]:
     problems: list[str] = []
     path_part, _, anchor = str(entry).partition("#")
     if not path_part:
-        return [f"{label}: docs 引用缺少路径：{entry!r}"]
+        return [f"{label}: {kind} 引用缺少路径：{entry!r}"]
     target = PROJECT_ROOT / path_part
     if not target.exists():
-        return [f"{label}: docs 引用的文件不存在：{path_part}（写全相对仓库根的路径）"]
+        return [f"{label}: {kind} 引用的文件不存在：{path_part}（写全相对仓库根的路径）"]
     if anchor and anchor not in target.read_text(encoding="utf-8"):
         problems.append(
-            f"{label}: docs 锚点在 {path_part} 里找不到：{anchor!r}"
-            "（锚点必须是文件里逐字出现的片段）"
+            f"{label}: {kind} 片段在 {path_part} 里找不到：{anchor!r}"
+            "（必须是文件里逐字出现的片段；正文数字改了就该在这里同步）"
         )
     return problems
 
@@ -248,9 +258,10 @@ def run_claim(
 def check(
     claims: list[dict[str, Any]],
     *,
-    outdir: Path = DEFAULT_OUTDIR,
+    outdir: Path | None = None,
     timeout: float = 900.0,
 ) -> list[dict[str, Any]]:
+    outdir = outdir or Path(tempfile.mkdtemp(prefix=DEFAULT_OUTDIR_PREFIX))
     cache: dict[str, tuple[int, str, str]] = {}
     return [run_claim(claim, outdir=outdir, cache=cache, timeout=timeout) for claim in claims]
 
@@ -273,7 +284,11 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scripts/check_facts.py")
     parser.add_argument("--facts", default=str(DEFAULT_FACTS))
-    parser.add_argument("--outdir", default=str(DEFAULT_OUTDIR))
+    parser.add_argument(
+        "--outdir",
+        default="",
+        help="不填 = /tmp/facts-<随机后缀>（每次运行独立，避免并发互相清档）",
+    )
     parser.add_argument("--run", choices=("verify", "nightly", "all"), default="all")
     parser.add_argument("--id", action="append", default=[], help="只对账指定 claim（可重复）")
     parser.add_argument("--list", action="store_true", help="只列出 claim，不执行命令")
@@ -311,7 +326,9 @@ def main(argv: list[str] | None = None) -> int:
         print("没有要跑的 claim（--run/--id 过滤后为空）")
         return 0
 
-    records = check(claims, outdir=Path(args.outdir), timeout=args.timeout)
+    records = check(
+        claims, outdir=Path(args.outdir) if args.outdir else None, timeout=args.timeout
+    )
     print(render_markdown(records))
     failed = [record for record in records if not record["ok"]]
     for record in failed:

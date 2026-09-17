@@ -54,6 +54,12 @@ OUTCOME_KEYS = (
     "cache_write_tokens",
 )
 WHITELIST = (
+    # 独立测试 P2-7：原先白名单只覆盖 token/cost/事件序列/tool_calls 结构——
+    # **模型文本**不在任何校验面内（request_fingerprint 只覆盖请求），
+    # 于是"把录制里的文本换成等 token 数的另一句话"会完全静默，而篡改后的文本
+    # 已经落进事件日志、进了下一次模型调用的上下文。
+    "events.agent_text",
+    "events.user_text",
     "outcome.status",
     "outcome.step",
     "outcome.executed",
@@ -120,9 +126,13 @@ def _fingerprint(run_dir: Path) -> dict[str, Any]:
     sequence: list[str] = []
     tool_calls: list[tuple[str, str, str]] = []
     tokens: list[tuple[int, int, int, float]] = []
+    texts: list[tuple[str, str]] = []
     for event in events:
         sequence.append(f"{event.kind.value}:{event.type}")
         payload = event.payload
+        if event.type in ("agent_message", "user_message"):
+            # 文本参与比较：它是**模型实际说了什么**，等 token 的篡改也必须被抓到
+            texts.append((event.type, str(payload.get("text", ""))))
         if event.type == "tool_call":
             tool_calls.append(
                 (
@@ -151,6 +161,7 @@ def _fingerprint(run_dir: Path) -> dict[str, Any]:
         "events": sequence,
         "tool_calls": tool_calls,
         "tokens": tokens,
+        "texts": texts,
         "branch_id": ids["branch_id"],
     }
 
@@ -180,6 +191,10 @@ def _compare(left: dict[str, Any], right: dict[str, Any]) -> list[dict[str, Any]
     if left["tokens"] != right["tokens"]:
         diffs.append(
             {"field": "events.tokens_cost", "left": left["tokens"], "right": right["tokens"]}
+        )
+    if left["texts"] != right["texts"]:
+        diffs.append(
+            {"field": "events.texts", "left": left["texts"], "right": right["texts"]}
         )
     return diffs
 

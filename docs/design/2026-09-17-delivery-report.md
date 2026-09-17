@@ -41,7 +41,7 @@
 | A-M1 | ≥20 claim；3 条错误注入 self-test 全红 | 72 条；`tests/test_facts_gate.py` 15 passed；退化注入实测（改 value → 退出 1） |
 | A-M2 | 噪声人格可用 + mutation nightly 生效 | `--reasoner noisy` 全量可跑（1 条降级门禁如实报红）；mutation 基线入库，删一条基线即退出 1 |
 | A-M3 | fuzz 30× 全绿 + ≥3 档探测器 + nightly | 180 次注入 0 新类违例；4 档探测器；nightly job `chaos-fuzz` |
-| 每阶段 | ruff 全净；测试全绿；`opsenv.suite --gate` 14 条不变；不回退 | 316 passed；`gate_summary {total:14, passed:14}`；`crash_matrix --repeats 5` 16 格 as-predicted |
+| 每阶段 | ruff 全净；测试全绿；`opsenv.suite --gate` 14 条不变；不回退 | `collected 316`（默认集 312 passed + 1 skipped，`live` 主题 3 条由 `pytest -m live` 单跑——独立测试 P2-11 指出"passed"用词偏了）；`gate_summary {total:14, passed:14}`；`crash_matrix --repeats 5` 16 格 as-predicted |
 
 ### B §5（里程碑验收）
 

@@ -73,8 +73,14 @@ def has_sigterm_handler() -> bool:
     return "SIGTERM" in source or "signal.signal" in source
 
 
-def probe(*, workroot: Path, delay_ms: int) -> dict:
-    run_dir = workroot / "sigterm"
+def probe_once(*, workroot: Path, delay_ms: int, tag: str = "") -> dict:
+    """一次尝试：在 ``delay_ms`` 后发 SIGTERM，然后按不变式走一遍恢复。
+
+    **信号的"落点"依赖负载**：机器忙的时候 resume 可能在延迟之前就跑完，
+    于是这一轮根本没发出信号——那种情况是"没测到"，不是"测出问题了"。
+    调用方（``probe``）会依次缩短延迟重试，并把"实际落在哪个延迟上"记进结论。
+    """
+    run_dir = workroot / f"sigterm{tag}"
     if run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
@@ -104,6 +110,7 @@ def probe(*, workroot: Path, delay_ms: int) -> dict:
         run_dir, status=str(after.get("status", "unknown")), resumes_used=1, max_resumes=5
     )
     return {
+        "delay_ms_used": delay_ms,
         "graceful_handler_registered": has_sigterm_handler(),
         "sigterm_sent": sent,
         "exit_code": exit_code,
@@ -115,14 +122,48 @@ def probe(*, workroot: Path, delay_ms: int) -> dict:
     }
 
 
+def probe(*, workroot: Path, delay_ms: int, attempts: int = 4) -> dict:
+    """探测器的**自校正**入口：依次缩短延迟直到信号真的落在进程运行期。
+
+    为什么不在第一次没打中时就判失败：那会让探测器变成一个"随机器负载翻红"的检查，
+    而 flaky 的门禁很快就会被忽略。真正的失败判据是"**所有**尝试都没能发出信号"
+    （那时才说明探测前提不成立）。
+    """
+    attempt_delays = [max(5, delay_ms // (2**index)) for index in range(attempts)]
+    results = []
+    for index, delay in enumerate(attempt_delays):
+        result = probe_once(workroot=workroot, delay_ms=delay, tag=f"-{index}")
+        results.append(result)
+        if result["sigterm_sent"]:
+            result = dict(result)
+            result["attempts"] = results
+            return result
+    # 所有延迟都没打中：说明进程比探测器的任何延迟都快 —— 结论是"测不到"，按失败处理
+    final = dict(results[-1])
+    final["attempts"] = results
+    final["inconclusive"] = True
+    return final
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scripts/probe_sigterm.py")
     parser.add_argument("--workroot", default="/tmp/probe-sigterm")
-    parser.add_argument("--delay-ms", type=int, default=120, help="启动后多少毫秒发 SIGTERM")
+    parser.add_argument(
+        "--delay-ms",
+        type=int,
+        default=120,
+        help="启动后多少毫秒发 SIGTERM（没打中会自动减半重试，最多 4 次）",
+    )
     parser.add_argument("--json-out", default="")
     args = parser.parse_args(argv)
 
     result = probe(workroot=Path(args.workroot), delay_ms=args.delay_ms)
+    if result.get("inconclusive"):
+        result["conclusion"] = (
+            "所有尝试（延迟依次减半）都没能在进程运行期发出 SIGTERM：本轮**没测到**任何东西，"
+            "按失败处理而不是「碰巧绿」。处置：换更长的任务体量（--long-steps 更大）"
+            "或降低机器负载。"
+        )
     result["conclusion"] = (
         "运行时未注册 SIGTERM 处理器 ⇒ SIGTERM 等价于立即终止（与 SIGKILL 同类），"
         "不存在「优雅关闭会 flush 未落盘内容」的额外语义；"
@@ -138,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     ok = (
         # 必须包含"信号真的发出过"：进程若在延迟前就退出，探测器没测到任何东西，
-        # 却照样会打印"未注册 SIGTERM 处理器"的结论（评审 P2-8）
+        # 却照样会打印"未注册 SIGTERM 处理器"的结论（评审 P2-8）。
+        # 自校正之后仍未发出 ⇒ 探测前提不成立，判失败（而不是"碰巧绿"）。
         bool(result["sigterm_sent"])
         and result["exit_code"] != 0
         and result["ledger_after_resume"]["max_per_key"] <= 1

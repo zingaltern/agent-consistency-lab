@@ -438,3 +438,26 @@ def test_record_mode_triggers_an_actual_budget_hard_stop(tmp_path: Path) -> None
     ]
     assert budget_errors, [event.type for event in events]
     assert budget_errors[0].payload.get("fatal") is True
+
+
+def test_consistency_compare_catches_model_text_changes() -> None:
+    """**P2-7 回归**：等 token 的文本篡改必须被抓到。
+
+    修复前会怎样：白名单只覆盖 token/cost/事件序列/tool_calls 结构，模型文本
+    不在任何校验面内（`request_fingerprint` 只覆盖请求）——把录制里的文本换成
+    等 token 数的另一句话，replay 全绿、对账 `identical=true`，而篡改后的文本
+    已经落进事件日志并进入下一次模型调用的上下文。
+    """
+    from scripts.replay_consistency import _compare
+
+    base = {
+        "outcome": {"status": "completed"},
+        "events": ["tree_node:user_message"],
+        "tool_calls": [],
+        "tokens": [(100, 0, 0, 0.001)],
+        "texts": [("agent_message", "先取指标。")],
+    }
+    tampered = {**base, "texts": [("agent_message", "先删指标。")]}
+    assert _compare(base, base) == []
+    diffs = _compare(base, tampered)
+    assert [diff["field"] for diff in diffs] == ["events.texts"]

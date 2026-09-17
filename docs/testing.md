@@ -36,7 +36,9 @@
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 72 条 claim（约 100 秒）
-.venv/bin/python scripts/mutation_check.py              # 变异门禁（幸存变异防倒退；本地约 5 分钟）
+.venv/bin/python scripts/mutation_check.py              # 变异门禁（幸存变异防倒退；本地冷跑 3~6 分钟）
+                                                       # 超时预算由 --timeout 给出（nightly 用 1320s = 22 分钟）
+                                                       # ⚠️ 变异体总数为 0 也判失败（"跑不起来"≠"没有盲区"）
 .venv/bin/python -m experiments.chaos_fuzz --repeats 30 --seed 20260917   # 随机时刻 fuzz
 .venv/bin/python scripts/probe_sigterm.py               # 谱系探测器（三档，各约 10–20 秒）
 .venv/bin/python scripts/replay_consistency.py          # scripted ↔ replay 白名单一致性

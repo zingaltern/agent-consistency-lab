@@ -315,6 +315,57 @@ def sensitivity_check(*, workroot: Path, max_resumes: int = MAX_DRIVE_STEPS) -> 
     }
 
 
+# 判定所需的"命中率"下限。为什么不是 1.0：注入时刻由标定窗口采样，而**负载**
+# 会让个别试次的采样点落在进程退出之后——本机实测 180 次里有 169~180 次命中。
+# 取 0.5 是为了让"标定系统性偏大（注入全落空）"变红，同时不把负载抖动误判成故障。
+MIN_KILL_RATIO = 0.5
+
+
+def compute_verdict(
+    *, trials: list[dict[str, Any]], sensitivity: dict[str, Any]
+) -> dict[str, Any]:
+    """由**证据**推出判定（纯函数，可单测）。
+
+    评审（独立测试 P1-1）：原先 verdict 只看 `unexpected_findings` 与敏感性自检，
+    **不要求任何一次注入真的命中**——标定偏大时 18 次试验一次都没杀死进程，仍然全绿。
+    那正是 `docs/fault-spectrum.md` 自己称为"最危险的一种假绿"的形态。
+
+    现在三条硬条件（任一不满足即红）：
+    1. 没有新类违例，且敏感性自检通过；
+    2. `kills_without_marker == 0`（退出码非零但没有 marker = 那次"注入"没发生）；
+    3. **命中率**≥ ``MIN_KILL_RATIO`` 且**每个（组合 × 阶段）格至少命中一次**。
+    """
+    unexpected = sum(len(trial["unexpected"]) for trial in trials)
+    without_marker = sum(1 for trial in trials if trial["killed"] and not trial["killed_verified"])
+    verified = sum(1 for trial in trials if trial["killed_verified"])
+    ratio = verified / len(trials) if trials else 0.0
+    cells: dict[str, int] = {}
+    for trial in trials:
+        key = f"{trial['combo']}/{trial['kill_phase']}"
+        cells[key] = cells.get(key, 0) + (1 if trial["killed_verified"] else 0)
+    empty_cells = sorted(key for key, count in cells.items() if count == 0)
+    reasons = []
+    if unexpected:
+        reasons.append(f"新类违例 {unexpected} 条")
+    if not sensitivity.get("sensitive", False):
+        reasons.append("oracle 敏感性自检未通过")
+    if without_marker:
+        reasons.append(f"有 {without_marker} 次退出码非零但没有 time_hit marker")
+    if verified == 0:
+        reasons.append("**一次注入都没有命中**（标定偏大或注入机制失效）")
+    elif ratio < MIN_KILL_RATIO:
+        reasons.append(f"命中率 {ratio:.0%} < {MIN_KILL_RATIO:.0%}")
+    if empty_cells:
+        reasons.append("以下格子一次都没命中：" + "、".join(empty_cells))
+    return {
+        "verdict": "green" if not reasons else "red",
+        "kill_ratio": round(ratio, 4),
+        "min_kill_ratio": MIN_KILL_RATIO,
+        "killed_verified_by_cell": dict(sorted(cells.items())),
+        "reasons": reasons,
+    }
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# 随机时刻 SIGKILL fuzz 报告（R-A2）",
@@ -370,6 +421,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"（无 marker 的 {summary['kills_without_marker']} 次按失败计），"
         f"**新类违例 {summary['unexpected_findings']} 条**，"
         f"已知类违例 {summary['expected_findings']} 条（后者是被对照面显式声明的语义）。",
+        f"* **注入命中率**：{report['verdict_detail']['kill_ratio']:.0%}"
+        f"（下限 {report['verdict_detail']['min_kill_ratio']:.0%}；"
+        "低于下限说明标定系统性偏大，注入其实没发生）",
+        "* 判定理由（空 = 全绿）："
+        + ("、".join(report["verdict_detail"]["reasons"]) or "无"),
         "* **敏感性自检**（已知会重复的配置下 oracle 必须报红）："
         f"{'通过' if report['sensitivity']['sensitive'] else '**失败**'}"
         f"——实测 findings={report['sensitivity']['findings']}。",
@@ -488,15 +544,9 @@ def main(argv: list[str] | None = None) -> int:
             "wall_seconds": round(time.perf_counter() - started, 1),
         },
     }
-    report["verdict"] = (
-        "green"
-        if (
-            report["summary"]["unexpected_findings"] == 0
-            and sensitivity.get("sensitive", False)
-            and report["summary"]["kills_without_marker"] == 0
-        )
-        else "red"
-    )
+    verdict = compute_verdict(trials=report["trials"], sensitivity=sensitivity)
+    report["verdict"] = verdict["verdict"]
+    report["verdict_detail"] = verdict
     text = render_markdown(report)
     print(text)
     if args.json_out:

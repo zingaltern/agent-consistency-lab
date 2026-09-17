@@ -2,6 +2,8 @@
   "identical": true,
   "diffs": [],
   "whitelist": [
+    "events.agent_text",
+    "events.user_text",
     "outcome.status",
     "outcome.step",
     "outcome.executed",

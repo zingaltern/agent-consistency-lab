@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 328,
+      "value": 339,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -22,6 +22,9 @@
         "docs/design/2026-09-17-test-hardening.md#R-A1｜声称数字再生门禁（对应 G1）",
         "docs/design/2026-09-17-test-hardening.md#演进类（测试数量等随代码走）",
         "docs/development.md#2.3 合并门槛（Definition of Done）"
+      ],
+      "doc_literals": [
+        "README.md#用例数不手写：claim tests-collected"
       ]
     },
     {
@@ -71,6 +74,9 @@
       "docs": [
         "README.md#**W4**",
         "docs/w4-report.md"
+      ],
+      "doc_literals": [
+        "README.md#命中率 57.4% → 0%"
       ]
     },
     {
@@ -116,6 +122,9 @@
       "docs": [
         "README.md#**W4**",
         "docs/posts/03-cache-accounting.md"
+      ],
+      "doc_literals": [
+        "README.md#成本/调用 +104.6%"
       ]
     },
     {
@@ -138,6 +147,9 @@
       "what": "E2 卸载相对内联的 token/调用增量（-66%；内联侧是截断期均值，口径见 findings 注）",
       "docs": [
         "README.md#**W4**"
+      ],
+      "doc_literals": [
+        "README.md#token/调用 -66%"
       ]
     },
     {
@@ -160,6 +172,9 @@
       "what": "E2 卸载相对内联的成本/调用增量（-62%）",
       "docs": [
         "README.md#**W4**"
+      ],
+      "doc_literals": [
+        "README.md#成本/调用 -62%"
       ]
     },
     {
@@ -205,6 +220,9 @@
       "docs": [
         "README.md#**W4**",
         "docs/w4-report.md"
+      ],
+      "doc_literals": [
+        "README.md#$0.01431"
       ]
     },
     {
@@ -227,6 +245,9 @@
       "what": "E3 主桶成本/调用（$0.01073）",
       "docs": [
         "README.md#**W4**"
+      ],
+      "doc_literals": [
+        "README.md#$0.01073"
       ]
     },
     {
@@ -249,6 +270,9 @@
       "what": "E3 压缩桶成本/调用（$0.00357，摘要调用本身也要花钱）",
       "docs": [
         "README.md#**W4**"
+      ],
+      "doc_literals": [
+        "README.md#$0.00357"
       ]
     },
     {
@@ -271,6 +295,9 @@
       "what": "E3 压缩路径的缓存命中率（35.0%）",
       "docs": [
         "README.md#**W4**"
+      ],
+      "doc_literals": [
+        "README.md#命中率只有 35.0%"
       ]
     },
     {
@@ -360,6 +387,9 @@
       "docs": [
         "README.md#**W3**",
         "docs/HANDOFF.md#一、这个东西是什么"
+      ],
+      "doc_literals": [
+        "docs/HANDOFF.md#70 次注入真实 SIGKILL"
       ]
     },
     {
@@ -606,6 +636,9 @@
       "docs": [
         "README.md#**W5**",
         "docs/HANDOFF.md#一、这个东西是什么"
+      ],
+      "doc_literals": [
+        "README.md#64 场景 × 4 系统 × 2 推理器 × 3 次"
       ]
     },
     {
@@ -692,6 +725,9 @@
       "docs": [
         "README.md#**W5**",
         "docs/w5-report.md"
+      ],
+      "doc_literals": [
+        "README.md#competent 90.1% / weak 61.5%"
       ]
     },
     {
@@ -779,6 +815,9 @@
       "docs": [
         "README.md#**W5**",
         "docs/w5-report.md"
+      ],
+      "doc_literals": [
+        "README.md#20.8% 的 weak 场景里"
       ]
     },
     {
@@ -862,6 +901,9 @@
       "docs": [
         "README.md#**W6**",
         "docs/HANDOFF.md#四、七轮结论"
+      ],
+      "doc_literals": [
+        "README.md#红线执行率 −0.208（CI [−0.266, −0.151]，配对 192 组）"
       ]
     },
     {
@@ -919,6 +961,9 @@
       "what": "harness − single_shot 的诊断正确率配对差值（0.000，CI [0,0]：不可区分）",
       "docs": [
         "README.md#**W6**"
+      ],
+      "doc_literals": [
+        "README.md#正确率 +0.000（95% CI [0.000, 0.000]，配对 192 组"
       ]
     },
     {
@@ -1000,6 +1045,9 @@
       "docs": [
         "README.md#**W7**",
         "docs/w7-report.md"
+      ],
+      "doc_literals": [
+        "README.md#不压缩只有 33% 变体能跑完"
       ]
     },
     {
@@ -1095,6 +1143,9 @@
       "what": "选定阈值的平均净成本（$0.1183，主桶 + 压缩桶）",
       "docs": [
         "README.md#**W7**"
+      ],
+      "doc_literals": [
+        "README.md#$0.11834；主桶增量 +41%，压缩动作本身占 +38%"
       ]
     },
     {
@@ -1144,6 +1195,9 @@
       "docs": [
         "README.md#**W7**",
         "docs/HANDOFF.md#四、七轮结论"
+      ],
+      "doc_literals": [
+        "README.md#净成本 +79%"
       ]
     },
     {
@@ -1221,6 +1275,9 @@
       "docs": [
         "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
+      ],
+      "doc_literals": [
+        "README.md#`strict` 66.7% < `cause_only` 77.6%"
       ]
     },
     {
@@ -1252,6 +1309,9 @@
       "docs": [
         "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
+      ],
+      "doc_literals": [
+        "README.md#`strict` 66.7% < `cause_only` 77.6%"
       ]
     },
     {
@@ -1398,8 +1458,12 @@
         "README.md#**W9**",
         "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
         "docs/design/2026-09-17-review-response.md#2. P0（不修不能合）",
+        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
         "docs/testing.md#3. 改动 → 测试义务（硬性）",
         "reports/mutation_baseline.json"
+      ],
+      "doc_literals": [
+        "README.md#1670 个变异体 / 1031 killed / 625 survived"
       ]
     },
     {
@@ -1448,8 +1512,9 @@
       ],
       "what": "命名窗口之外的新类违例数（判定来自外部账本 oracle，不是 runtime 自述）",
       "docs": [
-        "reports/chaos_fuzz_report.md",
-        "docs/fault-spectrum.md"
+        "docs/fault-spectrum.md",
+        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
+        "reports/chaos_fuzz_report.md"
       ]
     },
     {
@@ -1645,6 +1710,9 @@
       "docs": [
         "docs/semantics.md#2.4.1 事件哈希链（R-B3）",
         "tests/test_hash_chain.py"
+      ],
+      "doc_literals": [
+        "README.md#指出第一个断点"
       ]
     },
     {
@@ -1669,7 +1737,7 @@
     },
     {
       "id": "arg-policy-test-count",
-      "value": 12,
+      "value": 14,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1708,6 +1776,7 @@
       "what": "lease 的用例数（含双进程冒烟：未持有租约即可读失败）",
       "docs": [
         "docs/governance-extras.md",
+        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
         "docs/semantics.md#3. 崩溃语义的边界（重要）"
       ]
     },
@@ -1730,6 +1799,7 @@
       "what": "artifact sweep 的用例数（验收要求 ≥4）",
       "docs": [
         "docs/governance-extras.md",
+        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
         "harness/artifacts.py#sweep"
       ]
     },
@@ -1776,8 +1846,12 @@
       ],
       "what": "fuzz 的结构性试次数（3 保护组合 × 2 注入阶段 × 30 次）——与机器无关",
       "docs": [
-        "reports/chaos_fuzz_report.md",
-        "docs/fault-spectrum.md#5. 边界（本结论不适用的范围）"
+        "docs/fault-spectrum.md#5. 边界（本结论不适用的范围）",
+        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
+        "reports/chaos_fuzz_report.md"
+      ],
+      "doc_literals": [
+        "README.md#180 次注入"
       ]
     },
     {

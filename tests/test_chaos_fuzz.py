@@ -270,3 +270,84 @@ def test_single_unknown_row_still_exonerates(tmp_path: Path) -> None:
     _make_world_db(tmp_path / "world.db", ["idem_dup", "idem_dup"])
     findings, _ = check_effect_accounting(tmp_path)
     assert findings == []
+
+
+# --------------------------------------------------- P1-1（独立测试）判定必须要求命中
+
+
+def _trial(*, combo: str, phase: str, killed: bool, verified: bool, unexpected=()) -> dict:
+    return {
+        "combo": combo,
+        "kill_phase": phase,
+        "killed": killed,
+        "killed_verified": verified,
+        "unexpected": list(unexpected),
+    }
+
+
+def test_verdict_is_red_when_nothing_was_actually_killed() -> None:
+    """**P1-1 回归**：一次都没命中时不许判绿（"没被杀到"≠"没有新类违例"）。
+
+    修复前会怎样：标定系统性偏大（采样时刻全落在进程退出之后）时，18 次试验
+    一次都没杀死进程，报告仍打印"0 新类违例"并退出 0——而 `docs/fault-spectrum.md`
+    自己把这种形态称为"最危险的一种假绿"。
+    """
+    from experiments.chaos_fuzz import compute_verdict
+
+    trials = [
+        _trial(combo="全开(outbox+probe)", phase="run", killed=False, verified=False),
+        _trial(combo="全开(outbox+probe)", phase="resume", killed=False, verified=False),
+    ]
+    verdict = compute_verdict(trials=trials, sensitivity={"sensitive": True})
+    assert verdict["verdict"] == "red"
+    assert verdict["kill_ratio"] == 0.0
+    assert any("一次注入都没有命中" in reason for reason in verdict["reasons"])
+
+
+def test_verdict_is_red_when_one_cell_never_hits() -> None:
+    """每个（组合 × 阶段）格都要至少命中一次：整格落空说明那一档没被测到。"""
+    from experiments.chaos_fuzz import compute_verdict
+
+    trials = [
+        _trial(combo="全开(outbox+probe)", phase="run", killed=True, verified=True),
+        _trial(combo="全开(outbox+probe)", phase="resume", killed=True, verified=True),
+        _trial(combo="全关(无outbox)", phase="run", killed=True, verified=True),
+        _trial(combo="全关(无outbox)", phase="resume", killed=False, verified=False),
+    ]
+    verdict = compute_verdict(trials=trials, sensitivity={"sensitive": True})
+    assert verdict["verdict"] == "red"
+    assert any("全关(无outbox)/resume" in reason for reason in verdict["reasons"])
+
+
+def test_verdict_stays_green_on_a_healthy_run() -> None:
+    """先证明健康路径不会假红——否则上面的红可能只是判定写坏了。"""
+    from experiments.chaos_fuzz import compute_verdict
+
+    trials = [
+        _trial(combo="全开(outbox+probe)", phase=phase, killed=True, verified=True)
+        for phase in ("run", "resume")
+    ]
+    verdict = compute_verdict(trials=trials, sensitivity={"sensitive": True})
+    assert verdict["verdict"] == "green", verdict["reasons"]
+    assert verdict["kill_ratio"] == 1.0
+
+
+def test_verdict_is_red_when_marker_evidence_is_missing() -> None:
+    """退出码非零但没有 time_hit marker = 那次"注入"没发生（P2-7 的口径）。"""
+    from experiments.chaos_fuzz import compute_verdict
+
+    trials = [
+        _trial(combo="全开(outbox+probe)", phase="run", killed=True, verified=True),
+        _trial(combo="全开(outbox+probe)", phase="resume", killed=True, verified=False),
+    ]
+    verdict = compute_verdict(trials=trials, sensitivity={"sensitive": True})
+    assert verdict["verdict"] == "red"
+    assert any("没有 time_hit marker" in reason for reason in verdict["reasons"])
+
+
+def test_verdict_is_red_when_sensitivity_check_did_not_pass() -> None:
+    from experiments.chaos_fuzz import compute_verdict
+
+    trials = [_trial(combo="全开(outbox+probe)", phase="run", killed=True, verified=True)]
+    verdict = compute_verdict(trials=trials, sensitivity={"sensitive": False})
+    assert verdict["verdict"] == "red"

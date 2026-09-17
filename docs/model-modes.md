@@ -66,6 +66,12 @@ OpenAI 形态的 `prompt_tokens` **已包含**缓存命中；Anthropic 形态的
 |---|---|---|
 | 未命中 | **可读错误**：说清缺哪份录制、`(step, attempt)`、期望的请求指纹 | 静默返回"随便什么"会让回放结论不可信 |
 | 请求指纹与录制不一致 | **警告**（记进 `replay_warnings`，仍返回录制值） | 崩溃恢复会**合法地**改变视图（探针重建的结果与首次执行不同）。把这条判失败，等于宣布"崩溃轨迹永远不可回放" |
+| 价格表版本与录制不同 | **警告**（`price_version_mismatch`） | 成本会差一个版本；提示但不失败，口径写在 `semantics.md` §2.7 |
+
+**警告的出口**（独立测试 P2-6 后补）：`replay_warnings` 会出现在
+①`outcome_<mode>.json` 的 `replay_warnings` 字段（机器可读）、
+②worker 的 stdout 摘要（人可读）、③stderr 的逐条打印。
+**不判失败**是刻意的（理由见上表），"有出口"与"判失败"是两件事。
 | 录制物缺失/损坏 | 可读错误（`CassetteError`） | 不许静默降级成 scripted |
 
 ## 5. 一致性验收（scripted vs replay）
@@ -81,6 +87,7 @@ OpenAI 形态的 `prompt_tokens` **已包含**缓存命中；Anthropic 形态的
 | `outcome` 的 status/step/各计数/cost/token 段 | `created_at` / `recorded_at` / `at`（时间戳） |
 | 事件序列（kind:type 逐位） | run/thread/branch/event/tool_call 之外的 id 生成 |
 | `tool_calls` 结构（id/tool/args） | `view_fingerprint`（恢复路径合法改变视图） |
+| **模型文本**（`agent_message` / `user_message` 的 `text`） | —（独立测试 P2-7 后补：等 token 的文本篡改也必须被抓到） |
 | 每个 `agent_message` 的 context/cache/cost | `avg_wall_ms` 等计时噪声 |
 
 **为什么是白名单**：全量比对必然产出永远红的测试（三次运行的 id 与时间戳天然不同），

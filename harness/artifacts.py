@@ -119,7 +119,6 @@ class SweepReport(BaseModel):
     orphans_found: int
     deleted: list[str] = Field(default_factory=list)
     kept_referenced: int = 0
-    never_deleted: list[str] = Field(default_factory=list)
     scanned_sources: list[str] = Field(default_factory=list)
     scanned_run_dirs: list[str] = Field(default_factory=list)
     # 解析失败的 payload 数（评审 P2-13/P1-2）：枚举"哪些对象不能删"时吞掉解析错误，

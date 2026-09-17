@@ -197,3 +197,40 @@ def test_documented_facts_commands_never_write_into_repo() -> None:
         for part in claim["source_cmd"]:
             assert not part.startswith("reports/"), f"{claim['id']} 直接写仓库: {part}"
             assert not part.startswith("docs/"), f"{claim['id']} 直接写仓库: {part}"
+
+
+# --------------------------------------------------- doc_literals（独立测试 P1-2）
+
+
+def test_missing_doc_literal_turns_red(tmp_path: Path) -> None:
+    """**P1-2 回归**：文档正文里的数字被改动 ⇒ 必须变红。
+
+    修复前会怎样：claim 只对齐"再生命令的输出"，从不读正文——把 README 的
+    "命中率 57.4% → 0%" 改成 87.4%，门禁仍 27/27 通过。`doc_literals` 把这一跳补上。
+    """
+    facts = _write_facts(
+        tmp_path,
+        [_claim(doc_literals=["README.md#这段文字在 README 里不存在"])],
+    )
+    proc = _run_checker(facts, tmp_path)
+    assert proc.returncode == 1
+    assert "doc_literals 片段在 README.md 里找不到" in proc.stdout
+
+
+def test_present_doc_literal_passes(tmp_path: Path) -> None:
+    """先证明"引用了真实存在的正文片段"会过——否则上面的红可能只是规则写坏了。"""
+    facts = _write_facts(tmp_path, [_claim(doc_literals=["README.md#崩溃一致性与治理语义"])])
+    proc = _run_checker(facts, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_real_claims_declare_literals_for_numbers_quoted_in_prose() -> None:
+    """真实的 claim 文件里，正文引用的数字必须登记 `doc_literals`（否则等于没保护）。"""
+    payload = json.loads(FACTS_FILE.read_text(encoding="utf-8"))
+    with_literals = [claim for claim in payload["claims"] if claim.get("doc_literals")]
+    assert len(with_literals) >= 20, f"只有 {len(with_literals)} 条 claim 登记了 doc_literals"
+    for claim in with_literals:
+        for entry in claim["doc_literals"]:
+            path_part, _, literal = entry.partition("#")
+            assert (PROJECT_ROOT / path_part).exists(), entry
+            assert literal, f"{claim['id']}: doc_literals 片段为空"

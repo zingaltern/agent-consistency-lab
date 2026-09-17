@@ -331,3 +331,27 @@ def test_rejected_call_does_not_write_a_side_effect(
         if event.type == "tool_result"
     ]
     assert "rejected" in statuses
+
+
+def test_boolean_does_not_pass_a_numeric_allow_list() -> None:
+    """**P2-8 回归**：`True == 1` 在 Python 里成立，但"用真值穿透数值白名单"必须被拒。
+
+    修复前会怎样：`ArgPolicy(field='m', allowed=[1])` 接受 `{'m': True}`——
+    安全域判定里混进布尔值属于类型穿透（`forbidden` 侧同源，只是方向相反）。
+    """
+    policy = ArgPolicy(field="m", allowed=[1])
+    rejected = policy.evaluate({"m": True})
+    assert rejected[0] is False
+    assert rejected[1].startswith("arg_policy_value_not_allowed")
+    assert policy.evaluate({"m": 1}) == (True, "ok")
+    # 反向同理：布尔白名单不接受数字
+    assert ArgPolicy(field="m", allowed=[True]).evaluate({"m": 1})[0] is False
+    # 布尔与布尔仍然正常匹配
+    assert ArgPolicy(field="m", allowed=[True]).evaluate({"m": True}) == (True, "ok")
+
+
+def test_boolean_is_not_caught_by_a_numeric_forbidden_list() -> None:
+    """forbidden 侧同源：`forbidden=[1]` 不该把 `True` 拦下（那会让语义取决于运气）。"""
+    policy = ArgPolicy(field="m", forbidden=[1])
+    assert policy.evaluate({"m": True}) == (True, "ok")
+    assert policy.evaluate({"m": 1})[0] is False

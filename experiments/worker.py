@@ -309,8 +309,15 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         world.close()
 
+    # 独立测试 P2-6：`replay_warnings` 原先只在 LLM client 里 append，worker 不打印、
+    # 不落盘——"提示词与录制不一致"这条告警在端到端**没有出口**。
+    # 这里把它写进 outcome JSON（机器可读）与 stdout（人可读），但**不判失败**：
+    # 崩溃恢复会合法改变视图，判失败会让崩溃轨迹永远无法回放。
+    replay_warnings = list(getattr(llm, "replay_warnings", []) or [])
+    outcome_payload = json.loads(outcome.model_dump_json())
+    outcome_payload["replay_warnings"] = replay_warnings
     (run_dir / f"outcome_{args.mode}.json").write_text(
-        outcome.model_dump_json(indent=2), encoding="utf-8"
+        json.dumps(outcome_payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(
         json.dumps(
@@ -333,10 +340,21 @@ def main(argv: list[str] | None = None) -> int:
                 "cost_usd": outcome.cost_usd,
                 "view_violations": outcome.view_violations,
                 "effects": world_total_effects(run_dir),
+                "replay_warnings": replay_warnings,
             },
             ensure_ascii=False,
         )
     )
+    if replay_warnings:
+        # 独立测试 P2-6：告警原先只在 LLM client 里躺着，端到端没有任何出口。
+        # 这里同时给人（stderr）与机器（stdout 的 JSON 字段 + outcome 文件）两条路；
+        # 但**不判失败**：崩溃恢复会合法改变视图，把它当错误会让崩溃轨迹无法回放。
+        print(
+            f"[replay] {len(replay_warnings)} 条警告（不判失败，见 docs/model-modes.md §4）：",
+            file=sys.stderr,
+        )
+        for warning in replay_warnings[:5]:
+            print(f"  - {json.dumps(warning, ensure_ascii=False)}", file=sys.stderr)
     store.close()
     return 0
 

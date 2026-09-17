@@ -23,15 +23,31 @@
 
 ```bash
 # 快速档（每次提交前）
-.venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 当前 208 个用例，约 3–6 秒
+.venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 用例数不手写：claim `tests-collected`
+                                                       # （`scripts/count_tests.py` 再生；约 3–6 秒）
 .venv/bin/ruff check .
+.venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集，约 5 秒）
 
 # 完整档（合并涉及语义/评测的改动前）
 .venv/bin/python -m experiments.crash_matrix --repeats 5         # 16 格全 as-predicted
 .venv/bin/python -m experiments.context_cost                     # W4 成本对照
 .venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate  # 1536 次运行 + 14 条门禁
 .venv/bin/python -m experiments.context_sweep --repeats 2        # 阈值扫描（可选）
+
+# 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
+.venv/bin/python scripts/check_facts.py                 # 全部 72 条 claim（约 100 秒）
+.venv/bin/python scripts/mutation_check.py              # 变异门禁（幸存变异防倒退；本地冷跑 3~6 分钟）
+                                                       # 超时预算由 --timeout 给出（nightly 用 1320s = 22 分钟）
+                                                       # ⚠️ 变异体总数为 0 也判失败（"跑不起来"≠"没有盲区"）
+.venv/bin/python -m experiments.chaos_fuzz --repeats 30 --seed 20260917   # 随机时刻 fuzz
+.venv/bin/python scripts/probe_sigterm.py               # 谱系探测器（三档，各约 10–20 秒）
+.venv/bin/python scripts/replay_consistency.py          # scripted ↔ replay 白名单一致性
 ```
+
+`live` marker 的用例（`tests/test_live_model.py`）**默认不跑**（`addopts` 里过滤标记）：
+它们是 live 路径的**反例**，不需要 key。CI 用 `pytest -m live` 单跑这一组；
+真正的在线调用在本仓库永不执行。注意仓库里的规范命令写作 `-o addopts=`（覆盖 addopts），
+那会连 live 组一起跑——它们仍然安全（测试自己清掉环境变量、绝不联网），只是不属于默认口径。
 
 跑完必须核对**退出码**，不要只看输出文本：管道/重定向会吞掉退出码（历史事故：
 JSON 序列化异常被管道吞掉，报告缺了一整块）。
@@ -49,6 +65,16 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 3. **新增/修改一条门禁 ⇒ 必须做退化注入验证**：故意把对应机制改坏，确认 CI 变红
    （退出码 1），再还原。**"没有坏事发生"不等于"机制在工作"**——历史教训：
    第一版门禁抓不到"静默丢弃破坏性动作"的退化，全绿但机制已死。
+
+   W9 新增的三条门禁各自的退化注入做法（都已实测过一次）：
+
+   | 门禁 | 怎么把它弄红 | 期望 |
+   |---|---|---|
+   | `facts`（文档数字） | 把某条 claim 的 `value` 改掉 | 退出 1 并报出"期望 X±tol，实测 Y（偏离 Z）" |
+   | `mutation`（测试盲区） | 从基线里删掉一条幸存变异 | 退出 1 并打印该变异体的 `mutmut show` diff |
+   | `mutation`（**没跑起来**） | 让 `mutmut run` 退出非 0，或让结果集为空 | 退出 1（"跑不出变异体"不是"没有盲区"；评审 P0-1） |
+   | `facts`（引用位置） | 把某条 claim 的 `docs` 锚点改成文件里不存在的片段 | 退出 1 并指出哪个锚点找不到（评审 P1-4） |
+   | `chaos-fuzz`（随机注入） | 把 oracle 的 `inv_effect_accounting` 判定注释掉 | 敏感性自检失败（"全绿"变成无意义），退出 1 |
 4. **修改任何影响 `reports/*` 的代码 ⇒ 重新生成产物并提交**，且确认差异只有计时噪声。
 5. **测试数量写进文档时**，同时写出口径（`pytest -o addopts= -p no:cacheprovider -q` 的输出）。
 
@@ -72,13 +98,20 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 7. **禁止测试 agent 修改被测代码**：独立测试只读仓库，全部产物写 `/tmp`；
    要让测试通过而改代码 = 测试失效。
 8. **禁止把"没测出错"表述成"不会出错"**：n=5 的 0/5 只能按 rule of three 报失败率上界。
+   同理：fuzz 的 180 次注入全绿只把失败率上界压到约 2%，**不能**写成"覆盖了所有窗口"。
+9. **禁止把租约读成并发承诺**：租约是"入场条件"，跨进程并发仍由外部账本裁决；
+   一次双进程冒烟不是并发证据（`tests/test_lease.py` 的 docstring 写着这句话）。
+10. **禁止让 artifact GC 进运行时**：回收只能由显式 CLI 做（默认 dry-run）；
+    loop 内自动删等于凭空造一个崩溃窗口。
 
 ---
 
 ## 5. 数字与证据规范
 
 * **每个进入文档的数字必须有：再生命令 + 分母口径 + 出处文件**。三者缺一不得写入文档。
-  （设计文档 A 的 `documented_facts` 门禁落地后，这条将由 CI 强制。）
+  这条已由 CI 强制：claim 清单在 `reports/documented-facts.json`，对账入口
+  `scripts/check_facts.py`（CI job `facts` 跑轻 claim 集，整量 claim 进 nightly）。
+  **演进类数字（用例数等）一律引用 claim id，不在正文写绝对数。**
 * 产物分两层：**汇总入库**（`reports/*.md`、`reports/*.json`）与**逐次明细不入库**
   （`reports/*_runs.json`，可由 `--runs-out` 再生）。
 * 样本量口径要显式：W2–W4 每格 n=5（点估计，只用于语义验证）；W5–W7 每格 n=192（区间 + 配对差值）。

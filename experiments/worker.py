@@ -15,8 +15,11 @@
     python -m experiments.worker --run-dir /tmp/cell0 --mode approve
     CHAOS_WINDOWS=post_tool_effect_pre_record:1 \\
         python -m experiments.worker --run-dir /tmp/cell0 --mode resume
+    # 墙钟定时注入（R-A2 的新注入族；与 CHAOS_WINDOWS 语义独立、可同时给出）
+    python -m experiments.worker --run-dir /tmp/cell0 --mode resume --kill-after-ms 120
 
-崩溃时进程被 SIGKILL（退出码 137/-9），并留下 ``crash_marker.json``。
+崩溃时进程被 SIGKILL（退出码 137/-9），并留下 ``crash_marker.json``
+（``injection_kind`` 区分 window / time_hit 两个注入族）。
 """
 
 from __future__ import annotations
@@ -33,11 +36,18 @@ from harness.approval import DECISION_APPROVED, DECISION_REJECTED
 from harness.artifacts import ArtifactStore
 from harness.budget import BudgetLedger, BudgetLimits
 from harness.cache import CacheConfig, PrefixCacheModel
+from harness.cassette import CassetteMeta, CassetteStore
 from harness.chaos import Chaos
 from harness.compaction import CompactionPolicy, Compactor
 from harness.context import DEFAULT_MAX_INLINE_TOKENS, ViewBuilder
 from harness.ids import new_id
-from harness.llm import ModelWindow, ScriptedLLMClient
+from harness.llm import (
+    ModelWindow,
+    RecordingLLMClient,
+    ReplayLLMClient,
+    ScriptedLLMClient,
+    ScriptedTransport,
+)
 from harness.loop import DEFAULT_SYSTEM_PROMPT, Loop
 from harness.store.checkpoints import SqliteCheckpointSaver
 from harness.store.sqlite_store import SqliteStore
@@ -58,6 +68,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tool-idem", choices=("on", "off"), default="on")
     parser.add_argument("--probe", choices=("on", "off"), default="on")
     parser.add_argument("--tamper", choices=("on", "off"), default="off")
+    parser.add_argument(
+        "--kill-after-ms",
+        type=int,
+        default=None,
+        help="墙钟定时注入：启动后 N 毫秒 SIGKILL 自身（与 CHAOS_WINDOWS 独立）",
+    )
     parser.add_argument("--approve-mode", choices=("approve", "reject", "edit"), default="approve")
     parser.add_argument("--compaction", choices=("on", "off"), default="on")
     parser.add_argument(
@@ -72,6 +88,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dynamic-at-head", choices=("on", "off"), default="off")
     parser.add_argument("--budget-usd", type=float, default=BudgetLimits().total_usd)
     parser.add_argument("--max-inline-tokens", type=int, default=DEFAULT_MAX_INLINE_TOKENS)
+    parser.add_argument(
+        "--model",
+        choices=("scripted", "record", "replay"),
+        default="scripted",
+        help="模型模式：scripted=现状（默认）；record=调真实 API 并录制；replay=按录制回放",
+    )
+    parser.add_argument("--record-dir", default="", help="录制目录（record/replay 必需）")
+    parser.add_argument(
+        "--transport",
+        choices=("live", "scripted"),
+        default="live",
+        help="record 模式的传输：live=真实 HTTP（需要 key 与 --budget-usd）；"
+        "scripted=用脚本模型当供应商（无网络，供端到端测试与录制演示）",
+    )
+    parser.add_argument("--model-name", default="gpt-4o-mini", help="record 模式下记录的模型名")
+    parser.add_argument(
+        "--model-key-env", default="OPENAI_API_KEY", help="key 所在的环境变量名（绝不写入仓库）"
+    )
+    parser.add_argument("--model-base-url", default="https://api.openai.com/v1")
     return parser.parse_args(argv)
 
 
@@ -93,6 +128,62 @@ def _tamper_hook(request: ToolCallRequest) -> ToolCallRequest:
     return request
 
 
+def build_llm(args: argparse.Namespace, *, budget: BudgetLedger, run_dir: Path, registry: object):
+    """按 ``--model`` 造客户端。三条模式的边界在这里收口：
+
+    * ``scripted``：默认路径，与既有实现**逐字节相同**（本函数只是把它挪进来）；
+    * ``record``：必须显式给 ``--record-dir``；``--transport live`` 还必须给
+      ``--budget-usd``（真实调用会花钱，无预算拒绝启动）与环境变量里的 key；
+    * ``replay``：只读录制目录，未命中给可读错误。
+    """
+    window = ModelWindow(
+        context_limit_tokens=args.window_tokens, max_output_tokens=args.max_output_tokens
+    )
+    if args.model == "scripted":
+        return ScriptedLLMClient(
+            ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines),
+            cache=PrefixCacheModel(CacheConfig()),
+            window=window,
+            budget=budget,
+        )
+    if not args.record_dir:
+        raise SystemExit(
+            f"--model {args.model} 需要 --record-dir（录制物落在这里，默认不要写仓库）"
+        )
+    store = CassetteStore(args.record_dir)
+    if args.model == "replay":
+        return ReplayLLMClient(store=store, window=window, budget=budget)
+    if args.transport == "live" and args.budget_usd <= 0:
+        raise SystemExit(
+            "live 录制必须显式给 --budget-usd（正数）：真实调用会花钱，无预算拒绝启动"
+        )
+    scripted = ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines)
+    transport = (
+        ScriptedTransport(scripted)
+        if args.transport == "scripted"
+        else _live_transport(args, registry)
+    )
+    meta = CassetteMeta(
+        model=args.model_name if args.transport == "live" else f"scripted/{args.scenario}",
+        provider="live" if args.transport == "live" else "scripted-transport",
+        temperature=0.0,
+        note=f"mode=record transport={args.transport} run_dir={run_dir.name}",
+    )
+    return RecordingLLMClient(transport, store=store, window=window, budget=budget, meta=meta)
+
+
+def _live_transport(args: argparse.Namespace, registry: object):
+    """真实 HTTP transport（延迟 import：CI 路径不会碰它，也不会因为缺配置而炸）。"""
+    from harness.live_transport import LiveChatTransport, tools_schema_from_registry
+
+    return LiveChatTransport(
+        model=args.model_name,
+        base_url=args.model_base_url,
+        key_env=args.model_key_env,
+        tools=tools_schema_from_registry(registry),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     run_dir = Path(args.run_dir)
@@ -103,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     store.setup()
     world = World(run_dir / "world.db")
     saver = SqliteCheckpointSaver(store)
-    chaos = Chaos.from_env(run_dir / "crash_marker.json")
+    chaos = Chaos.from_env(run_dir / "crash_marker.json", args.kill_after_ms)
     artifacts = ArtifactStore(run_dir / "artifacts")
     registry = build_registry(
         world,
@@ -157,15 +248,7 @@ def main(argv: list[str] | None = None) -> int:
                 chaos=chaos,
                 budget=budget,
             )
-    llm = ScriptedLLMClient(
-        ScriptedModel(args.scenario, steps=args.long_steps, lines=args.long_lines),
-        cache=PrefixCacheModel(CacheConfig()),
-        window=ModelWindow(
-            context_limit_tokens=args.window_tokens,
-            max_output_tokens=args.max_output_tokens,
-        ),
-        budget=budget,
-    )
+    llm = build_llm(args, budget=budget, run_dir=run_dir, registry=registry)
     loop = Loop(
         store,
         saver,
@@ -226,8 +309,15 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         world.close()
 
+    # 独立测试 P2-6：`replay_warnings` 原先只在 LLM client 里 append，worker 不打印、
+    # 不落盘——"提示词与录制不一致"这条告警在端到端**没有出口**。
+    # 这里把它写进 outcome JSON（机器可读）与 stdout（人可读），但**不判失败**：
+    # 崩溃恢复会合法改变视图，判失败会让崩溃轨迹永远无法回放。
+    replay_warnings = list(getattr(llm, "replay_warnings", []) or [])
+    outcome_payload = json.loads(outcome.model_dump_json())
+    outcome_payload["replay_warnings"] = replay_warnings
     (run_dir / f"outcome_{args.mode}.json").write_text(
-        outcome.model_dump_json(indent=2), encoding="utf-8"
+        json.dumps(outcome_payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(
         json.dumps(
@@ -250,10 +340,21 @@ def main(argv: list[str] | None = None) -> int:
                 "cost_usd": outcome.cost_usd,
                 "view_violations": outcome.view_violations,
                 "effects": world_total_effects(run_dir),
+                "replay_warnings": replay_warnings,
             },
             ensure_ascii=False,
         )
     )
+    if replay_warnings:
+        # 独立测试 P2-6：告警原先只在 LLM client 里躺着，端到端没有任何出口。
+        # 这里同时给人（stderr）与机器（stdout 的 JSON 字段 + outcome 文件）两条路；
+        # 但**不判失败**：崩溃恢复会合法改变视图，把它当错误会让崩溃轨迹无法回放。
+        print(
+            f"[replay] {len(replay_warnings)} 条警告（不判失败，见 docs/model-modes.md §4）：",
+            file=sys.stderr,
+        )
+        for warning in replay_warnings[:5]:
+            print(f"  - {json.dumps(warning, ensure_ascii=False)}", file=sys.stderr)
     store.close()
     return 0
 

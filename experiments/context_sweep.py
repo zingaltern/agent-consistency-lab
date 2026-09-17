@@ -289,6 +289,60 @@ def render_markdown(dev: list[dict[str, Any]], holdout: list[dict[str, Any]]) ->
     )
 
 
+def findings_numbers(
+    dev: list[dict[str, Any]], holdout: list[dict[str, Any]], selected: str | None
+) -> dict[str, Any]:
+    """物化结论段引用的数字（R-A1）：off 与"选中阈值"两行的完成率/成本与净成本增量。
+
+    为什么要物化而不是让人从表里读：文档正文引用的是"压缩后净成本 +X%"这类**派生量**，
+    只有把它算进 JSON，claim 门禁才能对账（否则只能靠人眼，就退回了 P2 的老路）。
+    """
+    if not dev:
+        return {}
+    by_threshold = {row["threshold"]: row for row in dev}
+    numbers: dict[str, Any] = {
+        "selected_threshold": selected,
+        "dev_thresholds": [row["threshold"] for row in dev],
+    }
+    off = by_threshold.get("off")
+    chosen = by_threshold.get(selected) if selected else None
+    if off:
+        numbers["off"] = {
+            "success_rate": off["success_rate"],
+            "avg_cost_usd": off["avg_cost_usd"],
+            "avg_compactions": off["avg_compactions"],
+            "overflows": off["overflows"],
+        }
+    if chosen:
+        numbers["selected"] = {
+            "threshold": chosen["threshold"],
+            "success_rate": chosen["success_rate"],
+            "avg_cost_usd": chosen["avg_cost_usd"],
+            "avg_cost_main_usd": chosen["avg_cost_main_usd"],
+            "avg_cost_compaction_usd": chosen["avg_cost_compaction_usd"],
+            "hit_ratio": chosen["hit_ratio"],
+            "avg_compactions": chosen["avg_compactions"],
+        }
+    if off and chosen and off["avg_cost_usd"]:
+        # off 行是**失败运行的截断成本**：下面这些比例说明"压缩买的是完成率"，
+        # 不能读成"不压缩更便宜"（口径写在 findings() 的正文里）。
+        numbers["net_cost_delta_ratio"] = round(
+            (chosen["avg_cost_usd"] - off["avg_cost_usd"]) / off["avg_cost_usd"], 6
+        )
+        numbers["main_cost_delta_ratio"] = round(
+            (chosen["avg_cost_main_usd"] - off["avg_cost_main_usd"]) / off["avg_cost_main_usd"], 6
+        )
+        numbers["compaction_share_of_off_cost"] = round(
+            chosen["avg_cost_compaction_usd"] / off["avg_cost_usd"], 6
+        )
+    if holdout:
+        numbers["holdout"] = [
+            {"threshold": row["threshold"], "n": row["n"], "success_rate": row["success_rate"]}
+            for row in holdout
+        ]
+    return numbers
+
+
 def findings(dev: list[dict[str, Any]], holdout: list[dict[str, Any]], selected: str | None) -> str:
     if not dev:
         return "（无数据）"
@@ -388,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
                     "dev": dev_rows,
                     "holdout": holdout_rows,
                     "selected_threshold": selected,
+                    "findings": findings_numbers(dev_rows, holdout_rows, selected),
                     "cells": [cell.__dict__ for cell in cells],
                 },
                 ensure_ascii=False,

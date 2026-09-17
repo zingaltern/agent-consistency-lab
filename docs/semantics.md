@@ -1,7 +1,21 @@
-# 运行时语义（v1，W1 冻结）
+# 运行时语义（v1 + W9 增补）
 
 本文件是 runtime 的**承诺清单**。代码、测试与后续实验结论都以本文件为口径；
 任何实现改动导致承诺变化，必须先改这里。
+
+**变更记录**（"W1 冻结"说的是 v1 的骨架承诺；此后每次改动都记在这里）：
+
+| 时间 | 改动 | 性质 | 落点 |
+|---|---|---|---|
+| W1 | 初版：事件日志权威、折叠状态、checkpoint 协议、7 条不变量 | — | 全文 |
+| W3 | 审批绑定四约束、outbox 与探针对账 | 扩大 | §2.5、§4.1 |
+| W4 | 视图/压缩/卸载/预算与缓存纪律 | 扩大 | §2.6 |
+| W9（A/B 包） | INV-008 事件哈希链 | **扩大**（新增"什么算日志被篡改"的定义） | §2.4.1 |
+| W9 | artifact 回收口径（引用枚举 + 派生缓存可重建） | 扩大 | §2.6 |
+| W9 | "模型属于测量外部"（承诺以 harness 接口为界、录制 usage 权威） | 澄清为主 + 一处新权威声明 | §2.7 |
+| W9 | 参数级安全域（工具自述安全域 + 执行前一刻强制） | 扩大 | §4.0 |
+| W9 | 租约最小实现（**校验入口**，写路径未接入） | 扩大 | §3 |
+| W9（评审修复） | 上表措辞收窄：租约"只有显式调用时才生效"；sweep 的引用枚举与实现对齐 | 澄清 | §3、§2.6 |
 
 ---
 
@@ -75,6 +89,40 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 `metadata` 必须**原样保留未知键**（跨版本读取不丢字段）；运行时字段统一注入
 在 `_runtime` 命名空间下。
 
+### 2.4.1 事件哈希链（R-B3）
+
+`events` 表带 `prev_hash` / `event_hash` 两列，构成**静态哈希链**：
+
+```
+record       = {event_id, run_id, branch_id, seq, kind, type, source, parent_id,
+                payload, created_at}                 # 解析后的 payload，不含 trace/span
+record_bytes = json.dumps(record, sort_keys=True, ensure_ascii=False)
+event_hash   = sha256(prev_hash ‖ record_bytes)
+prev_hash    = 同分支上一条的 event_hash
+               分支首条：无父分支 ⇒ 常量 GENESIS_HASH；有父分支 ⇒ fork 点事件的 event_hash
+```
+
+**为什么需要它**：append-only 触发器挡住的是**数据库层面**的改写；链挡住的是**数据库之外**
+的操作——换成一个更旧的副本、绕过触发器改一行、删掉中间一段再拼上。链不阻止篡改，
+只让篡改**无法静默**。
+
+**这句话的边界（独立测试 §5.4 实测）**：链是**无外部锚点**的，因此"改一条 + 从该条起
+把整段哈希重算一遍"会校验通过——那种篡改是**静默**的。要让"无法静默"严格成立，需要把
+最新 `event_hash` 写到一个链之外的地方（透明日志/外部锚定），**本包没有做**，
+这里如实登记为已知边界而不是已实现能力。
+
+**与既有承诺的关系**：这是**纵深防御**，不是新的权威。日志仍是唯一权威；
+`(branch_id, seq)` 排序、分叉语义、触发器**一个都没变**。验证入口：
+
+* 增量：`harness/state.py::verify_chain`（只查新 seq，起点由调用方给）；
+* 全量：`python -m harness.audit_chain --run-dir <dir>`（读库连 `-wal`/`-shm` 一起快照，
+  报**第一个断点**，退出码 0/1/2 = 完整/断链/读不出来）。
+
+**schema 迁移（v2 → v3）**：存量库一次性补链。回填必须 UPDATE，而 append-only 触发器
+对任何 UPDATE 都 `RAISE(ABORT)`，因此迁移在**一个事务内**先 `DROP TRIGGER`、补链、
+再**原样重建**触发器（payload 与排序一字未动）。迁移自测断言"迁移后触发器存在且
+UPDATE 仍被拒"（`tests/test_hash_chain.py::test_migration_backfills_the_chain_and_recreates_triggers`）。
+
 ### 2.5 工具执行的落盘顺序（W3 起含 outbox 与审批）
 
 一次工具执行按固定顺序处理（每一步都是"日志权威"的具体体现）：
@@ -118,8 +166,44 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 **注**：压缩一定会在替换点击穿前缀缓存——这是可测的代价（见 docs/w4-report.md），
 所以策略是"先卸载、后压缩，阈值尽量高"。
 
+**artifact 回收（R-B5）**：``harness.artifacts.sweep(dry_run=True)`` **只能由显式 CLI 调用**
+（runtime loop 内绝不自动删——删除与"读到半个文件"之间没有事务可用）。引用枚举**全量扫描**
+事件 payload + ``checkpoints.state_json`` + ``checkpoint_writes.payload_json`` 里的 ``digest``；
+只被 checkpoint 引用的对象**禁止回收**。卸载产生的 artifact 是**派生缓存**：没被任何 payload
+提到过的可以删——下一次渲染会用同样的内容算出同样的 digest 并重新落盘（内容寻址 ⇒ 幂等）。
+
 **预算**：``main / compaction / judge / tools`` 分桶，账本由 ``budget_update`` 事件构成，
 跨进程恢复后重新折叠得到；dispatch 前检查、响应后复核，超限即 fatal。
+
+---
+
+## 2.7 模型属于测量外部（R-B1）
+
+**承诺以 harness 接口为界**：`docs/semantics.md` 的全部承诺（不重不漏、审批绑定、
+崩溃恢复、预算硬停、效果至多一次）都以 `harness/model.py` 的 `Model` 协议与
+`harness/llm.py` 的 `LLMClient` 协议为界——**模型是什么、跑在哪里、多贵，都不改变这些承诺**。
+由此推出三条与模型接入有关的硬约束：
+
+1. **三种模式语义等价**：`scripted`（默认，脚本模型）/ `record`（真实调用 + 录制）/
+   `replay`（按录制回放）走的是**同一条 loop**。录制与回放只替换"模型那一侧"，
+   不触碰审批、outbox、事件日志、checkpoint 的任何一行。
+2. **录制的 usage 是权威**：真实供应商的服务端缓存账单无法本地复算，因此
+   record/replay 模式的 **token 直接采用录制下来的 canonical 四段**
+   （`prompt / completion / cache_read / cache_write`），不重算。
+   `harness/cache.py` 的前缀缓存模型只服务于 scripted 模式（W4/W7 的成本结论都在那个口径下）。
+   **成本的口径分两种**（评审 P2-12 要求写准）：没有预算账本时直接回放录制里的
+   `cost_usd`；**接了预算账本时成本由账本按当前价目表记账**（预算必须以账本为准，
+   否则"花掉多少"会出现两个数）；录制与当前的 `price_version` 不一致时，
+   replay 会给一条 `price_version_mismatch` 警告。
+3. **崩溃语义不变**：`CHAOS_WINDOWS` 与 `--kill-after-ms` 两种注入在三种模式下都可用；
+   录制/回放不新增崩溃窗口，也不改变既有的 at-least-once 与对账语义。
+
+**明确不承诺**：不做模型质量评测、不做供应商路由/重试/降级/缓存网关；
+live 路径永远是显式的、非默认的（无 `--budget-usd` 拒绝启动 live 录制）。
+
+**OTLP 导出（R-B4）**：``harness.trace --otlp-endpoint URL`` 才启用真实导出；
+不装 ``[otel]`` extra、不传该参数时，``import harness.trace`` 与全部既有行为不变
+（OTel 的 import 全在函数体内）。endpoint 每次显式传入，不启动守护、不做重试队列。
 
 ---
 
@@ -135,8 +219,18 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
   未来工作。
 
 并发边界：存储层是**单写者**模型（进程内互斥 + `BEGIN IMMEDIATE`）。
-跨进程并发需要上层租约：`lease` 事件类型已登记但**尚未实现**（没有生产者/消费者），
-因此双进程跑同一 thread 目前是未定义行为——这一点在 README 与报告中口径一致。
+跨进程并发需要上层租约：`lease` 事件类型自 R-B6 起有**最小实现**（`harness/lease.py`：
+acquire / renew / require，权威 = 日志里最后一条 `lease` 事件的折叠物）。
+
+租约是**入场条件**，不是新的权威，也不是并发承诺。**注意口径**：本实现提供的是
+**校验入口**（`harness/lease.py` 的 `require` / `guarded_write`）；
+**runtime 的写路径尚未接入它**——也就是说"未持有 ⇒ 可读失败"只在调用方显式调用时成立，
+今天双进程写同一 run 仍然不被任何检查拦住（下一波把租约接进写路径时，需要重新过这份文档）。
+
+* 调用方显式校验时：持有有效租约可以写；未持有 / 已过期 / 被别人持有 ⇒ **可读失败**（绝不静默放行）；
+* 校验在 checkpoint 事务**之外**（先证权、后写；把两者缠在一起会让"写租约也要持租约"变成自指）；
+* **不做**过期接管（显式 acquire 才是接管方式）、不做分布式协调；`state_update` 仍是"已登记未实现"；
+* 双进程同时写同一 run 的**实际后果**仍由外部账本裁决，租约只回答"这个进程有没有写权限"。
 
 ### 3.1 命名崩溃窗口
 
@@ -169,10 +263,30 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 | `resume` | tree | `{interrupt_id, interrupt_index, approval_id, decision, tool_call_id}` |
 | `error` | artifact | `{error_class, message, fatal?: bool}` |
 | `budget_update` | artifact | `{bucket, cost_usd, price_version, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, note}` |
-| `lease` | artifact | `{owner, expires_at}` |
+| `lease` | artifact | `{owner, expires_at, acquired_at, lease_id}`（R-B6 起有生产者与消费者） |
 | `compaction` | artifact | `{compaction_id, replaces_event_ids, summary, artifact_ref, tokens_before, tokens_after, reason, round}` |
 | `approval` | artifact | `{approval_id, tool_call_id, tool, requested_args_sha256, approved_args_sha256, decision, actor, nonce, issued_at, expires_at, scope, policy_version, edited, requested_args, approved_args}` |
 | `state_update` | artifact | 类型已登记但**当前无生产者**（保留给未来的外部状态注入） |
+
+### 4.0 参数级安全域（R-B2）
+
+工具可在注册时声明 ``arg_policy``（**一层字段** + ``allowed`` / ``forbidden`` / ``min`` / ``max``），
+声明的是**工具自己的安全域**——与 ``requires_approval`` 同一哲学：工具自述风险，gate 执行它。
+它不是一张外置黑名单（"谁有权定义危险"是工具契约问题，不是运维策略问题）。
+
+执行点是**执行 handler 前的最后一刻**，输入是**实际参数**（不是审批记录里的 hash）：
+审批比的是 ``args_sha256``，人并没有逐字段核对结构化参数，因此
+"批准了越界参数"这条缝隙只能由策略档堵住。
+
+语义（缺字段的处置是语义，不是细节）：
+
+* ``allowed`` / 区间：字段缺失 ⇒ **拒绝**（无法核对不能默认放行）；
+* ``forbidden``：字段缺失 ⇒ 放行（没有危险值出现）；
+* 值域越界 / 类型不符（区间策略收到非数值）⇒ 拒绝，``tool_result.status=rejected``、
+  ``error_class=arg_policy_violation``，且**不写 outbox 意图行、不产生副作用**；
+* 拒绝发生在 outbox 预写之前，因此被拦下的调用在日志里是"被拒绝"，不是"未知"。
+
+本期**不承诺**：嵌套字段（``a.b``）、类型强转、正则、跨字段约束——列为扩展点。
 
 ### 4.1 审批绑定的四条约束（W3）
 
@@ -198,6 +312,9 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 * INV-006 终态（completed/failed）之后不得再出现树节点
 * INV-007 resume 携带的 `interrupt_index` 必须与未闭合 interrupt 的 index 一致
   （index 与 id 双重核验：只对 id 不打分的实现会把 resume 值接到错误的 interrupt 上）
+* INV-008 事件哈希链可续且内容与哈希一致（R-B3）：`event_hash = sha256(prev_hash ‖ record_bytes)`，
+  `prev_hash` 必须等于上一条（或 genesis / fork 点）的 `event_hash`
+  （违反 = 外部篡改指纹；不阻止篡改，只让篡改无法静默）
 
 不变量的违反以 `Violation` 显式返回，调用方决定告警/修复/中止；
 `DerivedState.fingerprint()` 用于重放确定性断言（同一日志 → 同一指纹）。
@@ -221,8 +338,10 @@ writes 的保留索引（对齐 LangGraph 语义，负数供控制类使用）�
 
 1. unknown 集合的收敛条件（何时可判定"不可对账只剩人工"）——W3 给出了产生规则，
    收敛策略待 W5 场景接入后定义。
-2. 租约失效后的接管语义（lease 事件已定义，机制未实现）。
+2. ~~租约失效后的接管语义~~：R-B6 已实现最小版（持有/续租/过期失活 + 可读失败），
+   **过期接管仍是开放的**（本包只做显式 acquire）。
 3. 批量写一半（Saga 补偿）待 W5 场景集覆盖。
 4. `synchronous=FULL` 的掉电语义实验。
-5. 压缩的长期形态：当前每次压缩产生一条并列摘要，未做"摘要的摘要"；artifact GC 只有
-   `orphan_count` 暴露，未实现回收（W7 之后）。
+5. 压缩的长期形态：当前每次压缩产生一条并列摘要，未做"摘要的摘要"。
+   ~~artifact GC 未实现回收~~ → **W9 已实现**（`python -m harness.artifacts --run-dir X [--apply]`，
+   默认 dry-run，只由显式 CLI 调用；引用枚举与共享 root 的限制见 §2.6）。

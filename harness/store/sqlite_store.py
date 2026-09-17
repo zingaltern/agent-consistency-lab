@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from ..events import Event, EventKind, NewEvent, Source
+from ..events import GENESIS_HASH, Event, EventKind, NewEvent, Source, compute_event_hash
 from .schema import DDL, MIGRATIONS, SCHEMA_VERSION
 
 
@@ -85,7 +85,13 @@ class SqliteStore:
                 raise StoreError(f"database schema v{current} is newer than code v{SCHEMA_VERSION}")
             for version in sorted(MIGRATIONS):
                 if current < version <= SCHEMA_VERSION:
-                    self._conn.executescript(MIGRATIONS[version])
+                    migration = MIGRATIONS[version]
+                    if callable(migration):
+                        # 事务内执行：补链失败就整体回滚，绝不留下"触发器没了"的半成品
+                        with self._tx():
+                            migration(self._conn)
+                    else:
+                        self._conn.executescript(migration)
                     self._conn.execute(
                         "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                         (version, time.time()),
@@ -218,10 +224,20 @@ class SqliteStore:
                         raise StoreError("parent event belongs to a different branch")
                 created_at = time.time()
                 payload_json = json.dumps(new.payload, sort_keys=True, ensure_ascii=False)
+                event = Event(
+                    **new.model_dump(exclude={"kind", "source"}),
+                    kind=new.kind,
+                    source=new.source,
+                    seq=seq,
+                    created_at=created_at,
+                )
+                prev_hash = self._prev_hash_locked(event)
+                event_hash = compute_event_hash(prev_hash, event)
                 self._conn.execute(
                     "INSERT INTO events(event_id, run_id, branch_id, seq, kind, type, source,"
-                    " parent_id, payload_json, created_at, trace_id, span_id)"
-                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " parent_id, payload_json, created_at, trace_id, span_id, prev_hash,"
+                    " event_hash)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new.event_id,
                         new.run_id,
@@ -235,15 +251,13 @@ class SqliteStore:
                         created_at,
                         new.trace_id,
                         new.span_id,
+                        prev_hash,
+                        event_hash,
                     ),
                 )
                 stored.append(
-                    Event(
-                        **new.model_dump(exclude={"kind", "source"}),
-                        kind=new.kind,
-                        source=new.source,
-                        seq=seq,
-                        created_at=created_at,
+                    event.model_copy(
+                        update={"prev_hash": prev_hash, "event_hash": event_hash}
                     )
                 )
         return stored
@@ -266,6 +280,38 @@ class SqliteStore:
             if event.event_id == branch.fork_event_id:
                 return event.seq + 1
         raise StoreError(f"fork point {branch.fork_event_id!r} missing from parent branch")
+
+    def _prev_hash_locked(self, event: Event) -> str:
+        """链的挂接规则（与 semantics.md 一致）：
+
+        * 本分支已有事件 ⇒ 上一条事件的 ``event_hash``；
+        * 本分支首条 + 无父分支 ⇒ ``GENESIS_HASH``；
+        * 本分支首条 + 有父分支（分叉）⇒ **fork 点事件**的 ``event_hash``。
+        """
+        row = self._conn.execute(
+            "SELECT event_hash FROM events WHERE branch_id=? ORDER BY seq DESC LIMIT 1",
+            (event.branch_id,),
+        ).fetchone()
+        if row is not None:
+            tail_hash = str(row["event_hash"] or "")
+            if not tail_hash:
+                # 评审 P2-1：尾行哈希为空时**静默**挂到 genesis/fork 点，等于在一条断链上
+                # 继续追加，而这件事只有下一次离线校验才会被发现。放在写入时报错，
+                # 把发现时机提前到"谁在写、写什么"都还清楚的时候。
+                raise StoreError(
+                    f"分支 {event.branch_id!r} 的最后一条事件没有 event_hash"
+                    "（库未迁移到 v3，或这一行被外部改过）：拒绝在当前链上追加。"
+                    "先跑一次 store.setup() 触发迁移，或确认库的来源。"
+                )
+            return tail_hash
+        branch = self.get_branch(event.branch_id)
+        if branch is not None and branch.parent_branch_id is not None:
+            fork = self._conn.execute(
+                "SELECT event_hash FROM events WHERE event_id=?", (branch.fork_event_id,)
+            ).fetchone()
+            if fork is not None and fork["event_hash"]:
+                return str(fork["event_hash"])
+        return GENESIS_HASH
 
     def next_seq(self, branch_id: str) -> int:
         branch = self.get_branch(branch_id)
@@ -332,6 +378,18 @@ class SqliteStore:
             span_id=row["span_id"],
             seq=int(row["seq"]),
             created_at=float(row["created_at"]),
+            # 链列是 v3 新增的：老快照/老库读出来可能是 NULL，这里统一成空串。
+            # 必须用 row.keys()：sqlite3.Row 的迭代产出的是**值**，`in` 判的不是列名。
+            prev_hash=(
+                str(row["prev_hash"] or "")
+                if "prev_hash" in row.keys()  # noqa: SIM118 - sqlite3.Row 例外
+                else ""
+            ),
+            event_hash=(
+                str(row["event_hash"] or "")
+                if "event_hash" in row.keys()  # noqa: SIM118 - sqlite3.Row 例外
+                else ""
+            ),
         )
 
     # ------------------------------------------------------------------ helper

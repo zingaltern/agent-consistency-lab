@@ -48,6 +48,7 @@
 | W6 | 分段汇报 + 统计口径（配对 CI）+ 门禁（含实验假设自检）+ CI | 完成 |
 | W7 | 压缩阈值扫描（三维曲线）+ trace 收口 + 开源整理 | 完成 |
 | W8 | 长文 ×3 + 文档 + demo | 完成 |
+| W9 | 测试强化（claim 门禁 / fuzz / 噪声人格 / 变异基线）+ 功能扩展（三模式模型 / 参数级审批 / 哈希链 / OTLP / GC / 租约） | 完成 |
 
 ## 已产出的实测结论
 
@@ -101,9 +102,32 @@
 
 **W7**（[w7-report.md](docs/w7-report.md)，阈值扫描 6 档 × 8 变体 × 2 次）：压缩买的是完成率、不是省钱——
 不压缩只有 33% 变体能跑完（总成本 $0.066），压缩后 100% 完成但净成本 +79%
-（$0.11844；主桶增量 +40%，压缩动作本身占 +39%）；压缩次数与缓存命中率在聚合上反向、
+（$0.11834；主桶增量 +41%，压缩动作本身占 +38%——选中阈值那一行的数）；压缩次数与缓存命中率在聚合上反向、
 细胞级存在非单调；**0.70 / 0.85 / 0.95 三档成本不可区分（程序按规则选中 0.70），
 真正要避免的是 ≤0.50 与不压缩**——"早点压更安全"被数据否定。
+
+**W9**（设计文档 A+B 交付，详见 [docs/fault-spectrum.md](docs/fault-spectrum.md)、
+[docs/noisy-reasoner.md](docs/noisy-reasoner.md)、[docs/model-modes.md](docs/model-modes.md)、
+[docs/governance-extras.md](docs/governance-extras.md)）：
+
+* **文档里的数字从此有门禁**：72 条 claim（值 + 容差 + 再生命令 + JSON 路径 + 引用位置），
+  `scripts/check_facts.py` 逐条重跑比对；verify 轻集 27/27 通过、CI job `facts`，
+  整量集进 nightly。退化注入验证：把某条 claim 的值改掉 → 退出 1 并报出偏离；
+* **随机时刻 SIGKILL fuzz**：180 次注入（30 seed × 3 保护组合 × 2 注入阶段）全部真的落在
+  标定窗口内、**命名窗口之外 0 条新类违例**；敏感性自检证明 oracle 在已知会重复的配置上会报红；
+* **故障谱系从 1 档扩到 4 档**：SIGTERM（无优雅 flush 语义）、torn write（显式失败、零新副作用）、
+  SIGSTOP 悬挂（冻结期间账本只出现 {0,1} 两种取值）、账本外注入（不触发重跑）；
+* **评分口径敏感性被激活**：噪声人格下 `strict` 66.7% < `cause_only` 77.6%（W5–W7 两者恒等），
+  而机制门禁在噪声下**仍然全绿**（红线 0.000、写操作 100% 交人工）；
+* **变异测试常设化**：1670 个变异体 / 1031 killed / 625 survived（claim `mutation-survivors`、
+  `mutation-survivor-rate`；基线 `reports/mutation_baseline.json` 入库，防"盲区扩大"）；
+* **模型接入三模式**：scripted / record / replay 走同一条 loop，scripted↔replay 白名单字段一致
+  （token/cost/事件序列/tool_calls 结构；时间戳不比较）；live 永不进 CI（无 key 给可读失败）；
+* **参数级审批**：工具自述安全域（`arg_policy`），闸门在**执行前一刻**用实际参数核对——
+  堵住"审批只看了 hash、参数其实越界"这条缝隙（12 条用例）；
+* **事件哈希链**：`event_hash = sha256(prev_hash ‖ record_bytes)`；mirror test 证明
+  复制-篡改一行历史会被离线校验器指出第一个断点（`python -m harness.audit_chain`）；
+* **OTLP / artifact GC / 租约**三处补齐，各自写明不承诺什么（默认行为零改变）。
 
 ### 独立审计发现的 P0（已修，含回归测试）
 
@@ -149,7 +173,12 @@ W4 后跑了一次五路只读审计（文档一致性 / 测试有效性含变�
 
 ```
 harness/
-  events.py              事件模型（扁平日志、kind 分离、type 约束）
+  events.py              事件模型（扁平日志、kind 分离、type 约束、事件哈希链的 record 定义）
+  cassette.py            录制物 schema（tool_calls + canonical usage + provenance）B-M1
+  live_transport.py      真实模型 transport（OpenAI 兼容，仅标准库）B-M1
+  audit_chain.py         离线链校验 CLI（读库连 -wal 快照，报第一个断点）B-M2
+  lease.py               单写者租约（acquire/renew/require，权威 = 日志折叠）B-M3
+  otel.py                OTLP 导出桥（延迟 import，缺 extra 不影响既有行为）B-M3
   model.py               模型接口（loop 与 LLM client 共享）
   prompts.py             系统提示词（稳定前缀的主体）
   context.py             视图构建：四段布局 + 三条结构不变式 + 卸载
@@ -173,11 +202,22 @@ harness/
     tool_calls.py        工具调用记录（运行时去重表 / outbox 意图行）
 fakeworld/               受控仿真：副作用账本 + 仿真工具 + 脚本化模型（W2–W4 崩溃实验用）
 opsenv/                  运维壳与场景集（W5）：故障分类学、四通道证据、四系统对照评测
+  oracle.py              外部账本 oracle（四类不变量 + 主库可读性，fuzz/探测器的裁判）A-M3
 experiments/
-  worker.py              run / approve / resume 的子进程入口
+  worker.py              run / approve / resume 的子进程入口（含 --kill-after-ms / --model 三模式）
+  chaos_fuzz.py          随机时刻 SIGKILL fuzz（标定窗口 + 外部账本判定）A-M3
   crash_matrix.py        崩溃矩阵 runner（多阶段计划 + 真实 kill -9）
   context_cost.py        上下文成本实验（缓存纪律 / 卸载 / 压缩 三组对照）
   context_sweep.py       压缩阈值扫描（完成率 × 缓存命中 × 净成本，含自绘 SVG）
+scripts/
+  check_facts.py         claim 对账入口：文档里的数字 ↔ 再生命令（CI job `facts`）
+  count_tests.py         用例计数（演进类 claim 的来源，文档不手写绝对数）
+  mutation_check.py      变异门禁（新增幸存变异 ⇒ 退出 1；基线见 reports/mutation_baseline.json）
+  replay_consistency.py  scripted ↔ replay 的白名单一致性对账
+  chain_mirror_check.py  哈希链 mirror check（干净库通过 / 篡改副本必须被指出断点）
+  probe_sigterm.py       谱系探测器：SIGTERM（无优雅 flush 语义）
+  probe_tornwrite.py     谱系探测器：torn write + SIGSTOP 悬挂
+  probe_extra_ledger_row.py  谱系探测器：账本外注入不触发重跑
 tests/                   不变量、协议、审批语义、loop 与矩阵小样本
 docs/semantics.md        运行时语义（承诺清单）
 docs/w2-crash-windows.md W2 崩溃矩阵实验报告
@@ -191,6 +231,7 @@ LICENSE                  MIT
 examples/w1_tour.py      W1 演示（事件日志 / 分叉 / 恢复计划）
 reports/                 自动生成的报告（*.md 表格 + 汇总 JSON；逐次运行明细
                          用 --runs-out 再生，不入库）
+reports/documented-facts.json  文档引用的结论数字与再生命令的绑定（claim 清单）
 ```
 
 ## 运行
@@ -239,6 +280,11 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 | **给技术面试官的 3–5 分钟项目介绍** | [docs/pitch-4min.md](docs/pitch-4min.md) |
 | 交给外部测试人员的提示词 | [docs/tester-prompt.md](docs/tester-prompt.md) |
 | 独立外部测试报告（2026-09-16） | [docs/independent-test-2026-09-16/](docs/independent-test-2026-09-16/) |
+| 随机注入与故障谱系（fuzz / SIGTERM / torn write / 悬挂 / 账本外注入） | [docs/fault-spectrum.md](docs/fault-spectrum.md) |
+| 噪声人格口径（激活评分口径敏感性） | [docs/noisy-reasoner.md](docs/noisy-reasoner.md) |
+| 模型接入三模式（scripted / record / replay） | [docs/model-modes.md](docs/model-modes.md) |
+| OTLP 导出 / artifact GC / 单写者租约 | [docs/governance-extras.md](docs/governance-extras.md) |
+| 开放问题裁决（A §4 + B §6，含回写 B §7） | [docs/design/2026-09-17-open-questions-answered.md](docs/design/2026-09-17-open-questions-answered.md) |
 | 下一波设计文档（待评审） | [docs/design/](docs/design/) |
 | **开发规范（分支流程 / 合并门槛）** | [docs/development.md](docs/development.md) |
 | **测试规范（必跑命令 / 自证作弊清单）** | [docs/testing.md](docs/testing.md) |
@@ -255,7 +301,8 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 
-.venv/bin/pytest -q                       # 208 个测试：不变量、协议、审批、异常、评测、门禁
+.venv/bin/pytest -q                       # 全部测试（用例数不手写：claim tests-collected
+                                          # 由 scripts/count_tests.py 再生）
 .venv/bin/ruff check .                    # lint
 
 .venv/bin/python -m experiments.crash_matrix --repeats 5 \
@@ -275,6 +322,14 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
     # → W7：压缩阈值 → 完成率 / 缓存命中 / 净成本 三维曲线
 
 .venv/bin/python -m harness.trace --run-dir <worker 的 run 目录>   # 排障：事件日志 → span 树
+
+# W9 起的门禁与对账（一条命令回答"文档里的数字还对不对"）
+.venv/bin/python scripts/check_facts.py --run verify   # 轻 claim 集（CI job facts）
+.venv/bin/python scripts/check_facts.py                # 含整量 claim（约 100 秒）
+.venv/bin/python scripts/mutation_check.py             # 变异门禁：新增幸存变异即红
+.venv/bin/python -m experiments.chaos_fuzz --repeats 30 --seed 20260917   # 随机时刻 fuzz
+.venv/bin/python scripts/replay_consistency.py         # scripted ↔ replay 一致性
+.venv/bin/python -m harness.audit_chain --run-dir <run 目录>   # 事件哈希链全量校验
 ```
 
 入库的是**报告表格与汇总 JSON**；逐次运行明细（`--runs-out`）不入库——体积大且可由上面
@@ -289,6 +344,10 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev,eval]"
 * 存储层是单写者模型，跨进程并发需要上层租约（W3）。
 * 本仓库不出现"生产级"字样：它是一个实验台，所有指标以"相对基线的 paired 差值 +
   置信区间"报告，不以绝对值宣称达标。
+* 租约（W9）**不是并发承诺**：它是"入场条件"，双进程同时写的后果仍由外部账本裁决；
+  一次冒烟不是并发证据（见 `docs/governance-extras.md` §3）。
+* fuzz 的"未发现新类违例"只把失败率上界压到约 2%（rule of three），**不能**读成
+  "覆盖了所有窗口"；注入落点受机器时序影响，只有注入**时刻**可复现（见 §5 边界）。
 
 ## 参与开发（人类或 AI agent）
 

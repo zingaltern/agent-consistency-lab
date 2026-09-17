@@ -166,6 +166,47 @@
     }
   ],
   "selected_threshold": "0.70",
+  "findings": {
+    "selected_threshold": "0.70",
+    "dev_thresholds": [
+      "off",
+      "0.95",
+      "0.85",
+      "0.70",
+      "0.50",
+      "0.30"
+    ],
+    "off": {
+      "success_rate": 0.3333,
+      "avg_cost_usd": 0.066083,
+      "avg_compactions": 0.0,
+      "overflows": 8
+    },
+    "selected": {
+      "threshold": "0.70",
+      "success_rate": 1.0,
+      "avg_cost_usd": 0.118337,
+      "avg_cost_main_usd": 0.093285,
+      "avg_cost_compaction_usd": 0.025052,
+      "hit_ratio": 0.5183,
+      "avg_compactions": 1.33
+    },
+    "net_cost_delta_ratio": 0.790733,
+    "main_cost_delta_ratio": 0.411634,
+    "compaction_share_of_off_cost": 0.379099,
+    "holdout": [
+      {
+        "threshold": "off",
+        "n": 4,
+        "success_rate": 0.5
+      },
+      {
+        "threshold": "0.70",
+        "n": 4,
+        "success_rate": 1.0
+      }
+    ]
+  },
   "cells": [
     {
       "variant": "variant-0",

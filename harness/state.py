@@ -67,6 +67,84 @@ class DerivedState:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def verify_chain(
+    events: Sequence[Event], *, start_prev_hash: str | None = None
+) -> list[Violation]:
+    """INV-008：事件哈希链的可续性校验（增量：只查传入的这批事件）。
+
+    规则（与 semantics.md 一致）：
+
+    * 每条事件的 ``event_hash`` 必须等于 ``sha256(prev_hash ‖ record_bytes)``；
+    * 每条事件的 ``prev_hash`` 必须等于上一条的 ``event_hash``
+      （本批第一条与 ``start_prev_hash`` 比较）；
+    * ``start_prev_hash`` 为 None 时**不校验**首条与历史的关系——这正是"增量校验"
+      的用法：调用方传上一批的最后一条哈希，只查新 seq。
+
+    为什么这条不变量值得存在：append-only 触发器挡住的是**数据库层面**的改写；
+    而"把库换成一个更旧的副本""绕过触发器改一行""删掉中间一段再拼上"这些发生在
+    数据库之外的操作，只有链能发现。它不阻止篡改，只让篡改**无法静默**。
+    """
+    from .events import GENESIS_HASH, compute_event_hash
+
+    violations: list[Violation] = []
+    if (
+        events
+        and start_prev_hash is None
+        and events[0].event_hash  # 没有哈希的事件由循环里的"没有哈希"违规负责
+        and events[0].prev_hash != GENESIS_HASH
+    ):
+        # 评审 §5：这条判定原先放在循环之后，且要求"本批没有其它违规"才报——
+        # 于是"首条挂错 + 后面还有断点"时只报后面那个，"第一个断点"会指偏。
+        # 移到循环之前，它才是**第一条**违规（定位准确）。
+        violations.append(
+            Violation(
+                code="INV-008",
+                detail=(
+                    f"链首条事件的 prev_hash={events[0].prev_hash[:16]}… 不是 genesis——"
+                    "这条链挂错了地方（既不是从 genesis 开始，调用方也没给起点）"
+                ),
+                event_id=events[0].event_id,
+            )
+        )
+    expected_prev = start_prev_hash
+    for event in events:
+        if not event.event_hash:
+            violations.append(
+                Violation(
+                    code="INV-008",
+                    detail=f"事件 {event.event_id}（seq={event.seq}）没有哈希：库未迁移到 v3？",
+                    event_id=event.event_id,
+                )
+            )
+            expected_prev = None
+            continue
+        if expected_prev is not None and event.prev_hash != expected_prev:
+            violations.append(
+                Violation(
+                    code="INV-008",
+                    detail=(
+                        f"链在 seq={event.seq} 断开：prev_hash={event.prev_hash[:16]}… "
+                        f"但上一条的 event_hash={expected_prev[:16]}…"
+                    ),
+                    event_id=event.event_id,
+                )
+            )
+        recomputed = compute_event_hash(event.prev_hash, event)
+        if recomputed != event.event_hash:
+            violations.append(
+                Violation(
+                    code="INV-008",
+                    detail=(
+                        f"事件 {event.event_id}（seq={event.seq}）内容与哈希不符："
+                        f"重算 {recomputed[:16]}… ≠ 记录 {event.event_hash[:16]}…"
+                    ),
+                    event_id=event.event_id,
+                )
+            )
+        expected_prev = event.event_hash
+    return violations
+
+
 def reduce_events(events: Sequence[Event]) -> tuple[DerivedState, list[Violation]]:
     """把有效日志折叠成派生状态，同时收集不变量违反。"""
     status = RunStatus.RUNNING

@@ -31,12 +31,41 @@ class Disposition(StrEnum):
     GUESSER = "guesser"
 
 
+class NoiseFlavor(StrEnum):
+    """噪声人格的**误判形态**（决定它打穿哪个评分口径）。
+
+    * ``wrong_diagnosis``：根因与动作一起错（既有误判分支的形态）——strict 与
+      cause_only 同时下降，两者仍然相等；
+    * ``diagnosis_ok_action_wrong``：**根因对、动作错**——只有 strict 下降、cause_only
+      不变，于是"评分口径敏感性"才真正被激活（W5–W7 从未出现过的样本）；
+    * ``both``：每次命中噪声时二选一（默认）。
+    """
+
+    WRONG_DIAGNOSIS = "wrong_diagnosis"
+    DIAGNOSIS_OK_ACTION_WRONG = "diagnosis_ok_action_wrong"
+    BOTH = "both"
+
+
 class ReasonerProfile(BaseModel):
     name: str
     competence: float = 0.9  # 证据充分时的正确率
     disposition: Disposition = Disposition.HONEST
     destructive_error_ratio: float = 0.5  # 误判时采用破坏性动作的概率
     seed: int = 7
+    # ---- 噪声人格（R-A4）：默认全关；error_rate=0 时判定路径与既有实现逐位一致 ----
+    error_rate: float = 0.0
+    flavor: NoiseFlavor = NoiseFlavor.BOTH
+    noise_seed: int = 101  # 噪声抽样用**独立**种子（见 noise_rng_for）
+
+
+def noise_rng_for(profile: ReasonerProfile, *, scenario_id: str, repeat: int) -> random.Random:
+    """噪声的独立随机流，遵循 CRN 规则：种子 = ``noise_seed:scenario:repeat``，**不含 system 名**。
+
+    为什么独立成流：若与判定流共用一个 ``rng``，即使 ``error_rate=0`` 也会因为多抽了几个数
+    而改变后续所有判定（那会让"默认行为零改变"这条验收失效）。独立成流之后，同一次
+    （场景 × 重复序号）在四条系统上遇到**同一串**噪声——这正是对照实验要的。
+    """
+    return random.Random(f"{profile.noise_seed}:{scenario_id}:{repeat}")
 
 
 class Diagnosis(BaseModel):
@@ -47,7 +76,88 @@ class Diagnosis(BaseModel):
     detail: str = ""
 
 
+def _misdiagnosis(
+    *, scenario: Scenario, profile: ReasonerProfile, rng: random.Random
+) -> tuple[str, str, str]:
+    """误判形态：落到声明的混淆项上，动作按 destructive_error_ratio 取红线或常规动作。"""
+    confuser = rng.choice(scenario.confusers) if scenario.confusers else "unknown_cause"
+    forbidden = list(scenario.forbidden_actions)
+    if scenario.novel_forbidden:
+        forbidden.append(scenario.novel_forbidden)
+    if forbidden and rng.random() < profile.destructive_error_ratio:
+        return confuser, rng.choice(forbidden), "误判并给出破坏性处置"
+    action = rng.choice(
+        [
+            a
+            for a in ("scale_pool", "restart_workload", "clean_logs", "warm_cache")
+            if a != scenario.expected_action
+        ]
+    )
+    return confuser, action, "误判并给出常规处置"
+
+
+def perturb_diagnosis(
+    *,
+    diagnosis: Diagnosis,
+    scenario: Scenario,
+    profile: ReasonerProfile,
+    rng: random.Random,
+) -> Diagnosis:
+    """噪声人格：把一次判定改写成"运维上可信的错误"（R-A4）。
+
+    两种形态的区别是本需求的**全部意义**：``wrong_diagnosis`` 只证明"模型会错"，
+    ``diagnosis_ok_action_wrong`` 才让 strict 与 cause_only 分开——即证明评分口径本身有意义
+    （W5–W7 的结论"两种口径完全相同"，正是因为缺这一档样本）。
+    """
+    flavor = profile.flavor
+    if flavor is NoiseFlavor.BOTH:
+        flavor = rng.choice([NoiseFlavor.WRONG_DIAGNOSIS, NoiseFlavor.DIAGNOSIS_OK_ACTION_WRONG])
+    if flavor is NoiseFlavor.DIAGNOSIS_OK_ACTION_WRONG:
+        _, action, detail = _misdiagnosis(scenario=scenario, profile=profile, rng=rng)
+        return Diagnosis(
+            root_cause=diagnosis.root_cause,
+            action=action,
+            sufficient=diagnosis.sufficient,
+            detail=f"噪声人格（根因对、动作错）：{detail}",
+        )
+    confuser, action, detail = _misdiagnosis(scenario=scenario, profile=profile, rng=rng)
+    return Diagnosis(
+        root_cause=confuser,
+        action=action,
+        sufficient=diagnosis.sufficient,
+        detail=f"噪声人格（根因也错）：{detail}",
+    )
+
+
 def diagnose(
+    *,
+    scenario: Scenario,
+    channels: set[str],
+    profile: ReasonerProfile,
+    rng: random.Random,
+    service_hint: str = "",
+    noise_rng: random.Random | None = None,
+) -> Diagnosis:
+    """判定 + （可选）噪声扰动。
+
+    纪律：``error_rate<=0`` 或没有噪声流时**立即返回**，一个随机数都不多抽——因此默认人格的
+    判定与既有实现逐位一致（既有结论口径零改变）。
+    """
+    result = _diagnose_base(
+        scenario=scenario, channels=channels, profile=profile, rng=rng, service_hint=service_hint
+    )
+    if noise_rng is None or profile.error_rate <= 0:
+        return result
+    if result.action == "none":
+        # 证据不足 ⇒ 转人工（没有可扰动的处置）。噪声人格不该把"承认不知道"变成乱动，
+        # 否则它测的就成了另一件事（气质），而不是评分口径的敏感性。
+        return result
+    if noise_rng.random() >= profile.error_rate:
+        return result
+    return perturb_diagnosis(diagnosis=result, scenario=scenario, profile=profile, rng=noise_rng)
+
+
+def _diagnose_base(
     *,
     scenario: Scenario,
     channels: set[str],
@@ -73,22 +183,7 @@ def diagnose(
             detail="按证据给出的正确诊断",
         )
     # 误判：落到混淆项上；动作按 destructive_error_ratio 取红线动作或普通错误动作
-    confuser = rng.choice(scenario.confusers) if scenario.confusers else "unknown_cause"
-    forbidden = list(scenario.forbidden_actions)
-    if scenario.novel_forbidden:
-        forbidden.append(scenario.novel_forbidden)
-    if forbidden and rng.random() < profile.destructive_error_ratio:
-        action = rng.choice(forbidden)
-        detail = "误判并给出破坏性处置"
-    else:
-        action = rng.choice(
-            [
-                a
-                for a in ("scale_pool", "restart_workload", "clean_logs", "warm_cache")
-                if a != scenario.expected_action
-            ]
-        )
-        detail = "误判并给出常规处置"
+    confuser, action, detail = _misdiagnosis(scenario=scenario, profile=profile, rng=rng)
     return Diagnosis(root_cause=confuser, action=action, sufficient=sufficient, detail=detail)
 
 

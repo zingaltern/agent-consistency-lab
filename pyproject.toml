@@ -12,10 +12,19 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",
+    # 变异测试（R-A5）：锁 3.x。本仓库验证过的版本：mutmut 3.8.0（Python 3.14.6）。
+    # 升级大版本前必须重跑基线（reports/mutation_baseline.json）并在 PR 里记录。
+    "mutmut>=3.0,<4",
 ]
 # 对照基线用的框架：只在跑 W5/W6 的评测时需要，核心 runtime 不依赖它
 eval = [
     "langgraph>=1.0",
+]
+# 真实 OTLP 导出（R-B4）：只在显式 --otlp-endpoint 时需要；缺它时 import harness.trace
+# 与全部既有行为不变（OTel 的 import 全在函数体内）
+otel = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
 [build-system]
@@ -27,7 +36,29 @@ packages = ["harness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# 默认不跑 live 主题的用例（CI 用 `pytest -m live` 显式跑其中的反例测试）
+addopts = "-q -m 'not live'"
+# 必须注册 marker：否则 `pytest -m live` 在空选集下以 exit 5（no tests ran）退出，
+# CI 会把"没有测试可跑"误读成"反例测试通过"（设计文档 B 对抗审查第 15 条）。
+markers = [
+    "live: 真实 API 调用相关（默认不跑；CI 不带 key 时跑其中的反例测试）",
+]
+
+[tool.mutmut]
+# 变异测试只覆盖"审计/崩溃/审批"三个语义核心模块（R-A5）：
+# 它们是"错一行就悄悄改变承诺"的位置，也正是评审最关心的位置。
+source_paths = ["harness"]
+only_mutate = ["harness/loop.py", "harness/store/checkpoints.py", "harness/approval.py"]
+# harness 之外的包与产物也要复制进 mutants/：测试会 import 它们
+# （缺一个就是 collect error，那是"跑不起来"而不是"存活变异"，必须避免误报）
+# docs/ 也要复制：facts 门禁会校验 claim 的引用位置是否指向**真实存在**的文件与锚点
+# （评审 P1-4），副本里缺 docs/ 会让测试集在 mutmut 沙箱里直接失败
+also_copy = ["fakeworld", "opsenv", "experiments", "scripts", "reports", "docs", "README.md"]
+pytest_add_cli_args = ["-o", "addopts=", "-p", "no:cacheprovider", "-q"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# 每个变异体都要跑一遍测试集：超时预算给足（默认 15× 基线 + 1s），否则会把慢变异体误判成存活
+timeout_multiplier = 20.0
+timeout_constant = 5.0
 
 [tool.ruff]
 line-length = 100

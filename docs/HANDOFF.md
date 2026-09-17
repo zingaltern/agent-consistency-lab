@@ -4,7 +4,11 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W8 完成（收尾周：三篇长文 + demo + 简历措辞 + 文档定稿）｜ 代码量 12,351 行（wc -l 含空行，harness/fakeworld/opsenv/experiments/tests/examples 六目录全部 .py，**在 W8 定稿提交 `ac651fe` 上**；非空 10,595 行）｜ 测试 208 全绿
+更新时间：W9（设计文档 A+B 交付 + 评审修复）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
+
+> **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
+> `reports/documented-facts.json`（72 条 claim），由 `scripts/check_facts.py` 逐条重跑比对
+> （CI job `facts` 跑轻集、`nightly.yml` 跑整量集）。改代码导致数字变化时，先跑这条命令。
 
 ---
 
@@ -24,10 +28,10 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 
 | 项 | 值 |
 |---|---|
-| 提交 | W1 `b42eb6f` → W2 `4122c62` → W3 `0f66913` → W4 `a993f39` → 审计 `d90811c` → W5 `6438ac5` → W6 `35b9b31` → W7 `1268ff6` |
+| 提交 | W1 `b42eb6f` → W2 `4122c62` → W3 `0f66913` → W4 `a993f39` → 审计 `d90811c` → W5 `6438ac5` → W6 `35b9b31` → W7 `1268ff6` → W8 `ac651fe`；W9 见 §八（六个里程碑各自一个分支，待 PR 合并） |
 | 环境 | Python 3.14.6（声明 >=3.11，`uuid7` 有 uuid4 回退）、pydantic 2.13.5、langgraph 1.2.11（仅 `[eval]` extra） |
-| 测试 | `208 passed`（约 6 秒）；`tests/test_audit_regressions.py` 是审计回归，`test_stats_and_gates.py`/`test_sweep.py` 是 W6/W7 新增 |
-| 五条命令 | `pytest` / `crash_matrix --repeats 5` / `context_cost` / `opsenv.suite --gate` / `context_sweep --repeats 2`（README「如何复现全部结论」一节） |
+| 测试 | 用例数见 claim `tests-collected`（`scripts/count_tests.py` 再生；默认集已过滤 `live` marker 的用例，CI 用 `pytest -m live` 单跑其中的反例）；`tests/test_audit_regressions.py` 是审计回归 |
+| 六条命令 | `pytest` / `crash_matrix --repeats 5` / `context_cost` / `opsenv.suite --gate` / `context_sweep --repeats 2` / `scripts/check_facts.py`（README「如何复现全部结论」一节） |
 | 报告 | `docs/semantics.md`（承诺清单）+ `docs/w2..w7-report.md` + `reports/*.md`（表格入库、明细走 `--runs-out` 不入库） |
 | 产出物 | `harness/`（内核 ~3.9k 行）、`opsenv/`（场景与评测 ~1.7k 行）、`fakeworld/`（受控世界）、`experiments/`、`tests/` |
 
@@ -65,10 +69,14 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 
 ## 五、未决与已知边界（W8 不要顺手"修"掉它们，要么做要么写清）
 
-1. `during_compaction` 之外的掉电语义、多进程并发（租约）未覆盖；`lease`/`state_update` 事件类型已登记但**无实现**（文档已标注）。
-2. 评分口径敏感性检验**未被激活**（推理器误判同时改根因与动作，strict ≡ cause_only）——接真实模型后才会有信息量。
+1. 掉电语义仍未覆盖（只做探测器：torn write / SIGSTOP / SIGTERM，见 `docs/fault-spectrum.md`）；
+   多进程并发**仍不承诺**，但租约有了最小实现（`harness/lease.py`：持有/续租/过期失活 +
+   可读失败；**过期接管仍开放**）。`state_update` 仍是"已登记未实现"。
+2. 评分口径敏感性**已被激活**（W9：噪声人格 `--reasoner noisy`，strict 66.7% < cause_only 77.6%，
+   见 `docs/noisy-reasoner.md`）；但它用的是**受控扰动**而不是真实模型，真实模型的错法分布仍未知。
 3. 压缩扫描只覆盖阈值，未扫 `keep_recent_groups` 与摘要模型选择；摘要用确定性桩。
-4. `artifact` GC 只有 `orphan_count` 暴露，没有回收。
+4. `artifact` GC 已实现（W9：`python -m harness.artifacts --run-dir X [--apply]`，
+   默认 dry-run，只由显式 CLI 调用）。
 5. W6 的 holdout 尚未被真正当考卷（无调参过程）；W7 的 holdout 每档 n=4，仅方向确认。
 6. agent 路线（harness/langgraph）的**取证充分性代理指标无方差**，不能当线上监控指标（κ 不适用）。
 
@@ -146,3 +154,40 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 **W8 之前建议补的一次动作**：对 W5–W7 再做一轮独立审计（与 W1–W4 那次同规格），
 重点查：评测口径的一致性、门禁是否真的覆盖了它声称的东西、报告数字与 JSON 是否逐格对齐。
 理由：W5–W7 是新增的评测层，而上次审计之后新增了约 4 千行代码与 12 份报告。
+
+## 八、W9：设计文档 A+B 的交付（本轮）
+
+六个里程碑各自一个分支（堆叠，按 A→B 顺序），全部只推分支、由所有者在网页端 PR 合并：
+
+| 里程碑 | 分支 | 交付 | 关键数字（可再生） |
+|---|---|---|---|
+| 开放问题裁决 | `docs/open-questions-answered` | A §4 四条 + B §6 五条 + 回写 B §7 | 见 `docs/design/2026-09-17-open-questions-answered.md` |
+| A-M1 | `feat/facts-gate` | claim 再生门禁 + CI job `facts` | 72 条 claim；`check_facts --run verify` 27/27 |
+| A-M2 | `feat/noisy-reasoner` | 噪声人格 + 变异测试常设化 | strict 66.7% vs cause_only 77.6%；变异基线见 claim `mutation-survivors`（`reports/mutation_baseline.json`） |
+| A-M3 | `feat/chaos-fuzz-probes` | 随机时刻 SIGKILL fuzz + 三档谱系探测器 | 180 次注入、0 新类违例；3 档探测器各有结论 |
+| B-M1 | `feat/record-replay-model` | scripted/record/replay 三模式 | scripted↔replay 白名单一致（`identical: true`） |
+| B-M2 | `feat/arg-policy-hash-chain` | 参数级审批 + 事件哈希链 | arg_policy 12 例；链 mirror test 定位到 seq=4 |
+| B-M3 | `feat/otel-sweep-lease` | OTLP + artifact GC + 租约 | 三块各有单测；语义文档四段同步 |
+
+**新增的门禁**（都已做过退化注入验证）：`facts`（文档数字对账，verify + nightly）、
+`mutation`（幸存变异防倒退，nightly）、`chaos-fuzz`（随机注入 + 谱系探测器，nightly）。
+`verify` 主作业仍然只跑 `pytest` + `ruff` + 轻量 claim 集。
+
+### 评审修复（`fix/review-p0-p1`，2026-09-17）
+
+W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.md`：2 个 P0 +
+3 条阻塞性 P1 + 26 条 P2），修复分支处置如下：
+
+* **P0-1**：`mutation` 门禁在"什么都没跑出来"时是绿的（`mutmut results` 空结果退出 0
+  且无输出 ⇒ 基线里的幸存变异被报告成"已被杀死"）。修法：`mutmut run` 非 0 即作废、
+  变异体总数为 0 即失败，并补回归用例。
+* **P0-2**：README/HANDOFF 的变异数字与入库基线矛盾而 facts 门禁没覆盖。修法：数字对齐；
+  **并给 `check_facts.py` 加了"引用位置必须指向真实文件与逐字锚点"的校验**（P1-4），
+  claim 的 `docs` 全部改写成 `路径#锚点` 并逐条核对。
+* **P1-1**：`semantics.md` §3 的租约段读起来像"已接入写路径"（其实没有生产接入点）——措辞已收窄。
+* **P1-2**：`sweep` 自称"全库扫描"却只扫一个 run 目录——引用枚举改为接受多个 run 目录，
+  共享 artifacts root 时 `--apply` 拒绝执行（除非 `--force`），docstring 改成事实。
+* **P1-3**：`--skip-sensitivity` 会把"没有证明"打印成"通过"——旗标已删除。
+* P2 的 26 条里，与正确性/安全性相关的已一并修掉（写入侧链保护、oracle 三处统一、
+  账本缺席判定、unknown 上界、崩溃探测器的信号与进程回收、成本回放口径、快照纪律去重…），
+  逐条状态见修复分支的提交信息与测试。

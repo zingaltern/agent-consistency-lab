@@ -85,7 +85,7 @@ git push -u origin <branch>        # 推分支
 
 | # | 门槛 | 命令 |
 |---|---|---|
-| 1 | 测试全绿（当前 208 个用例） | `.venv/bin/pytest -o addopts= -p no:cacheprovider -q` |
+| 1 | 测试全绿（用例数见 claim `tests-collected`，**不手写**） | `.venv/bin/pytest -o addopts= -p no:cacheprovider -q` |
 | 2 | lint 全绿 | `.venv/bin/ruff check .` |
 | 3 | 崩溃矩阵逐格 `as-predicted` | `.venv/bin/python -m experiments.crash_matrix --repeats 5` |
 | 4 | 评测门禁全过（14 条） | `.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate` |
@@ -93,6 +93,14 @@ git push -u origin <branch>        # 推分支
 | 6 | 文档数字与 `reports/*.json` 一致 | 见 §4 |
 | 7 | 新增/修改的机制附回归用例 | 见 [`testing.md`](testing.md) §3 |
 
+* W9 起还多了两条**不属于合并门槛、但会红的**作业（都跑在 nightly，失败同样要处理）：
+  `mutation`（变异门禁：新增幸存变异 = 测试盲区扩大）与 `chaos-fuzz`（随机时刻注入 +
+  三档谱系探测器）。本地复现命令见 [`testing.md`](testing.md) §2。
+* 门槛 6 的执行者是 **CI job `facts`**：`.venv/bin/python scripts/check_facts.py --run verify`
+  逐条重跑 `reports/documented-facts.json` 里的轻 claim 并比对 JSON 路径；
+  整量类（`crash_matrix --repeats 5`、1536 次评测、阈值扫描）在
+  `.github/workflows/nightly.yml` 里跑（`--run nightly`）。改代码导致数字变化时，
+  先跑这条命令，再回灌文档。
 * 涉及**崩溃语义 / 审批 / 幂等 / 恢复路径**的改动：门槛 3 必须跑满 `--repeats 5`。
 * 纯文档改动：门槛 1、2 必跑，3–5 不要求；§4 全部适用。
 * 任何"跑得慢所以跳过"的决定都要在提交信息里写明跳过了哪条、为什么。
@@ -122,6 +130,9 @@ Settings → Branches → **Add branch protection rule**：
 
 * **风格即法规**：`ruff` 配置（line-length 100、target py311、select E/F/I/UP/B/SIM/RUF）
   是唯一风格标准，不要再引入第二套。
+* **模型接入的边界**（W9）：三种模型模式（`scripted`/`record`/`replay`）走同一条 loop，
+  **不得**为某一种模式改承诺层代码；录制物默认写 `/tmp`，key 只从环境变量读，
+  绝不写进仓库文件、报告或事件 payload。
 * **确定性**：任何涉及随机的地方必须显式播种；评测的种子遵循 **CRN 规则**——
   `f"{profile.seed}:{scenario.id}:{repeat}"`，**不含 system 名**（含了会产生哈希伪影，
   审计实测 p=0.0009）。崩溃注入的子进程固定 `PYTHONHASHSEED=0`。
@@ -175,7 +186,7 @@ Settings → Branches → **Add branch protection rule**：
 ```
 [ ] 我读了 docs/semantics.md，且我的改动没有让它变旧（变了就先改它）
 [ ] 我在独立分支上开发，main 未被直接修改
-[ ] pytest 208+ 全绿；ruff 全绿
+[ ] pytest 全绿（用例数用 `scripts/count_tests.py` 计数，不凭记忆写）；ruff 全绿
 [ ] 改动涉及崩溃/审批/幂等 → crash_matrix --repeats 5 全格 as-predicted
 [ ] 改动涉及评测/统计/门禁 → opsenv.suite --gate 全过
 [ ] 我改动或引用的每个数字都能由命令再生，且所有引用处都已同步

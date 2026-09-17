@@ -550,6 +550,25 @@ class Loop:
             )
             return
 
+        # 5b) 参数级安全域（R-B2）：闸门在**执行 handler 前的最后一刻**，
+        # 输入是实际 request.args（不是审批记录里的 hash）——否则会出现
+        # "审批时看不懂结构化参数、批准了被禁止值"的缝隙。
+        # 位置刻意放在 outbox 预写之前：被拒的调用不该留下意图行。
+        if tool.arg_policy is not None:
+            allowed, reason = tool.arg_policy.evaluate(request.args)
+            if not allowed:
+                counters.rejected += 1
+                self._append_error_artifact(
+                    ctx,
+                    "arg_policy_violation",
+                    f"{request.tool} 参数越出工具自述的安全域（{reason}；"
+                    f"策略 {tool.arg_policy.describe()}）",
+                )
+                self._append_tool_result(
+                    ctx, request.tool_call_id, "rejected", None, "arg_policy_violation"
+                )
+                return
+
         # 6) outbox 预写意图（仅非幂等写、且尚无意图行）
         outbox_path = self._outbox and tool.effect is Effect.WRITE_NONIDEMPOTENT
         if outbox_path and existing is None:

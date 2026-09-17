@@ -389,6 +389,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--branch", default="", help="缺省取该 run 目录里唯一的分支")
     parser.add_argument("--json", action="store_true", help="输出 span 树 JSON")
     parser.add_argument("--otel", action="store_true", help="输出 OTel 形状的 JSON")
+    parser.add_argument(
+        "--otlp-endpoint",
+        default="",
+        help="显式启用真实 OTLP 导出（如 http://localhost:4318）；不传则行为与今天完全一致",
+    )
+    parser.add_argument(
+        "--otlp-json",
+        action="store_true",
+        help="不装 [otel] extra 时走 OTLP/JSON over HTTP（少了 SDK 的批处理，本仓库不做重试）",
+    )
     args = parser.parse_args(argv)
 
     run_dir = Path(args.run_dir)
@@ -406,6 +416,29 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         store.close()
 
+    if args.otlp_endpoint:
+        # 显式启用才导出：默认路径（--json/--otel/文本）一个字节都不变
+        if args.otlp_json:
+            from .otel import post_otlp_json
+
+            print(
+                json.dumps(
+                    post_otlp_json(trace, endpoint=args.otlp_endpoint),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            from .otel import export_otlp
+
+            print(
+                json.dumps(
+                    export_otlp(trace, endpoint=args.otlp_endpoint),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        return 0
     if args.otel:
         print(trace_to_json(trace, otel=True))
     elif args.json:

@@ -23,8 +23,36 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Tests
-        # 含崩溃矩阵小样本与四系统对照的单元级断言
+        # 含崩溃矩阵小样本与四系统对照的单元级断言；默认过滤掉 live 主题的用例
         run: pytest -q
+      - name: Live-path negative tests (no key in CI)
+        # `-m live` 在这里跑的是**反例**：没有 key 时 live 模式必须给出可读失败并非零退出。
+        # 真正的在线调用在本仓库永不执行（设计文档 B §8）。
+        run: pytest -q -m live
+
+  facts:
+    # 「文档里的每个数字都必须能由命令再生」这条纪律的执行者：
+    # claim 清单在 reports/documented-facts.json，逐条重跑再生命令并比对 JSON 路径。
+    # 这里只跑 run=verify 的轻 claim 集（约 5 秒）；crash_matrix / context_sweep /
+    # 1536 次整量评测属于 nightly 作业（nightly.yml）。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+      - name: Documented facts gate
+        run: python scripts/check_facts.py --run verify --json-out /tmp/facts-report.json
+      - name: Upload facts report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documented-facts-report
+          path: /tmp/facts-report.json
 
   experiments:
     runs-on: ubuntu-latest

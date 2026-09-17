@@ -451,6 +451,10 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "log_ok": f"{sum(r['log_ok'] for r in group)}/{runs}",
                 "effects": group[0]["effects_total"],
                 "duplicated": f"{sum(r['duplicated'] for r in group)}/{runs}",
+                # 数值版重复计数：文档引用的是"5/5"这类分数，分数无法被 claim 对账，
+                # 因此同时物化分子（分母就是同行的 runs）
+                "duplicated_runs": sum(r["duplicated"] for r in group),
+                "injected_runs": sum(bool(r.get("crash_marker")) for r in group),
                 "max_per_key": max(r["max_effects_per_key"] for r in group),
                 "unknown_rows": max(r["unknown_rows"] for r in group),
                 "reconciled": max(r["reconciled"] for r in group),
@@ -466,6 +470,30 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return summary
+
+
+def summarize_kills(rows: list[dict[str, Any]], *, cell_count: int) -> dict[str, Any]:
+    """物化"真实 SIGKILL 计数"这类派生指标（R-A1 要求：对账脚本不得去猜）。
+
+    ``real_kill_count`` 的口径 = run 目录里存在 ``crash_marker.json`` 的次数
+    （``docs/testing.md`` §5：注入次数以 marker 的存在为准）。不再注入的对照格
+    （``(tamper)`` / ``(long-baseline)``）必须显式列出，否则读者无法复算分母。
+    """
+    marked = [row for row in rows if row.get("crash_marker")]
+    by_kind: dict[str, int] = {}
+    for row in marked:
+        kind = str(row["crash_marker"].get("injection_kind", "window"))
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+    non_injecting = sorted({row["window"] for row in rows if not row.get("crash_marker")})
+    return {
+        "cells": cell_count,
+        "runs": len(rows),
+        "real_kill_count": len(marked),
+        "by_injection_kind": by_kind,
+        "cells_without_injection": non_injecting,
+        "as_predicted_runs": sum(row["verdict"] == "as-predicted" for row in rows),
+        "prediction_violations": sum(row["verdict"] != "as-predicted" for row in rows),
+    }
 
 
 def render_markdown(summary: list[dict[str, Any]]) -> str:
@@ -498,13 +526,23 @@ def main(argv: list[str] | None = None) -> int:
     for cell in cells:
         rows.extend(run_cell(cell, args.repeats, root))
     summary = summarize(rows)
+    kills = summarize_kills(rows, cell_count=len(cells))
+    kills["repeats"] = args.repeats
     markdown = render_markdown(summary)
     print(markdown)
+    print(
+        f"\n真实 SIGKILL {kills['real_kill_count']}/{kills['runs']} 次运行"
+        f"（不注入的对照格：{'、'.join(kills['cells_without_injection']) or '无'}）"
+    )
     if args.json_out:
         Path(args.json_out).write_text(
             json.dumps(
                 {
                     "summary": summary,
+                    # 按格子名索引的同一份汇总：claim 引用名字而不是下标——
+                    # 增删格子时引用会"找不到键"而显式变红，不会静默指向另一格
+                    "summary_by_cell": {row["cell"]: row for row in summary},
+                    "summary_kills": kills,
                     "cells": [c.__dict__ for c in cells],
                     "note": "逐次明细用 --runs-out 生成（体积大且可再生，不入库）",
                 },

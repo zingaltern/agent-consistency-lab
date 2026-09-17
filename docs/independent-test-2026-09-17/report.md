@@ -240,6 +240,7 @@
 | P2-8 | `ArgPolicy(allowed=[1])` 接受 `True` | 区间策略显式拒绝布尔（`isinstance(value, bool)` 判非数值），但 `allowed` 列表用 `in` 判等，`True == 1` 成立 → 数值白名单会被布尔值"等价穿透"。方向安全（`forbidden` 侧同样成立，等于更严），影响低 | `python -c "from harness.tools import ArgPolicy; print(ArgPolicy(field='m', allowed=[1]).evaluate({'m': True}))"` → `(True, 'ok')` |
 | P2-9 | `SweepReport.never_deleted` 是死字段 | 声明在模型里，但 `sweep()` 与任何代码都不填充它（全局 grep 只命中声明处）。报告读者会以为它表示"永不回收清单" | `grep -rn "never_deleted" --include="*.py" .` |
 | P2-10 | `--skip-sensitivity` 会伪造"敏感性自检通过" | 该 flag 把 `sensitivity` 直接置成 `{"sensitive": True}`，于是报告会打印"敏感性自检…通过"而**实际没跑**。CI 未使用该 flag，属本地误用风险 | `.venv/bin/python -m experiments.chaos_fuzz --repeats 1 --skip-sensitivity --workroot /tmp/x | grep 敏感性` |
+| P2-12 | `check_facts` 的默认输出目录是固定的 `/tmp/facts`，同机并发两次运行会互相清档 | 每条 claim 的输出路径 = `/tmp/facts/cmd-<hash>.json`，脚本在跑命令前会先 `unlink`。我这次审计就撞上了：并行的另一条会话也在同一台机器上跑 `check_facts`，导致我读某条 claim 的再生输出时文件恰好被删掉（表现为"再生=None"）。CI 每个 job 独立容器、不受影响；本地两个会话/两个 checkout 同跑会互相干扰 | 并发跑两条 `check_facts`（不同 workdir，默认 outdir 相同），观察其中一条出现"命令未写出 …（source_cmd 缺写盘参数？）"或读数失败 |
 | P2-11 | 交付报告 §2 的"316 passed"措辞不精 | 实际是 `collected 316`（默认 `addopts` 过滤 3 条 `live`：312 passed + 1 skipped；`pytest -m live` 3 passed）。claim `tests-collected` 定义的是 collected，数字**没错**，只是"passed"用词偏了 | `.venv/bin/pytest -p no:cacheprovider 2>&1 | tail -1` |
 
 ---

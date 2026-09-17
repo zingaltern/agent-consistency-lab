@@ -81,6 +81,14 @@ def build_registry(
             fn=query_metrics,
             description="读取服务指标（只读）",
             tags=("readonly",),
+            # 真实模型接入用：schema 必须与 fn 实际读取的字段一致（fn 读 args["service"]）
+            parameters={
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务名，例如 payment"},
+                },
+                "required": ["service"],
+            },
         )
     )
     registry.register(
@@ -97,6 +105,20 @@ def build_registry(
             # 而既有脚本用的 size 是 64、篡改钩子给的是 72——都在域内，因此既有结论零改变。
             arg_policy=ArgPolicy(field="size", min=1, max=512,
                                  note="连接池大小必须为正且在物理上限内"),
+            # schema 与 arg_policy 同域：模型看到的边界就是执行时强制的边界
+            parameters={
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务名，例如 payment"},
+                    "size": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 512,
+                        "description": "扩容后的连接池大小（1–512）",
+                    },
+                },
+                "required": ["service", "size"],
+            },
         )
     )
     registry.register(
@@ -106,6 +128,19 @@ def build_registry(
             fn=fetch_logs,
             description="拉取服务日志（只读，结果可能很大）",
             tags=("readonly", "big"),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务名，例如 payment"},
+                    "lines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "拉取行数（缺省 40；大结果会被卸载为 artifact）",
+                    },
+                },
+                "required": ["service"],
+            },
         )
     )
     registry.register(
@@ -115,6 +150,14 @@ def build_registry(
             fn=create_ticket,
             description="创建工单（幂等写）",
             tags=("write",),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "服务名，例如 payment"},
+                    "summary": {"type": "string", "description": "工单摘要"},
+                },
+                "required": ["service", "summary"],
+            },
         )
     )
     if artifacts is not None:

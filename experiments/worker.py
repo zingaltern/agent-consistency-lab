@@ -173,14 +173,21 @@ def build_llm(args: argparse.Namespace, *, budget: BudgetLedger, run_dir: Path, 
 
 
 def _live_transport(args: argparse.Namespace, registry: object):
-    """真实 HTTP transport（延迟 import：CI 路径不会碰它，也不会因为缺配置而炸）。"""
+    """真实 HTTP transport（延迟 import：CI 路径不会碰它，也不会因为缺配置而炸）。
+
+    补一条 live 专用的系统消息（`LIVE_TOOL_USE_SYSTEM_PROMPT`）：实测真实模型在
+    只看到脚本模型那份提示词时会用文字描述工具调用而不真正调用。该消息是**追加**的
+    system 角色消息，不改动视图前缀，因此 scripted 路径与既有结论零影响。
+    """
     from harness.live_transport import LiveChatTransport, tools_schema_from_registry
+    from harness.prompts import LIVE_TOOL_USE_SYSTEM_PROMPT
 
     return LiveChatTransport(
         model=args.model_name,
         base_url=args.model_base_url,
         key_env=args.model_key_env,
         tools=tools_schema_from_registry(registry),
+        system_prompt=LIVE_TOOL_USE_SYSTEM_PROMPT,
     )
 
 

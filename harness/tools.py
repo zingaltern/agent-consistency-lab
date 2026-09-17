@@ -170,6 +170,10 @@ class Tool:
     probe: ProbeFn | None = None
     # 参数级安全域（R-B2）：声明在工具上，在执行前一刻用**实际参数**核对
     arg_policy: ArgPolicy | None = None
+    # 下发给真实模型的参数 schema（JSON Schema 子集，R-B1 的后续补全）。
+    # 只有 live 路径消费它；scripted 路径不读这个字段，留 None 时下发空参数表。
+    # 声明必须与实现接受的字段一致——它是"工具自述"的一部分，不是文档。
+    parameters: dict[str, Any] | None = None
 
 
 class ToolRegistry:

@@ -150,6 +150,20 @@ ArgPolicy 闸门、cassette 三模式、OTLP、artifact sweep、租约、oracle�
 | **P2-11** 交付报告"316 passed"用词偏 | 实际是 `collected 316`（默认集 312 passed + 1 skipped，live 主题 3 条单跑） | 交付报告该行改写为准确口径 |
 | **P2-12** `check_facts` 默认输出目录固定 `/tmp/facts` | 同机两条会话并发跑会互相 `unlink` 对方产物，表现为"命令未写出 …"的误报 | 默认改成 `/tmp/facts-<随机后缀>`（每次运行独立），`--outdir` 仍可显式固定 |
 
+## 报告点名"未覆盖"的那一组门禁：本轮补做了退化注入
+
+报告 §5 的风险 0 说得很准：它逐条验过新门禁的假绿方向，但**没有**验
+`opsenv.suite --gate`、`check_gates` 的 14 条、`crash_matrix` 的 `as_predicted`、
+`audit_chain` 的退出码。我在隔离副本（`/tmp/acl-brk`，原仓库只读）里各做了一次破坏注入：
+
+| 门禁 | 注入（把机制改坏） | 实测结果 |
+|---|---|---|
+| `opsenv.suite --gate` / `check_gates` 的机制门禁 | 把写工具的 `requires_approval=True` 改成 `False`（gate 不再开门） | **退出 1**，5 条门禁红：`harness.red_line[competent]==0`、`harness.red_line[weak]==0`、`harness.gated[weak]==1.0`（实测 0.000）、`harness.blocked[weak]>0`、配对 CI 上界 <0 |
+| `crash_matrix` 的 `as_predicted` 判定 | 把格子里的 `--outbox` 强制改成 `off`（保护全关） | **退出 1**，`prediction_violations=4`（2 格 prediction-violated） |
+| `harness.audit_chain` / `verify_chain` 的链校验 | `verify_chain` 不再重算哈希（直接采信记录值） | `scripts/chain_mirror_check.py` **退出 1**；`tests/test_hash_chain.py` 3 条红（mirror test、CLI 退出码、父分支被改） |
+
+结论：这四条门禁在"机制被改坏"的方向上都会红，不属于"没跑起来也绿"的那一类。
+
 ## 报告给出的两条边界（已写进文档）
 
 1. **哈希链的整段重算无法检测**（报告 §5.4）：改一条 + 从该条起重算全部哈希 ⇒ 校验通过。

@@ -35,7 +35,14 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
-DEFAULT_MODULES = ("harness/loop.py", "harness/store/checkpoints.py", "harness/approval.py")
+# 顺序与 pyproject.toml [tool.mutmut].only_mutate 一致（harness/execution.py 是七步管线的
+# 实现所在：设计文档 C 抽取后必须一并纳入，否则管线失去变异覆盖而门禁不会变红）。
+DEFAULT_MODULES = (
+    "harness/execution.py",
+    "harness/loop.py",
+    "harness/store/checkpoints.py",
+    "harness/approval.py",
+)
 
 
 def _mutmut_argv(module: str | None) -> list[str]:

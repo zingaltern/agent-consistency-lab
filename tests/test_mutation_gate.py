@@ -71,6 +71,7 @@ def test_baseline_is_internally_consistent() -> None:
         round(counts["survived"] / decided, 4), abs=1e-4
     )
     assert payload["modules"] == [
+        "harness/execution.py",
         "harness/loop.py",
         "harness/store/checkpoints.py",
         "harness/approval.py",

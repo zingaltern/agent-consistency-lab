@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 345,
+      "value": 393,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1878,6 +1878,137 @@
       "docs": [
         "reports/chaos_fuzz_report.md",
         "docs/fault-spectrum.md#5. 边界（本结论不适用的范围）"
+      ]
+    },
+    {
+      "id": "mcp-tools-declared",
+      "value": 6,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.mcp_server",
+        "--run-dir",
+        "/tmp/facts-mcp-run",
+        "--list-tools",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "tool_count"
+      ],
+      "what": "MCP 服务下发的工具数 = fakeworld 四个工具 + 两个治理工具（list_pending_approvals / approve）；不需要 [mcp] extra 也能再生",
+      "docs": [
+        "docs/integrations.md#3. 下发了哪些工具",
+        "docs/design/2026-09-18-integrations.md#R-C1｜MCP 工具服务（对应 G1）"
+      ]
+    },
+    {
+      "id": "mcp-governance-tools",
+      "value": 2,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.mcp_server",
+        "--run-dir",
+        "/tmp/facts-mcp-run",
+        "--list-tools",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "governance_tool_count"
+      ],
+      "what": "治理工具对的条数（审批门的显式接口，不属于 ToolRegistry）",
+      "docs": [
+        "docs/integrations.md#3. 下发了哪些工具"
+      ]
+    },
+    {
+      "id": "mcp-mapping-test-count",
+      "value": 23,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_mcp_mapping.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "MCP 治理语义用例数（映射/审批/拒绝/改参/失败分类/恢复；不装 [mcp] extra 也能跑）",
+      "docs": [
+        "docs/integrations.md#7. 测试分层"
+      ]
+    },
+    {
+      "id": "mcp-sdk-test-count",
+      "value": 9,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_mcp_server.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "官方 SDK stdio 客户端驱动的外部验收用例数（打 mcp marker，nightly 用 pytest -m mcp 跑；缺 extra 时是 skip）",
+      "docs": [
+        "docs/integrations.md#7. 测试分层"
+      ]
+    },
+    {
+      "id": "execution-parity-test-count",
+      "value": 6,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_execution_parity.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "「两处调用点行为一致」的证明用例数（差分 + 委托 + 结构 + 正对照）",
+      "docs": [
+        "docs/design/2026-09-18-open-questions-answered.md#一、C §5.1｜如何在 MCP 形态下复用七步执行管线（最要紧）"
+      ]
+    },
+    {
+      "id": "integration-boundary-test-count",
+      "value": 10,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_integrations_boundaries.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "目录与依赖边界用例数（内核不 import 集成层、import harness 不拉 MCP、依赖清单与打包/门禁配置）",
+      "docs": [
+        "docs/integrations.md#6. 边界与口径（读之前请先读这一节）"
       ]
     }
   ]

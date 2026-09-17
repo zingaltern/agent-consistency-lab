@@ -2,6 +2,7 @@
   "schema": "mutation-baseline/v1",
   "tool": "mutmut 3.x（见 pyproject.toml [tool.mutmut]）",
   "modules": [
+    "harness/execution.py",
     "harness/loop.py",
     "harness/store/checkpoints.py",
     "harness/approval.py"
@@ -657,5 +658,5 @@
     "harness.store.checkpoints.xǁSqliteCheckpointSaverǁget__mutmut_8",
     "harness.store.checkpoints.xǁSqliteCheckpointSaverǁget__mutmut_9"
   ],
-  "note": "幸存变异 = 测试盲区。基线只用来防「新增盲区」，不是质量分：这三个模块的部分路径由子进程驱动的崩溃矩阵/四系统评测覆盖，mutmut 看不见，因此清单里包含「其实被外层验证保护着」的变异。"
+  "note": "幸存变异 = 测试盲区。基线只用来防「新增盲区」，不是质量分：这些模块的部分路径由子进程驱动的崩溃矩阵/四系统评测覆盖，mutmut 看不见，因此清单里包含「其实被外层验证保护着」的变异。harness/execution.py 是七步管线的实现所在（设计文档 C 抽取后的落点），模块清单与 pyproject.toml [tool.mutmut].only_mutate 必须一致。"
 }

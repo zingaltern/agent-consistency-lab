@@ -321,7 +321,6 @@ def test_rejected_call_does_not_write_a_side_effect(
     loop._execute_tool(
         ctx,
         ToolCallRequest(tool_call_id="tc_direct", tool="resize", args={"size": 99}),
-        registry,
         _Counters(),
     )
     assert calls == [], "越界调用不能被执行"

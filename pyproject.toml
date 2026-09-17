@@ -26,34 +26,61 @@ otel = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
+# MCP 工具服务（设计文档 C）：只在显式跑 integrations/ 下的服务与它的用例时需要。
+# 刻意**不放进 dev**：内核依赖仍只有 pydantic，装 dev 不该把 MCP 全家桶一起拉进来。
+# 缺它时 import integrations.mcp_server 与全部既有行为不变（SDK 的 import 全在函数体内）。
+# 上游可能改 API，因此锁大版本；升级前必须重跑 tests/test_mcp_server.py 并在 PR 里记录实测版本。
+mcp = [
+    "mcp>=1.2,<3",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["harness"]
+packages = ["harness", "integrations"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # 默认不跑 live 主题的用例（CI 用 `pytest -m live` 显式跑其中的反例测试）
-addopts = "-q -m 'not live'"
+addopts = "-q -m 'not live and not mcp'"
 # 必须注册 marker：否则 `pytest -m live` 在空选集下以 exit 5（no tests ran）退出，
 # CI 会把"没有测试可跑"误读成"反例测试通过"（设计文档 B 对抗审查第 15 条）。
 markers = [
     "live: 真实 API 调用相关（默认不跑；CI 不带 key 时跑其中的反例测试）",
+    "mcp: 需要 [mcp] extra 的用例（官方 SDK 客户端驱动真实 stdio 服务）。默认不跑（addopts 过滤），nightly 用 pytest -m mcp 显式跑；用例内部用 importorskip，缺 extra 时是 skip 而不是 collect error",
 ]
 
 [tool.mutmut]
 # 变异测试只覆盖"审计/崩溃/审批"三个语义核心模块（R-A5）：
 # 它们是"错一行就悄悄改变承诺"的位置，也正是评审最关心的位置。
 source_paths = ["harness"]
-only_mutate = ["harness/loop.py", "harness/store/checkpoints.py", "harness/approval.py"]
+# harness/execution.py 是七步管线的实现所在（设计文档 C 抽取后的落点）——
+# 没把它列进来，等于管线失去变异覆盖而门禁**不会变红**（裁决文档 §一 明确点名）。
+only_mutate = [
+    "harness/execution.py",
+    "harness/loop.py",
+    "harness/store/checkpoints.py",
+    "harness/approval.py",
+]
 # harness 之外的包与产物也要复制进 mutants/：测试会 import 它们
 # （缺一个就是 collect error，那是"跑不起来"而不是"存活变异"，必须避免误报）
 # docs/ 也要复制：facts 门禁会校验 claim 的引用位置是否指向**真实存在**的文件与锚点
 # （评审 P1-4），副本里缺 docs/ 会让测试集在 mutmut 沙箱里直接失败
-also_copy = ["fakeworld", "opsenv", "experiments", "scripts", "reports", "docs", "README.md"]
+also_copy = [
+    "fakeworld",
+    "opsenv",
+    "experiments",
+    "scripts",
+    "reports",
+    "docs",
+    "integrations",
+    # 边界用例会读 .github/workflows/（断言 verify 不引入 MCP、nightly 显式跑 -m mcp）：
+    # 沙箱里缺它会让用例失败 → 变异门禁报"跑不起来"而不是"有盲区"。
+    ".github",
+    "README.md",
+]
 pytest_add_cli_args = ["-o", "addopts=", "-p", "no:cacheprovider", "-q"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # 每个变异体都要跑一遍测试集：超时预算给足（默认 15× 基线 + 1s），否则会把慢变异体误判成存活

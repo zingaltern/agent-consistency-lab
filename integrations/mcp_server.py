@@ -561,7 +561,14 @@ def main(argv: list[str] | None = None) -> int:
             dedup=args.dedup == "on",
         )
         try:
-            payload = {"tools": list_all_tool_specs(env.registry)}
+            specs = list_all_tool_specs(env.registry)
+            # tool_count 是给"下发了几个工具"这类对外数字用的稳定路径
+            # （claim `mcp-tools-declared` 绑的就是它）。
+            payload = {
+                "tool_count": len(specs),
+                "governance_tool_count": len(GOVERNANCE_TOOL_SPECS),
+                "tools": specs,
+            }
         finally:
             env.close()
         text = json.dumps(payload, ensure_ascii=False, indent=2)

@@ -20,6 +20,9 @@
 * 数值按 ``|actual - value| <= tolerance`` 判过；字符串/布尔必须完全相等。
 * 缺字段、``source_path`` 为空、``run`` 取值非法 ⇒ 直接判失败（退出 1），
   不给"没绑定也算过"留后门。
+* ``docs`` 里的引用位置（``路径#锚点``）必须**指向真实存在的文件与逐字出现的锚点**——
+  评审 P1-4：这条挡的是"数字改对了、引用位置没跟着改"，也顺手把
+  P0-2（README 的数字与入库基线矛盾而门禁全绿）那类缺陷变成可判定的。
 """
 
 from __future__ import annotations
@@ -77,9 +80,33 @@ def load_claims(path: Path) -> list[dict[str, Any]]:
             problems.append(f"{label}: tolerance 不能为负")
         if not claim.get("docs"):
             problems.append(f"{label}: docs 为空——没有引用位置的 claim 无法回灌")
+        else:
+            for entry in claim["docs"]:
+                problems.extend(_check_doc_reference(label, entry))
     if problems:
         raise ClaimError("\n".join(problems))
     return claims
+
+
+def _check_doc_reference(label: str, entry: str) -> list[str]:
+    """``路径#锚点`` 必须指到真文件与真锚点（评审 P1-4）。
+
+    只校验"文件存在 + 锚点逐字出现"：不做语义比对（那要靠人），但"引用位置写错"
+    这一类（改了数字没改引用、引用了一个被删掉的段落）从此会红。
+    """
+    problems: list[str] = []
+    path_part, _, anchor = str(entry).partition("#")
+    if not path_part:
+        return [f"{label}: docs 引用缺少路径：{entry!r}"]
+    target = PROJECT_ROOT / path_part
+    if not target.exists():
+        return [f"{label}: docs 引用的文件不存在：{path_part}（写全相对仓库根的路径）"]
+    if anchor and anchor not in target.read_text(encoding="utf-8"):
+        problems.append(
+            f"{label}: docs 锚点在 {path_part} 里找不到：{anchor!r}"
+            "（锚点必须是文件里逐字出现的片段）"
+        )
+    return problems
 
 
 def command_key(source_cmd: list[str]) -> str:
@@ -155,14 +182,24 @@ def run_claim(
     if " ".join(cmd) not in cache:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.unlink(missing_ok=True)  # 绝不读到上一轮的残留
-        proc = subprocess.run(
-            cmd,
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        cache[" ".join(cmd)] = (proc.returncode, proc.stdout, proc.stderr)
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # 超时按"这一条失败"处理：整轮 traceback 虽然退出码非零（不会假绿），
+            # 但拿不到逐条报表，排查时不知道是"数字漂了"还是"命令挂了"（评审 P2-10）
+            cache[" ".join(cmd)] = (
+                124,
+                "",
+                f"再生命令超过 {timeout:.0f}s 未完成（timeout）",
+            )
+        else:
+            cache[" ".join(cmd)] = (proc.returncode, proc.stdout, proc.stderr)
     code, _stdout, stderr = cache[" ".join(cmd)]
 
     record: dict[str, Any] = {

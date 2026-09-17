@@ -191,20 +191,34 @@ def test_action_wrong_flavor_activates_grader_sensitivity_in_a_run() -> None:
 
 
 def test_both_flavor_mixes_the_two_forms_roughly_evenly() -> None:
-    """``BOTH`` 是两种形态的混合：在足够多的种子上约各占一半。
+    """``BOTH`` 是两种形态的混合：约各占一半。
 
-    先钉住混合比例，再用足够大的样本测"口径敏感性被激活"——小样本（如 16 次运行）
-    下"全是 wrong_diagnosis"的概率约 1.6%，会让一条正确的实现假红（第一次跑就撞上了）。
+    **P2-20 回归**：这里原来直接调 stdlib 的 ``random.choice`` 计数——它复刻了
+    `opsenv/policy.py` 的那一行，生产代码改了混合逻辑它不会红。
+    现在走 ``perturb_diagnosis``（生产路径），用产生的 ``detail`` 区分两种形态。
     """
+    scenario = CATALOG[0]
+    profile = _profile(error_rate=1.0, flavor=NoiseFlavor.BOTH)
+    base = diagnose(
+        scenario=scenario,
+        channels=set(ALL_CHANNELS),
+        profile=_profile(),
+        rng=random.Random("base"),
+    )
     wrong = ok_action = 0
-    for index in range(400):
-        rng = random.Random(f"mix:{index}")
-        if rng.choice([NoiseFlavor.WRONG_DIAGNOSIS, NoiseFlavor.DIAGNOSIS_OK_ACTION_WRONG]) \
-                is NoiseFlavor.WRONG_DIAGNOSIS:
+    for index in range(300):
+        perturbed = perturb_diagnosis(
+            diagnosis=base,
+            scenario=scenario,
+            profile=profile,
+            rng=random.Random(f"mix:{index}"),
+        )
+        if "根因也错" in perturbed.detail:
             wrong += 1
-        else:
+        elif "根因对、动作错" in perturbed.detail:
             ok_action += 1
-    assert 0.4 * 400 < wrong < 0.6 * 400, (wrong, ok_action)
+    assert wrong + ok_action == 300, "两种形态必须覆盖全部样本（既不漏也不多）"
+    assert 0.4 * 300 < wrong < 0.6 * 300, (wrong, ok_action)
 
 
 def test_both_flavor_activates_sensitivity_on_a_large_enough_sample() -> None:

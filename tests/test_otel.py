@@ -167,3 +167,55 @@ def test_otlp_json_fallback_reports_connection_failure_readably() -> None:
     with pytest.raises(OtelExportError) as excinfo:
         post_otlp_json(_sample_trace(), endpoint="http://127.0.0.1:9", timeout=1.0)
     assert "OTLP/JSON 导出失败" in str(excinfo.value)
+
+
+def test_cli_otlp_endpoint_branch_is_covered(tmp_path: Path) -> None:
+    """**P2-14 回归**：`--otlp-endpoint` 这条 CLI 分支必须有用例走过。
+
+    修复前会怎样：把 `harness/trace.py` 的该分支改成不可达，`test_otel.py` 仍然 5/5 绿——
+    而"显式启用 OTLP"正是 R-B4 的那个开关（默认那一半测到了，启用那一半没测到）。
+    这里用**未监听的本地端口** + OTLP/JSON 降级路径：不需要网络，只要求"可读失败 + 非零退出"。
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    import sqlite3
+
+    from harness.store.schema import DDL
+
+    con = sqlite3.connect(run_dir / "runtime.db")
+    con.executescript(DDL)
+    con.execute(
+        "INSERT INTO runs(run_id, thread_id, status, created_at, updated_at)"
+        " VALUES('run-1', 'thr-1', 'completed', 0, 0)"
+    )
+    con.execute(
+        "INSERT INTO branches(branch_id, run_id, parent_branch_id, fork_event_id, created_at)"
+        " VALUES('br-1', 'run-1', NULL, NULL, 0)"
+    )
+    con.execute(
+        "INSERT INTO events(event_id, run_id, branch_id, seq, kind, type, source,"
+        " payload_json, created_at, prev_hash, event_hash)"
+        " VALUES('e0', 'run-1', 'br-1', 0, 'tree_node', 'user_message', 'user', '{}', 0, '', '')"
+    )
+    con.commit()
+    con.close()
+    (run_dir / "ids.json").write_text(json.dumps({"branch_id": "br-1"}), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "harness.trace",
+            "--run-dir",
+            str(run_dir),
+            "--otlp-endpoint",
+            "http://127.0.0.1:9",
+            "--otlp-json",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode != 0, "连不上时必须非零退出，不能静默成功"
+    assert "OTLP/JSON 导出失败" in (proc.stdout + proc.stderr)

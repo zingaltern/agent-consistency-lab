@@ -202,8 +202,8 @@ def _migrate_v3_add_hash_chain(conn: sqlite3.Connection) -> None:
 
     * 这不是绕过边界纪律：事件的 payload 与排序**一字未动**，只是补两个新列的哈希值；
     * 一旦补链中途失败，整个事务回滚——不会留下"触发器没了"的半成品库；
-    * 迁移自测断言"迁移后触发器存在且 UPDATE 仍被拒"
-      （`tests/test_hash_chain.py::test_migration_recreates_the_append_only_triggers`）。
+    * 迁移自测断言"迁移后触发器存在且 UPDATE / DELETE 仍被拒"
+      （`tests/test_hash_chain.py::test_migration_backfills_the_chain_and_recreates_triggers`）。
 
     回填顺序：按 branch 的谱系深度排序（父分支先算），因为分叉分支的首条事件要指向
     **fork 点事件**的 ``event_hash``。

@@ -35,7 +35,6 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
-MUTMUT = str(PROJECT_ROOT / ".venv" / "bin" / "mutmut")
 DEFAULT_MODULES = ("harness/loop.py", "harness/store/checkpoints.py", "harness/approval.py")
 
 
@@ -51,7 +50,7 @@ def run_mutmut(*, module: str | None, timeout: float, max_children: int) -> None
     print(f"[mutation] 运行: {' '.join(argv)} --max-children {max_children}（上限 {timeout:.0f}s）")
     started = time.perf_counter()
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [*argv, "--max-children", str(max_children)],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -67,6 +66,15 @@ def run_mutmut(*, module: str | None, timeout: float, max_children: int) -> None
             f"{(exc.stdout or '')[-200:] if isinstance(exc.stdout, str) else ''}"
         ) from exc
     print(f"[mutation] 用时 {time.perf_counter() - started:.1f}s")
+    if proc.returncode != 0:
+        # `mutmut run` 非 0 = 本轮没跑成功（配置没生效、collect error、被 OOM 杀…）。
+        # 绝不能继续判定：mutmut 的结果读的是 `mutants/` 缓存，失败时残留的旧结果
+        # 会被当成"这一轮的结果"（评审 P0-1）。
+        raise SystemExit(
+            f"[mutation] `mutmut run` 退出码 {proc.returncode}：本轮没有跑成功，判定作废。\n"
+            f"  stdout 尾部：{proc.stdout.strip()[-300:]}\n"
+            f"  stderr 尾部：{proc.stderr.strip()[-300:]}"
+        )
 
 
 def collect_status() -> dict[str, list[str]]:
@@ -158,7 +166,8 @@ def main(argv: list[str] | None = None) -> int:
     run_mutmut(
         module=args.module or None, timeout=args.timeout, max_children=args.max_children
     )
-    summary = mutation_summary(collect_status())
+    buckets = collect_status()
+    summary = mutation_summary(buckets)
     print(
         f"[mutation] killed={summary['killed']} survived={len(summary['survived'])} "
         f"no_tests={len(summary['no_tests'])} survivor_rate={summary['survivor_rate']:.3f}"
@@ -168,6 +177,17 @@ def main(argv: list[str] | None = None) -> int:
     previous: set[str] = set()
     if baseline_path.exists():
         previous = set(json.loads(baseline_path.read_text(encoding="utf-8"))["survivors"])
+
+    if summary["total"] == 0:
+        # 评审 P0-1：`mutmut results` 在没有结果时**退出 0 且无输出**，于是
+        # survived=[] ⇒ new_survivors=[] ⇒ 打印"没有新增幸存变异" ⇒ 退出 0（绿）。
+        # 那意味着"配置错 / 缓存被清 / collect error"都会让 nightly 静静变绿。
+        print(
+            "[mutation] 本轮**没有产出任何变异体**（total=0）：这不是「没有盲区」，"
+            "而是「没跑起来」，判定失败。\n"
+            "  常见原因：mutmut 配置未生效、`mutants/` 被清空、collect error、runner 崩溃。"
+        )
+        return 1
 
     if args.update_baseline:
         baseline_path.parent.mkdir(parents=True, exist_ok=True)

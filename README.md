@@ -119,7 +119,8 @@
   SIGSTOP 悬挂（冻结期间账本只出现 {0,1} 两种取值）、账本外注入（不触发重跑）；
 * **评分口径敏感性被激活**：噪声人格下 `strict` 66.7% < `cause_only` 77.6%（W5–W7 两者恒等），
   而机制门禁在噪声下**仍然全绿**（红线 0.000、写操作 100% 交人工）；
-* **变异测试常设化**：1642 个变异体 / 1000 killed / 628 survived（基线入库，防"盲区扩大"）；
+* **变异测试常设化**：1670 个变异体 / 1031 killed / 625 survived（claim `mutation-survivors`、
+  `mutation-survivor-rate`；基线 `reports/mutation_baseline.json` 入库，防"盲区扩大"）；
 * **模型接入三模式**：scripted / record / replay 走同一条 loop，scripted↔replay 白名单字段一致
   （token/cost/事件序列/tool_calls 结构；时间戳不比较）；live 永不进 CI（无 key 给可读失败）；
 * **参数级审批**：工具自述安全域（`arg_policy`），闸门在**执行前一刻**用实际参数核对——

@@ -38,15 +38,14 @@ class OtelExportError(RuntimeError):
     pass
 
 
-def _load_sdk() -> tuple[Any, Any, Any]:
+def _load_sdk() -> tuple[Any, Any]:
     """延迟 import：顶层不引入 otel，缺 extra 时给出可读失败。"""
     try:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     except ImportError as exc:  # pragma: no cover - 取决于环境是否装了 extra
         raise OtelUnavailableError(f"{OTEL_EXTRA_HINT}（原始错误：{exc}）") from exc
-    return Resource, TracerProvider, SimpleSpanProcessor
+    return Resource, TracerProvider
 
 
 def build_sdk_spans(trace: Trace) -> tuple[Any, list[Any]]:
@@ -54,7 +53,7 @@ def build_sdk_spans(trace: Trace) -> tuple[Any, list[Any]]:
 
     返回 ``(provider, spans)``：调用方需要 provider 才能把 span 交给 exporter。
     """
-    Resource, TracerProvider, _ = _load_sdk()
+    Resource, TracerProvider = _load_sdk()
     payload = trace.to_otel()["resourceSpans"][0]
     resource_attributes = {
         item["key"]: item["value"].get("stringValue") for item in payload["resource"]["attributes"]
@@ -64,7 +63,6 @@ def build_sdk_spans(trace: Trace) -> tuple[Any, list[Any]]:
 
     spans = []
     for item in payload["scopeSpans"][0]["spans"]:
-        context = None
         span = tracer.start_span(
             name=item["name"],
             # SDK 的 start_time/end_time 就是**纳秒**（不是微秒）：直接给投影值
@@ -77,7 +75,7 @@ def build_sdk_spans(trace: Trace) -> tuple[Any, list[Any]]:
         span.set_attribute("harness.span_id", item["spanId"])
         span.set_attribute("harness.parent_span_id", item["parentSpanId"])
         span.end(end_time=item["endTimeUnixNano"])
-        spans.append((span, item, context))
+        spans.append((span, item))
     return provider, spans
 
 
@@ -104,10 +102,14 @@ def export_otlp(
             )
         except ImportError as exc:  # pragma: no cover
             raise OtelUnavailableError(f"{OTEL_EXTRA_HINT}（原始错误：{exc}）") from exc
-        exporter = OTLPSpanExporter(endpoint=f"{endpoint.rstrip('/')}/v1/traces", headers=headers)
+        # timeout 必须真的传下去：原先它是个死参数（评审 P2-15），
+        # 于是"超时"这件事在真实导出里不可控。
+        exporter = OTLPSpanExporter(
+            endpoint=f"{endpoint.rstrip('/')}/v1/traces", headers=headers, timeout=timeout
+        )
 
     exported = []
-    for span, item, _ in spans:
+    for span, item in spans:
         result = exporter.export([span])
         if result is not SpanExportResult.SUCCESS:
             raise OtelExportError(

@@ -19,7 +19,16 @@ from pathlib import Path
 import pytest
 
 from harness.audit_chain import audit
-from harness.events import GENESIS_HASH, Event, NewEvent, Source, TreeEventType
+from harness.events import (
+    GENESIS_HASH,
+    Event,
+    EventKind,
+    NewEvent,
+    Source,
+    TreeEventType,
+    compute_event_hash,
+    record_bytes,
+)
 from harness.state import verify_chain
 from harness.store import SqliteStore
 from harness.store.schema import SCHEMA_VERSION
@@ -355,3 +364,132 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     finally:
         again.close()
     assert before == after
+
+
+# ------------------------------------------------------------------ 写入侧的链保护
+
+
+def test_appending_on_a_broken_tail_is_refused(tmp_path: Path) -> None:
+    """**P2-1 回归**：尾行没有哈希时，新事件不许静默挂到 genesis/fork 点。
+
+    修复前会怎样：链在一个无人察觉的位置被"延长"，而这件事只有下一次离线校验才会发现；
+    报错放在写入时，至少"谁在写、写什么"是清楚的。
+    """
+    from harness.store.sqlite_store import StoreError
+
+    store = SqliteStore(tmp_path / "runtime.db")
+    store.setup()
+    try:
+        run_id, branch_id = _seed(store, events=2)
+        # 把尾行的哈希清空（模拟"库被外部改过"或"迁移没跑完"）
+        store._conn.execute("DROP TRIGGER events_no_update")
+        store._conn.execute("UPDATE events SET event_hash='' WHERE seq=1")
+        store._conn.execute(
+            "CREATE TRIGGER events_no_update BEFORE UPDATE ON events "
+            "BEGIN SELECT RAISE(ABORT, 'events is append-only: UPDATE is forbidden'); END"
+        )
+        with pytest.raises(StoreError) as excinfo:
+            store.append(
+                NewEvent.tree(
+                    run_id=run_id,
+                    branch_id=branch_id,
+                    type=TreeEventType.AGENT_MESSAGE,
+                    source=Source.AGENT,
+                    payload={"text": "接在断链上的一条"},
+                )
+            )
+        assert "event_hash" in str(excinfo.value)
+    finally:
+        store.close()
+
+
+def test_migration_handles_a_forked_legacy_branch(tmp_path: Path) -> None:
+    """**P2-3 回归**：旧库里有分叉分支时，补链必须按谱系顺序算（父分支先算完）。
+
+    修复前会怎样：分叉分支的首条事件要指向**fork 点事件**的哈希，
+    而 fork 点的哈希只在父分支补完之后才存在——顺序错了会直接 RuntimeError。
+    """
+    db_path = tmp_path / "legacy-fork.db"
+    con = sqlite3.connect(db_path)
+    con.executescript(V2_DDL)
+    con.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', '2')")
+    con.execute(
+        "INSERT INTO runs(run_id, thread_id, status, created_at, updated_at)"
+        " VALUES('run-1', 'thr-1', 'running', 0.0, 0.0)"
+    )
+    con.execute(
+        "INSERT INTO branches(branch_id, run_id, parent_branch_id, fork_event_id, created_at)"
+        " VALUES('br-1', 'run-1', NULL, NULL, 0.0)"
+    )
+    for index in range(3):
+        con.execute(
+            "INSERT INTO events(event_id, run_id, branch_id, seq, kind, type, source,"
+            " parent_id, payload_json, created_at)"
+            " VALUES(?, 'run-1', 'br-1', ?, 'tree_node', ?, 'agent', NULL, '{}', ?)",
+            (f"p{index}", index, "agent_message" if index else "user_message", float(index)),
+        )
+    # 子分支：从父分支的 seq=1 分叉出去，自己的 seq 从 2 继续
+    con.execute(
+        "INSERT INTO branches(branch_id, run_id, parent_branch_id, fork_event_id, created_at)"
+        " VALUES('br-2', 'run-1', 'br-1', 'p1', 1.0)"
+    )
+    con.execute(
+        "INSERT INTO events(event_id, run_id, branch_id, seq, kind, type, source,"
+        " parent_id, payload_json, created_at)"
+        " VALUES('c2', 'run-1', 'br-2', 2, 'tree_node', 'agent_message', 'agent', NULL, '{}', 2.0)"
+    )
+    con.commit()
+    con.close()
+
+    store = SqliteStore(db_path)
+    store.setup()  # v2 → v3
+    try:
+        parent = store.effective_events("br-1")
+        fork_point = next(event for event in parent if event.event_id == "p1")
+        child = store.effective_events("br-2")
+        child_own = [event for event in child if event.branch_id == "br-2"]
+        assert child_own, "子分支应当有自己的事件"
+        assert child_own[0].prev_hash == fork_point.event_hash, (
+            "分叉分支首条必须挂在 fork 点事件的哈希上（迁移要按谱系顺序补链）"
+        )
+        assert verify_chain(child, start_prev_hash=GENESIS_HASH) == []
+    finally:
+        store.close()
+    assert audit(db_path)["ok"] is True
+
+
+# ------------------------------------------------------------------ golden vector
+
+
+def test_chain_bytes_are_pinned_by_a_golden_vector() -> None:
+    """把 ``record_bytes`` 与 ``event_hash`` 的**字节格式**钉死（评审 §5 建议 1）。
+
+    为什么需要：链的字节口径是**跨语言兼容面**——第三方要验证副本，就得复刻
+    `json.dumps(record, sort_keys=True, ensure_ascii=False)` 的转义与浮点规则。
+    没有这条 golden vector 时，"实现悄悄换了序列化（例如加上 `separators`）"
+    不会有任何测试变红，而历史链会集体失效。
+
+    ⚠️ 变更这条向量的后果：**所有既有库的链都会变成"断链"**。要改必须先有迁移方案。
+    """
+    event = Event(
+        event_id="evt-golden",
+        run_id="run-1",
+        branch_id="br-1",
+        seq=7,
+        kind=EventKind.TREE_NODE,
+        type="tool_call",
+        source=Source.AGENT,
+        payload={"tool": "scale_pool", "args": {"size": 64, "中文键": "值"}, "n": 1.5},
+        created_at=1700000000.25,
+    )
+    expected_record = (
+        '{"branch_id": "br-1", "created_at": 1700000000.25, "event_id": "evt-golden",'
+        ' "kind": "tree_node", "parent_id": null, "payload": {"args": {"size": 64,'
+        ' "中文键": "值"}, "n": 1.5, "tool": "scale_pool"}, "run_id": "run-1",'
+        ' "seq": 7, "source": "agent", "type": "tool_call"}'
+    )
+    assert record_bytes(event) == expected_record
+    # 哈希同样钉死（值由真实实现算出后写死；改它等于宣布历史链全部失效）
+    assert compute_event_hash(GENESIS_HASH, event) == (
+        "23b25b8bdcfa23bc99433767a6bf510fbacc9628991f192ecf4769923979f044"
+    )

@@ -137,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     ok = (
-        result["ledger_after_resume"]["max_per_key"] <= 1
+        # 必须包含"信号真的发出过"：进程若在延迟前就退出，探测器没测到任何东西，
+        # 却照样会打印"未注册 SIGTERM 处理器"的结论（评审 P2-8）
+        bool(result["sigterm_sent"])
+        and result["exit_code"] != 0
+        and result["ledger_after_resume"]["max_per_key"] <= 1
         and not result["findings_after_resume"]
         and result["final_status"] in ("completed", "failed", "waiting_human")
     )

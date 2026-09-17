@@ -202,3 +202,71 @@ def test_sample_kill_times_are_seed_determined() -> None:
     assert first == second
     assert first != other
     assert all(1 <= value <= 180 for value in first), "采样必须落在标定窗口内"
+
+
+# --------------------------------------------------- P2-4 / P2-5 / P2-6 的回归
+
+
+def test_all_three_checkers_report_an_unreadable_db(tmp_path: Path) -> None:
+    """**P2-4 回归**：坏库必须让**三个** checker 都给出 `inv_log_readable`。
+
+    修复前会怎样：只有 `check_no_tamper` 做了保护，另两个在坏库上抛 `sqlite3.DatabaseError`，
+    于是 `audit_run` 整条崩掉——"裁判缺席"被读成"没有违规"的反面：**根本没有结论**。
+    """
+    (tmp_path / "runtime.db").write_bytes(b"not a database at all")
+    _make_world_db(tmp_path / "world.db", [])
+    for checker in (check_no_tamper, check_closed_calls):
+        findings, _ = checker(tmp_path / "runtime.db")
+        assert [finding.code for finding in findings] == ["inv_log_readable"], checker.__name__
+    audit = audit_run(tmp_path, status="completed")
+    assert audit.ok is False
+    assert "inv_log_readable" in audit.codes()
+
+
+def test_missing_ledger_is_a_finding_not_an_empty_pass(tmp_path: Path) -> None:
+    """**P2-5 回归**：账本不存在 ⇒ 显式发现（裁判缺席不等于没有副作用）。"""
+    _make_runtime_db(tmp_path / "runtime.db", [("br", 0, "e0", "user_message", "{}")])
+    findings, facts = check_effect_accounting(tmp_path)
+    assert [finding.code for finding in findings] == ["inv_ledger_present"]
+    assert facts["ledger_present"] is False
+
+
+def test_unbounded_unknown_rows_are_caught(tmp_path: Path) -> None:
+    """**P2-6 回归**：unknown 这条"免罪通道"必须有上界（每键至多 1 行）。
+
+    修复前会怎样：把所有键标成 unknown 就能豁免全部重复——判定权落在被审判者手里。
+    """
+    runtime_db = tmp_path / "runtime.db"
+    _make_runtime_db(runtime_db, [("br", 0, "e0", "user_message", "{}")])
+    con = sqlite3.connect(runtime_db)
+    for index in range(2):  # 同一个键两行 unknown
+        con.execute(
+            "INSERT INTO tool_calls(tool_call_id, run_id, branch_id, tool, args_json,"
+            " args_sha256, idempotency_key, effect, status, started_at) VALUES"
+            f"('tc{index}', 'run', 'br', 'scale_pool', '{{}}', 'sha', 'idem_dup',"
+            " 'write_nonidempotent', 'unknown', 0.0)"
+        )
+    con.commit()
+    con.close()
+    _make_world_db(tmp_path / "world.db", ["idem_dup", "idem_dup"])
+    findings, facts = check_effect_accounting(tmp_path)
+    assert [finding.code for finding in findings] == ["inv_effect_accounting"]
+    assert facts["unknown_rows_by_key"]["idem_dup"] == 2
+
+
+def test_single_unknown_row_still_exonerates(tmp_path: Path) -> None:
+    """上界是 1 而不是 0：W2 的语义（"恰好 1 行 unknown 待人工对账"）必须仍然成立。"""
+    runtime_db = tmp_path / "runtime.db"
+    _make_runtime_db(runtime_db, [("br", 0, "e0", "user_message", "{}")])
+    con = sqlite3.connect(runtime_db)
+    con.execute(
+        "INSERT INTO tool_calls(tool_call_id, run_id, branch_id, tool, args_json, args_sha256,"
+        " idempotency_key, effect, status, started_at) VALUES"
+        "('tc1', 'run', 'br', 'scale_pool', '{}', 'sha', 'idem_dup',"
+        " 'write_nonidempotent', 'unknown', 0.0)"
+    )
+    con.commit()
+    con.close()
+    _make_world_db(tmp_path / "world.db", ["idem_dup", "idem_dup"])
+    findings, _ = check_effect_accounting(tmp_path)
+    assert findings == []

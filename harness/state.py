@@ -87,6 +87,25 @@ def verify_chain(
     from .events import GENESIS_HASH, compute_event_hash
 
     violations: list[Violation] = []
+    if (
+        events
+        and start_prev_hash is None
+        and events[0].event_hash  # 没有哈希的事件由循环里的"没有哈希"违规负责
+        and events[0].prev_hash != GENESIS_HASH
+    ):
+        # 评审 §5：这条判定原先放在循环之后，且要求"本批没有其它违规"才报——
+        # 于是"首条挂错 + 后面还有断点"时只报后面那个，"第一个断点"会指偏。
+        # 移到循环之前，它才是**第一条**违规（定位准确）。
+        violations.append(
+            Violation(
+                code="INV-008",
+                detail=(
+                    f"链首条事件的 prev_hash={events[0].prev_hash[:16]}… 不是 genesis——"
+                    "这条链挂错了地方（既不是从 genesis 开始，调用方也没给起点）"
+                ),
+                event_id=events[0].event_id,
+            )
+        )
     expected_prev = start_prev_hash
     for event in events:
         if not event.event_hash:
@@ -123,18 +142,6 @@ def verify_chain(
                 )
             )
         expected_prev = event.event_hash
-    first_ok = bool(events) and events[0].prev_hash in (GENESIS_HASH, start_prev_hash)
-    if events and not first_ok and start_prev_hash is None and not violations:
-        violations.append(
-            Violation(
-                code="INV-008",
-                detail=(
-                    f"链首条事件的 prev_hash={events[0].prev_hash[:16]}… 既不是 genesis "
-                    f"也不是给定的起点——这条链挂错了地方"
-                ),
-                event_id=events[0].event_id,
-            )
-        )
     return violations
 
 

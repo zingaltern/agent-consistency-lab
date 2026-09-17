@@ -292,8 +292,18 @@ class SqliteStore:
             "SELECT event_hash FROM events WHERE branch_id=? ORDER BY seq DESC LIMIT 1",
             (event.branch_id,),
         ).fetchone()
-        if row is not None and row["event_hash"]:
-            return str(row["event_hash"])
+        if row is not None:
+            tail_hash = str(row["event_hash"] or "")
+            if not tail_hash:
+                # 评审 P2-1：尾行哈希为空时**静默**挂到 genesis/fork 点，等于在一条断链上
+                # 继续追加，而这件事只有下一次离线校验才会被发现。放在写入时报错，
+                # 把发现时机提前到"谁在写、写什么"都还清楚的时候。
+                raise StoreError(
+                    f"分支 {event.branch_id!r} 的最后一条事件没有 event_hash"
+                    "（库未迁移到 v3，或这一行被外部改过）：拒绝在当前链上追加。"
+                    "先跑一次 store.setup() 触发迁移，或确认库的来源。"
+                )
+            return tail_hash
         branch = self.get_branch(event.branch_id)
         if branch is not None and branch.parent_branch_id is not None:
             fork = self._conn.execute(

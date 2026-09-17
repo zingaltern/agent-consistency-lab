@@ -39,6 +39,15 @@ def collect_count(path: str = "", timeout: float = 300.0) -> dict[str, object]:
         if len(head) >= 2 and head[1] == "tests" and head[0].isdigit():
             collected = int(head[0])
             break
+    if proc.returncode != 0:
+        # collect error（pytest 退出 2）也会打印一行"看起来正常"的计数，
+        # 那会变成一个偏小的 claim 值——宁可失败，不要给一个错数（评审 P2-11）
+        raise SystemExit(
+            f"pytest --collect-only 退出码 {proc.returncode}：收集阶段就失败了，"
+            "计数不可信。\n"
+            f"stdout 尾部：{' '.join(lines[-3:])}\n"
+            f"stderr 尾部：{proc.stderr.strip()[-300:]}"
+        )
     if collected is None:
         raise SystemExit(
             "pytest --collect-only 没有给出计数；stdout 尾部:\n"

@@ -99,18 +99,36 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int]:
     ``CassetteMeta.provider`` 里。
     """
     raw = raw or {}
+    # 评审 P2-21：canonical 四段是**权威计费数据**，供应商改了字段名时静默按 0 计
+    # 会变成"这次调用不要钱"。这里显式拒绝——宁可可读失败，也不要一个静默变小的账单。
+    if raw and "prompt_tokens" not in raw and "input_tokens" not in raw:
+        raise CassetteError(
+            "usage 缺少输入侧字段（既没有 prompt_tokens 也没有 input_tokens）："
+            f"实际字段 {sorted(raw)}。供应商改了字段名时必须先补映射规则，"
+            "不能按 0 计费。"
+        )
     if "prompt_tokens" in raw or "completion_tokens" in raw:
         details = raw.get("prompt_tokens_details") or {}
+        if "completion_tokens" not in raw:
+            raise CassetteError(
+                f"OpenAI 形态的 usage 缺 completion_tokens（实际字段 {sorted(raw)}）："
+                "输出侧按 0 计会让成本静默变小。"
+            )
         return {
             "prompt_tokens": int(raw.get("prompt_tokens", 0) or 0),
-            "completion_tokens": int(raw.get("completion_tokens", 0) or 0),
+            "completion_tokens": int(raw["completion_tokens"] or 0),
             "cache_read_tokens": int(details.get("cached_tokens", 0) or 0),
             "cache_write_tokens": 0,  # OpenAI 形态不报写入侧
         }
     if "input_tokens" in raw or "output_tokens" in raw:
+        if "output_tokens" not in raw:
+            raise CassetteError(
+                f"Anthropic 形态的 usage 缺 output_tokens（实际字段 {sorted(raw)}）："
+                "输出侧按 0 计会让成本静默变小。"
+            )
         return {
             "prompt_tokens": int(raw.get("input_tokens", 0) or 0),
-            "completion_tokens": int(raw.get("output_tokens", 0) or 0),
+            "completion_tokens": int(raw["output_tokens"] or 0),
             "cache_read_tokens": int(raw.get("cache_read_input_tokens", 0) or 0),
             "cache_write_tokens": int(raw.get("cache_creation_input_tokens", 0) or 0),
         }

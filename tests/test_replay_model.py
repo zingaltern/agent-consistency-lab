@@ -134,9 +134,10 @@ def test_normalize_usage_anthropic_shape() -> None:
 
 
 def test_normalize_usage_unknown_shape_is_readable_failure() -> None:
+    """认不出的 usage 形态必须报错，而不是按 0 计（那会变成"这次调用不要钱"）。"""
     with pytest.raises(CassetteError) as excinfo:
         normalize_usage({"tokens_used": 10})
-    assert "无法归一" in str(excinfo.value)
+    assert "缺少输入侧字段" in str(excinfo.value)
     assert "tokens_used" in str(excinfo.value)
 
 

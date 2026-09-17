@@ -91,3 +91,45 @@ def test_script_reports_timeout_as_failure() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "这是**失败**而不是跳过" in source
     assert "TimeoutExpired" in source
+
+
+# ------------------------------------------------------------------ P0-1 回归（假绿）
+
+
+def test_empty_result_set_is_a_failure_not_a_pass(tmp_path: Path, monkeypatch) -> None:
+    """**P0-1 回归**：`mutmut results` 在没有结果时退出 0 且无输出。
+
+    修复前会怎样：`survived=[]` ⇒ `new_survivors=[]` ⇒ 打印"没有新增幸存变异" ⇒ **退出 0**。
+    于是"配置没生效 / 缓存被清 / collect error"都会让 nightly 静静地变绿，
+    而基线里的幸存变异还会被报告成"已被杀死"。
+    """
+    module = _load_script()
+    monkeypatch.setattr(module, "run_mutmut", lambda **_: None)
+    monkeypatch.setattr(module, "collect_status", lambda: {})
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps({"survivors": ["harness.loop.x__mutmut_1"], "counts": {"survived": 1}}),
+        encoding="utf-8",
+    )
+    assert module.main(["--baseline", str(baseline), "--timeout", "1"]) == 1
+
+
+def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
+    """`mutmut run` 非 0（配置错 / collect error / OOM）⇒ 判定作废，不许读缓存继续比。"""
+    import subprocess as real_subprocess
+    import types
+
+    module = _load_script()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode=3, stdout="boom", stderr="boom"),
+    )
+    try:
+        module.run_mutmut(module=None, timeout=5, max_children=1)
+    except SystemExit as exc:
+        assert "离开" not in str(exc)  # 可读失败即可
+        assert "没有跑成功" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("非 0 退出码必须终止判定")
+    assert real_subprocess is not None

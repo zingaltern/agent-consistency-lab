@@ -29,6 +29,30 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+class ConsistencyError(RuntimeError):
+    """一致性对账的前提不成立（缺 outcome、子进程失败等）——一律按失败处理。"""
+
+
+# 比较键表与外公布的白名单**是同一份**：曾经它们各写一份，结果"公布的口径"
+# 与"执行的口径"漂移（评审 P2-13）。
+OUTCOME_KEYS = (
+    "status",
+    "step",
+    "executed",
+    "replayed",
+    "reconciled",
+    "unknown",
+    "rejected",
+    "probes",
+    "checkpoints",
+    "compactions",
+    "overflows",
+    "cost_usd",
+    "view_violations",
+    "input_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
 WHITELIST = (
     "outcome.status",
     "outcome.step",
@@ -43,11 +67,11 @@ WHITELIST = (
     "outcome.overflows",
     "outcome.cost_usd",
     "outcome.view_violations",
+    "outcome.input_tokens",
+    "outcome.cache_read_tokens",
+    "outcome.cache_write_tokens",
     "events.sequence",
-    "events.context_tokens",
-    "events.cache_read_tokens",
-    "events.cache_write_tokens",
-    "events.cost_usd",
+    "events.context_tokens / cache_read_tokens / cache_write_tokens / cost_usd",
     "tool_calls.structure",
 )
 EXCLUDED = (
@@ -116,10 +140,12 @@ def _fingerprint(run_dir: Path) -> dict[str, Any]:
                     round(float(payload.get("cost_usd", 0.0) or 0.0), 12),
                 )
             )
-    outcome: dict[str, Any] = {}
     final = run_dir / "outcome_resume.json"
-    if final.exists():
-        outcome = json.loads(final.read_text(encoding="utf-8"))
+    if not final.exists():
+        # 两侧都缺 outcome 时 `.get` 比较会把缺失判成"一致"（评审 P2-13）——
+        # 那等于用"两边都没数据"证明"两边一样"
+        raise ConsistencyError(f"{final} 不存在：这次运行没有跑到终态，无法参与一致性比较")
+    outcome = json.loads(final.read_text(encoding="utf-8"))
     return {
         "outcome": outcome,
         "events": sequence,
@@ -131,9 +157,7 @@ def _fingerprint(run_dir: Path) -> dict[str, Any]:
 
 def _compare(left: dict[str, Any], right: dict[str, Any]) -> list[dict[str, Any]]:
     diffs: list[dict[str, Any]] = []
-    for key in ("status", "step", "executed", "replayed", "reconciled", "unknown", "rejected",
-                "probes", "checkpoints", "compactions", "overflows", "cost_usd",
-                "view_violations", "input_tokens", "cache_read_tokens", "cache_write_tokens"):
+    for key in OUTCOME_KEYS:
         a, b = left["outcome"].get(key), right["outcome"].get(key)
         if a != b:
             diffs.append({"field": f"outcome.{key}", "left": a, "right": b})

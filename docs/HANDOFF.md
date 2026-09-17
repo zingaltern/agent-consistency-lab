@@ -4,7 +4,7 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W9（设计文档 A+B 交付）｜ 代码量 19,634 行（wc -l 含空行，harness/fakeworld/opsenv/experiments/tests/examples/**scripts** 七目录全部 .py）｜ 测试 316 全绿（**不手写**：claim `tests-collected` 由 `scripts/count_tests.py` 再生）
+更新时间：W9（设计文档 A+B 交付 + 评审修复）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
 
 > **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
 > `reports/documented-facts.json`（72 条 claim），由 `scripts/check_facts.py` 逐条重跑比对
@@ -163,7 +163,7 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 |---|---|---|---|
 | 开放问题裁决 | `docs/open-questions-answered` | A §4 四条 + B §6 五条 + 回写 B §7 | 见 `docs/design/2026-09-17-open-questions-answered.md` |
 | A-M1 | `feat/facts-gate` | claim 再生门禁 + CI job `facts` | 72 条 claim；`check_facts --run verify` 27/27 |
-| A-M2 | `feat/noisy-reasoner` | 噪声人格 + 变异测试常设化 | strict 66.7% vs cause_only 77.6%；变异基线 628 幸存/1642 |
+| A-M2 | `feat/noisy-reasoner` | 噪声人格 + 变异测试常设化 | strict 66.7% vs cause_only 77.6%；变异基线见 claim `mutation-survivors`（`reports/mutation_baseline.json`） |
 | A-M3 | `feat/chaos-fuzz-probes` | 随机时刻 SIGKILL fuzz + 三档谱系探测器 | 180 次注入、0 新类违例；3 档探测器各有结论 |
 | B-M1 | `feat/record-replay-model` | scripted/record/replay 三模式 | scripted↔replay 白名单一致（`identical: true`） |
 | B-M2 | `feat/arg-policy-hash-chain` | 参数级审批 + 事件哈希链 | arg_policy 12 例；链 mirror test 定位到 seq=4 |
@@ -172,3 +172,22 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 **新增的门禁**（都已做过退化注入验证）：`facts`（文档数字对账，verify + nightly）、
 `mutation`（幸存变异防倒退，nightly）、`chaos-fuzz`（随机注入 + 谱系探测器，nightly）。
 `verify` 主作业仍然只跑 `pytest` + `ruff` + 轻量 claim 集。
+
+### 评审修复（`fix/review-p0-p1`，2026-09-17）
+
+W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.md`：2 个 P0 +
+3 条阻塞性 P1 + 26 条 P2），修复分支处置如下：
+
+* **P0-1**：`mutation` 门禁在"什么都没跑出来"时是绿的（`mutmut results` 空结果退出 0
+  且无输出 ⇒ 基线里的幸存变异被报告成"已被杀死"）。修法：`mutmut run` 非 0 即作废、
+  变异体总数为 0 即失败，并补回归用例。
+* **P0-2**：README/HANDOFF 的变异数字与入库基线矛盾而 facts 门禁没覆盖。修法：数字对齐；
+  **并给 `check_facts.py` 加了"引用位置必须指向真实文件与逐字锚点"的校验**（P1-4），
+  claim 的 `docs` 全部改写成 `路径#锚点` 并逐条核对。
+* **P1-1**：`semantics.md` §3 的租约段读起来像"已接入写路径"（其实没有生产接入点）——措辞已收窄。
+* **P1-2**：`sweep` 自称"全库扫描"却只扫一个 run 目录——引用枚举改为接受多个 run 目录，
+  共享 artifacts root 时 `--apply` 拒绝执行（除非 `--force`），docstring 改成事实。
+* **P1-3**：`--skip-sensitivity` 会把"没有证明"打印成"通过"——旗标已删除。
+* P2 的 26 条里，与正确性/安全性相关的已一并修掉（写入侧链保护、oracle 三处统一、
+  账本缺席判定、unknown 上界、崩溃探测器的信号与进程回收、成本回放口径、快照纪律去重…），
+  逐条状态见修复分支的提交信息与测试。

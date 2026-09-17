@@ -25,12 +25,14 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from opsenv.oracle import audit_run, read_effects, snapshot_db  # noqa: E402
+from harness.store.snapshot import snapshot_db  # noqa: E402
+from opsenv.oracle import audit_run, read_effects  # noqa: E402
 
 LONG_TASK = ("--scenario", "long_incident", "--long-steps", "8", "--long-lines", "100")
 
@@ -164,22 +166,31 @@ def probe_sigstop(*, workroot: Path, freeze_ms: int, cycles: int) -> dict:
     )
     seen: list[dict] = []
     landings = 0
-    for _ in range(cycles):
-        if proc.poll() is not None:
-            break
-        try:
-            proc.send_signal(signal.SIGSTOP)
-        except ProcessLookupError:
-            break
-        landings += 1
-        time.sleep(freeze_ms / 1000)
-        seen.append(_ledger_rows(run_dir))  # 冻结期间（连 -wal 快照）读到的账本状态
-        try:
+    try:
+        for _ in range(cycles):
+            if proc.poll() is not None:
+                break
+            try:
+                proc.send_signal(signal.SIGSTOP)
+            except ProcessLookupError:
+                break
+            landings += 1
+            time.sleep(freeze_ms / 1000)
+            seen.append(_ledger_rows(run_dir))  # 冻结期间（连 -wal 快照）读到的账本状态
+            try:
+                proc.send_signal(signal.SIGCONT)
+            except ProcessLookupError:
+                break
+            time.sleep(0.005)
+        exit_code = proc.wait(timeout=120)
+    except BaseException:
+        # 探测中途失败（读账本抛错、wait 超时…）也要**把子进程放走**：
+        # 留在 SIGSTOP 冻结态的进程会一直占着库文件，后续探测会莫名其妙地失败（评审 P2-9）
+        with suppress(ProcessLookupError):
             proc.send_signal(signal.SIGCONT)
-        except ProcessLookupError:
-            break
-        time.sleep(0.005)
-    exit_code = proc.wait(timeout=120)
+        if proc.poll() is None:
+            proc.kill()
+        raise
     final = _ledger_rows(run_dir)
     audit = audit_run(run_dir, status="completed")
     return {

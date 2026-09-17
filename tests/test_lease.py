@@ -176,10 +176,13 @@ print(json.dumps({{"owner": owner, "outcome": outcome}}))
         outputs.append(json.loads(stdout.strip().splitlines()[-1]))
 
     assert {item["owner"] for item in outputs} == {"worker-a", "worker-b"}
-    assert all(item["outcome"] for item in outputs)
     con = sqlite3.connect(db)
     seqs = [row[0] for row in con.execute("SELECT seq FROM events WHERE branch_id='br-1'")]
     con.close()
     assert seqs == list(range(len(seqs))), "单写者存储层的 seq 必须连续（并发也不能断）"
-    # 结论：无论谁先拿到租约，另一个拿到的是**可读拒绝**而不是静默写入
-    assert any("refused" in item["outcome"] for item in outputs) or len(outputs) == 2
+    # **P2-19 回归**：这里原来写的是
+    #     `assert any("refused" in outcome) or len(outputs) == 2`
+    # 后半段恒真（outputs 由 2 元素循环构造），于是"另一个进程拿到的是可读拒绝"
+    # 这个结论**从未被断言**。现在改成真断言：两个进程至少有一个被拒绝。
+    refused = [item for item in outputs if item["outcome"].startswith("refused")]
+    assert refused, f"至少一个进程必须被拒绝（实测：{outputs}）"

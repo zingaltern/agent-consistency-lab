@@ -47,8 +47,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,eval]"
       - name: Mutation gate (survivor regression)
-        # 15 分钟预算写死在脚本参数里：超时不是"跳过"而是"失败"——跑不完就无法判定
-        # 有没有新增盲区。本地实测（8 并行）约 4.7 分钟，CI 用 4 并行并留足余量。
+        # 超时预算写在命令行参数里（--timeout 1320 = 22 分钟）：超时不是"跳过"而是"失败"——
+        # 跑不完就无法判定有没有新增盲区。本地实测（8 并行）约 3~5 分钟，CI 用 4 并行并留余量。
+        # 注意：**变异体总数为 0 也会判失败**（跑不起来 ≠ 没有盲区，评审 P0-1）。
         run: python scripts/mutation_check.py --timeout 1320 --max-children 4 --json-out /tmp/mutation.json
       - name: Upload mutation report
         if: always()
@@ -71,8 +72,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,eval]"
-      - name: Random-time SIGKILL fuzz (30 seeds x 3 protection combos x 2 phases)
-        # 退出码非零 ⇔ 出现新类违例，或 oracle 的敏感性自检没通过（后者说明这轮全绿没意义）。
+      - name: Random-time SIGKILL fuzz (3 protection combos x 2 phases x 30 trials)
+        # 退出码非零 ⇔ 出现新类违例 / oracle 的敏感性自检没通过 / 有"退出码非零但没有
+        # time_hit marker"的试次（后者说明那次注入其实没发生）。敏感性自检**不可跳过**。
         # 注入窗口是**本机当次标定**出来的：换 runner 会重新标定，不需要人工同步参数。
         run: |
           python -m experiments.chaos_fuzz --repeats 30 --seed 20260917 \

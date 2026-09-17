@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 316,
+      "value": 328,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -18,9 +18,10 @@
       ],
       "what": "pytest 收集到的用例数（演进类 claim：随代码走，文档处引用 claim id，永不手写）",
       "docs": [
-        "README.md:如何复现全部结论",
-        "docs/development.md:§2.3 门槛 1",
-        "docs/design/2026-09-17-test-hardening.md:§R-A1（演进类 claim）"
+        "README.md#如何复现全部结论",
+        "docs/design/2026-09-17-test-hardening.md#R-A1｜声称数字再生门禁（对应 G1）",
+        "docs/design/2026-09-17-test-hardening.md#演进类（测试数量等随代码走）",
+        "docs/development.md#2.3 合并门槛（Definition of Done）"
       ]
     },
     {
@@ -45,8 +46,8 @@
       ],
       "what": "评测门禁条数（结构性事实，不随样本量变化）：本包要求「14 条不变」",
       "docs": [
-        "docs/development.md:§2.3 门槛 4",
-        "docs/testing.md:§7"
+        "docs/development.md#2.3 合并门槛（Definition of Done）",
+        "docs/testing.md#7. 完成判定（绿灯标准）"
       ]
     },
     {
@@ -68,7 +69,7 @@
       ],
       "what": "E1 动态信息放尾部时的缓存命中率（57.4%）",
       "docs": [
-        "README.md:W4 段",
+        "README.md#**W4**",
         "docs/w4-report.md"
       ]
     },
@@ -91,7 +92,7 @@
       ],
       "what": "E1 动态信息进前缀时的缓存命中率（0%）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -113,7 +114,7 @@
       ],
       "what": "E1 动态进前缀导致的成本/调用相对增量（+104.6%）",
       "docs": [
-        "README.md:W4 段",
+        "README.md#**W4**",
         "docs/posts/03-cache-accounting.md"
       ]
     },
@@ -136,7 +137,7 @@
       ],
       "what": "E2 卸载相对内联的 token/调用增量（-66%；内联侧是截断期均值，口径见 findings 注）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -158,7 +159,7 @@
       ],
       "what": "E2 卸载相对内联的成本/调用增量（-62%）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -180,7 +181,7 @@
       ],
       "what": "E2 内联 + 小窗口 + 无压缩时的溢出次数（任务以 failed 结束）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -202,7 +203,7 @@
       ],
       "what": "E3 压缩路径的账本口径总成本/调用（$0.01431 = 主桶 + 压缩桶）",
       "docs": [
-        "README.md:W4 段",
+        "README.md#**W4**",
         "docs/w4-report.md"
       ]
     },
@@ -225,7 +226,7 @@
       ],
       "what": "E3 主桶成本/调用（$0.01073）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -247,7 +248,7 @@
       ],
       "what": "E3 压缩桶成本/调用（$0.00357，摘要调用本身也要花钱）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -269,7 +270,7 @@
       ],
       "what": "E3 压缩路径的缓存命中率（35.0%）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -291,7 +292,7 @@
       ],
       "what": "E3 压缩次数（3 次压缩、0 溢出 ⇒ 任务跑完）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -312,8 +313,8 @@
       ],
       "what": "五组配置的视图结构违规总数（必须为 0：视图是模型实际看到的东西）",
       "docs": [
-        "README.md:W4 段",
-        "docs/testing.md:§3"
+        "README.md#**W4**",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）"
       ]
     },
     {
@@ -334,7 +335,7 @@
       ],
       "what": "同样不卸载时，压缩路径的成本/调用是卸载路径的 N 倍（先卸载、后压缩的依据）",
       "docs": [
-        "README.md:W4 段"
+        "README.md#**W4**"
       ]
     },
     {
@@ -357,8 +358,8 @@
       ],
       "what": "崩溃矩阵的真实 SIGKILL 次数（16 格 × 5 次 = 80 次运行，两个对照格按设计不注入）",
       "docs": [
-        "README.md:W3 段",
-        "docs/HANDOFF.md:§一"
+        "README.md#**W3**",
+        "docs/HANDOFF.md#一、这个东西是什么"
       ]
     },
     {
@@ -381,8 +382,8 @@
       ],
       "what": "崩溃矩阵格子数（6 个命名窗口 + 两个对照 + 主对照的 outbox/幂等交叉）",
       "docs": [
-        "docs/development.md:§2.3 门槛 3",
-        "README.md:如何复现全部结论"
+        "docs/development.md#2.3 合并门槛（Definition of Done）",
+        "README.md#如何复现全部结论"
       ]
     },
     {
@@ -405,8 +406,8 @@
       ],
       "what": "崩溃矩阵总运行次数（16 格 × 5 次）",
       "docs": [
-        "README.md:W3 段",
-        "docs/HANDOFF.md:§一"
+        "README.md#**W3**",
+        "docs/HANDOFF.md#一、这个东西是什么"
       ]
     },
     {
@@ -429,7 +430,7 @@
       ],
       "what": "与预期模型不符的运行数（门槛 3：逐格 as-predicted）",
       "docs": [
-        "docs/development.md:§2.3 门槛 3"
+        "docs/development.md#2.3 合并门槛（Definition of Done）"
       ]
     },
     {
@@ -453,7 +454,7 @@
       ],
       "what": "窗口 2 + 关 outbox：5/5 重复副作用（下游不幂等时 runtime 侧去重无效）",
       "docs": [
-        "README.md:W2 段",
+        "README.md#**W2**",
         "docs/w2-crash-windows.md"
       ]
     },
@@ -478,7 +479,7 @@
       ],
       "what": "同上格：单键最大效果行数 = 2（重复的直接证据，口径为外部账本 world.db）",
       "docs": [
-        "README.md:W2 段"
+        "README.md#**W2**"
       ]
     },
     {
@@ -502,7 +503,7 @@
       ],
       "what": "窗口 2 + outbox 开 + 探针：0/5 重复（恢复路径由探针确认，不重跑）",
       "docs": [
-        "README.md:W3 段",
+        "README.md#**W3**",
         "docs/w3-report.md"
       ]
     },
@@ -527,7 +528,7 @@
       ],
       "what": "同上格：探针对账次数 ≥1（证明是「确认已发生」而不是「碰巧没重复」）",
       "docs": [
-        "README.md:W3 段"
+        "README.md#**W3**"
       ]
     },
     {
@@ -551,7 +552,7 @@
       ],
       "what": "无读回能力时收敛为恰好 1 行 unknown（把静默重复变成显式有界的未知）",
       "docs": [
-        "README.md:W3 段",
+        "README.md#**W3**",
         "docs/w3-report.md"
       ]
     },
@@ -576,7 +577,7 @@
       ],
       "what": "TOCTOU 控制组：批准后改参，5/5 拒绝执行、账本 0 行副作用",
       "docs": [
-        "README.md:W3 段",
+        "README.md#**W3**",
         "docs/w3-report.md"
       ]
     },
@@ -603,8 +604,8 @@
       ],
       "what": "合成故障场景总数（64 = 8 故障类型 × dev/holdout 分段）",
       "docs": [
-        "README.md:W5 段",
-        "docs/HANDOFF.md:§一"
+        "README.md#**W5**",
+        "docs/HANDOFF.md#一、这个东西是什么"
       ]
     },
     {
@@ -631,8 +632,8 @@
       ],
       "what": "holdout 场景数（冻结考卷，不参与调参）",
       "docs": [
-        "README.md:W6 段",
-        "docs/testing.md:§4"
+        "README.md#**W6**",
+        "docs/testing.md#4. 禁止事项（自证 / 作弊清单）"
       ]
     },
     {
@@ -660,7 +661,7 @@
       ],
       "what": "只看 metrics+resources 的规则基线充分率（50%，取证覆盖决定正确率上限）",
       "docs": [
-        "README.md:W5 段",
+        "README.md#**W5**",
         "docs/w5-report.md"
       ]
     },
@@ -689,7 +690,7 @@
       ],
       "what": "harness × competent-honest 的 strict 正确率（90.1%）",
       "docs": [
-        "README.md:W5 段",
+        "README.md#**W5**",
         "docs/w5-report.md"
       ]
     },
@@ -718,7 +719,7 @@
       ],
       "what": "harness × weak-guesser 的 strict 正确率（61.5%）",
       "docs": [
-        "README.md:W5 段",
+        "README.md#**W5**",
         "docs/w5-report.md"
       ]
     },
@@ -747,8 +748,8 @@
       ],
       "what": "harness 的写操作 100% 交给人工（gate 覆盖率）",
       "docs": [
-        "README.md:W5 段",
-        "opsenv/suite.py::check_gates"
+        "README.md#**W5**",
+        "opsenv/suite.py#check_gates"
       ]
     },
     {
@@ -776,7 +777,7 @@
       ],
       "what": "无 gate 的单次调用基线在 weak 人格下执行破坏性动作的比例（20.8%）",
       "docs": [
-        "README.md:W5 段",
+        "README.md#**W5**",
         "docs/w5-report.md"
       ]
     },
@@ -803,7 +804,7 @@
       ],
       "what": "静态拒绝列表之外的**新**破坏性动作被执行的总次数（competent 1 + weak 2）",
       "docs": [
-        "README.md:W5 段"
+        "README.md#**W5**"
       ]
     },
     {
@@ -830,8 +831,8 @@
       ],
       "what": "langgraph 路线的平均步数（与 harness 的 3.38 逐格相同：两条 agent 路线能力等价）",
       "docs": [
-        "README.md:W5 段",
-        "opsenv/suite.py::findings"
+        "README.md#**W5**",
+        "opsenv/suite.py#findings"
       ]
     },
     {
@@ -859,8 +860,8 @@
       ],
       "what": "harness − single_shot 的红线执行率配对差值（weak 人格，配对键：场景 × 人格 × 重复序号）",
       "docs": [
-        "README.md:W6 段",
-        "docs/HANDOFF.md:§四"
+        "README.md#**W6**",
+        "docs/HANDOFF.md#四、七轮结论"
       ]
     },
     {
@@ -888,8 +889,8 @@
       ],
       "what": "同一配对差值的 95% CI 上界（<0 ⇒ 可区分；门禁用它判方向）",
       "docs": [
-        "README.md:W6 段",
-        "opsenv/suite.py::check_gates"
+        "README.md#**W6**",
+        "opsenv/suite.py#check_gates"
       ]
     },
     {
@@ -917,7 +918,7 @@
       ],
       "what": "harness − single_shot 的诊断正确率配对差值（0.000，CI [0,0]：不可区分）",
       "docs": [
-        "README.md:W6 段"
+        "README.md#**W6**"
       ]
     },
     {
@@ -945,8 +946,8 @@
       ],
       "what": "配对组数（weak-guesser：64 场景 × 3 次重复 = 192 对；配对键 = 场景 × 人格 × 重复序号）",
       "docs": [
-        "README.md:W6 段",
-        "docs/development.md:§4.3"
+        "README.md#**W6**",
+        "docs/development.md#4. 文档与数字纪律"
       ]
     },
     {
@@ -972,8 +973,8 @@
       ],
       "what": "独立两样本口径的最小可检测效应（小于它的差距必须写「不可区分」）",
       "docs": [
-        "README.md:W6 段",
-        "docs/testing.md:§4.6"
+        "README.md#**W6**",
+        "docs/testing.md#4. 禁止事项（自证 / 作弊清单）"
       ]
     },
     {
@@ -997,7 +998,7 @@
       ],
       "what": "不压缩时能跑完的 dev 变体比例（33%，其余溢出）",
       "docs": [
-        "README.md:W7 段",
+        "README.md#**W7**",
         "docs/w7-report.md"
       ]
     },
@@ -1022,7 +1023,7 @@
       ],
       "what": "不压缩的平均成本（$0.066——失败运行的截断成本，不能读成「更便宜」）",
       "docs": [
-        "README.md:W7 段"
+        "README.md#**W7**"
       ]
     },
     {
@@ -1044,7 +1045,7 @@
       ],
       "what": "程序按规则选出的压缩阈值（先满足完成率、再比成本）",
       "docs": [
-        "README.md:W7 段",
+        "README.md#**W7**",
         "docs/w7-report.md"
       ]
     },
@@ -1069,7 +1070,7 @@
       ],
       "what": "选定阈值上 dev 的完成率（100%）",
       "docs": [
-        "README.md:W7 段"
+        "README.md#**W7**"
       ]
     },
     {
@@ -1093,7 +1094,7 @@
       ],
       "what": "选定阈值的平均净成本（$0.1183，主桶 + 压缩桶）",
       "docs": [
-        "README.md:W7 段"
+        "README.md#**W7**"
       ]
     },
     {
@@ -1117,8 +1118,8 @@
       ],
       "what": "0.85 档（与 0.95 同值）的净成本 $0.11844——w7 报告结论句引用的就是这一行的值",
       "docs": [
-        "docs/w7-report.md:§结论",
-        "README.md:W7 段"
+        "docs/w7-report.md#结论",
+        "README.md#**W7**"
       ]
     },
     {
@@ -1141,8 +1142,8 @@
       ],
       "what": "压缩相对不压缩的净成本增量（+79%：压缩买的是完成率，不是省钱）",
       "docs": [
-        "README.md:W7 段",
-        "docs/HANDOFF.md:§四"
+        "README.md#**W7**",
+        "docs/HANDOFF.md#四、七轮结论"
       ]
     },
     {
@@ -1165,7 +1166,7 @@
       ],
       "what": "其中主桶成本的相对增量（+41%）",
       "docs": [
-        "README.md:W7 段"
+        "README.md#**W7**"
       ]
     },
     {
@@ -1188,7 +1189,7 @@
       ],
       "what": "压缩动作本身占不压缩成本的比重（+38%）",
       "docs": [
-        "README.md:W7 段"
+        "README.md#**W7**"
       ]
     },
     {
@@ -1218,7 +1219,7 @@
       ],
       "what": "噪声口径（error_rate=0.3, flavor=both）下 harness 的 strict 正确率",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1249,7 +1250,7 @@
       ],
       "what": "同口径下的 cause_only 正确率；strict < cause_only ⇒ 口径敏感性被激活",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1279,7 +1280,7 @@
       ],
       "what": "噪声口径下门禁条数不变（14 条；只把 4 条敏感性门禁降级为如实汇报）",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1309,7 +1310,7 @@
       ],
       "what": "噪声口径下如实记录的红色门禁条数（harness.correct[competent] 掉出 [0.80,0.95]）",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1341,7 +1342,7 @@
       ],
       "what": "噪声口径下 harness 的红线执行率仍是 0（机制门禁不因推理器变笨而失效）",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1373,7 +1374,7 @@
       ],
       "what": "噪声口径下被人类拦下的比例（对称自检：gate 真的拦下过东西）",
       "docs": [
-        "reports/noisy_reasoner.md:噪声口径",
+        "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
       ]
     },
@@ -1394,8 +1395,11 @@
       ],
       "what": "变异测试基线：三个语义核心模块的幸存变异数（= 当前测试盲区，防倒退用）",
       "docs": [
-        "reports/mutation_baseline.json",
-        "docs/testing.md:§3.3"
+        "README.md#**W9**",
+        "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
+        "docs/design/2026-09-17-review-response.md#2. P0（不修不能合）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
       ]
     },
     {
@@ -1415,33 +1419,11 @@
       ],
       "what": "幸存率（分母只含被判定的变异体；no tests 是另一类盲区，不混入分母）",
       "docs": [
+        "README.md#**W9**",
+        "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
+        "docs/design/2026-09-17-review-response.md#2. P0（不修不能合）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
         "reports/mutation_baseline.json"
-      ]
-    },
-    {
-      "id": "fuzz-killed-injections",
-      "value": 180,
-      "tolerance": 0,
-      "run": "nightly",
-      "source_cmd": [
-        "{python}",
-        "-m",
-        "experiments.chaos_fuzz",
-        "--repeats",
-        "30",
-        "--seed",
-        "20260917",
-        "--json-out",
-        "{out}"
-      ],
-      "source_path": [
-        "summary",
-        "killed"
-      ],
-      "what": "随机时刻 fuzz 里实际注入成功的 SIGKILL 次数（30 seed × 3 保护组合 × 2 注入阶段）",
-      "docs": [
-        "reports/chaos_fuzz_report.md",
-        "docs/fault-spectrum.md"
       ]
     },
     {
@@ -1580,7 +1562,7 @@
       "what": "scripted 与 replay 在同一份录制上的白名单字段一致（B-M1 核心验收）",
       "docs": [
         "scripts/replay_consistency.py",
-        "docs/model-modes.md:§5"
+        "docs/model-modes.md#5. 一致性验收（scripted vs replay）"
       ]
     },
     {
@@ -1601,7 +1583,7 @@
       "what": "录制条目数（run/approve/resume 三阶段共 3 次模型调用）",
       "docs": [
         "scripts/replay_consistency.py",
-        "docs/model-modes.md:§5"
+        "docs/model-modes.md#5. 一致性验收（scripted vs replay）"
       ]
     },
     {
@@ -1622,7 +1604,7 @@
       "what": "录制含 tool_calls（缺了它 loop 走不动）",
       "docs": [
         "scripts/replay_consistency.py",
-        "docs/model-modes.md:§5"
+        "docs/model-modes.md#5. 一致性验收（scripted vs replay）"
       ]
     },
     {
@@ -1641,7 +1623,7 @@
       ],
       "what": "真实写入路径产生的链在干净库上通过全量校验",
       "docs": [
-        "docs/semantics.md:§2.4.1",
+        "docs/semantics.md#2.4.1 事件哈希链（R-B3）",
         "tests/test_hash_chain.py"
       ]
     },
@@ -1661,7 +1643,7 @@
       ],
       "what": "被篡改的副本**必须**校验失败（值 False = 检出）",
       "docs": [
-        "docs/semantics.md:§2.4.1",
+        "docs/semantics.md#2.4.1 事件哈希链（R-B3）",
         "tests/test_hash_chain.py"
       ]
     },
@@ -1681,7 +1663,7 @@
       ],
       "what": "检出的不变量编号，以及第一个断点的位置（first_break_seq）",
       "docs": [
-        "docs/semantics.md:§2.4.1",
+        "docs/semantics.md#2.4.1 事件哈希链（R-B3）",
         "tests/test_hash_chain.py"
       ]
     },
@@ -1703,7 +1685,7 @@
       ],
       "what": "arg_policy 的用例数（验收要求 ≥8 例，脚本计数不手写）",
       "docs": [
-        "docs/semantics.md:§4.0",
+        "docs/semantics.md#4.0 参数级安全域（R-B2）",
         "tests/test_arg_policy.py"
       ]
     },
@@ -1726,12 +1708,12 @@
       "what": "lease 的用例数（含双进程冒烟：未持有租约即可读失败）",
       "docs": [
         "docs/governance-extras.md",
-        "docs/semantics.md:§3"
+        "docs/semantics.md#3. 崩溃语义的边界（重要）"
       ]
     },
     {
       "id": "artifact-sweep-test-count",
-      "value": 5,
+      "value": 7,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1748,12 +1730,12 @@
       "what": "artifact sweep 的用例数（验收要求 ≥4）",
       "docs": [
         "docs/governance-extras.md",
-        "harness/artifacts.py::sweep"
+        "harness/artifacts.py#sweep"
       ]
     },
     {
       "id": "otel-test-count",
-      "value": 5,
+      "value": 6,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1770,6 +1752,58 @@
       "what": "OTLP 用例数（缺 extra 时自动跳过，装了就验证映射逐位对齐）",
       "docs": [
         "docs/governance-extras.md"
+      ]
+    },
+    {
+      "id": "fuzz-trials",
+      "value": 180,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.chaos_fuzz",
+        "--repeats",
+        "30",
+        "--seed",
+        "20260917",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary",
+        "trials"
+      ],
+      "what": "fuzz 的结构性试次数（3 保护组合 × 2 注入阶段 × 30 次）——与机器无关",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md#5. 边界（本结论不适用的范围）"
+      ]
+    },
+    {
+      "id": "fuzz-kills-without-marker",
+      "value": 0,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "experiments.chaos_fuzz",
+        "--repeats",
+        "30",
+        "--seed",
+        "20260917",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary",
+        "kills_without_marker"
+      ],
+      "what": "退出码非零但没有 time_hit marker 的试次数（≠0 说明那部分「注入」其实没发生，整轮判红）",
+      "docs": [
+        "reports/chaos_fuzz_report.md",
+        "docs/fault-spectrum.md#5. 边界（本结论不适用的范围）"
       ]
     }
   ]

@@ -85,6 +85,7 @@ class Trial:
     combo: str
     run_dir: Path
     killed: bool
+    killed_verified: bool
     resumes: int
     status: str
     findings: list[str] = field(default_factory=list)
@@ -100,6 +101,7 @@ class Trial:
             "combo": self.combo,
             "run_dir": str(self.run_dir),
             "killed": self.killed,
+            "killed_verified": self.killed_verified,
             "resumes": self.resumes,
             "status": self.status,
             "findings": self.findings,
@@ -241,6 +243,17 @@ def run_trial(
     injected = _worker(run_dir, kill_phase, flags=combo["flags"], kill_after_ms=kill_after_ms)
     transcript.append(injected)
     killed = injected["exit_code"] != 0
+    marker_path_now = run_dir / "crash_marker.json"
+    marker_now = (
+        json.loads(marker_path_now.read_text(encoding="utf-8"))
+        if marker_path_now.exists()
+        else None
+    )
+    # "被杀到"必须由 **marker 证据**支撑，而不是"退出码非零"：argparse 报错、未捕获异常、
+    # 被别的信号打断都会让退出码非零，那种情况与注入无关（评审 P2-7）。
+    killed_verified = bool(
+        killed and marker_now and marker_now.get("injection_kind") == "time_hit"
+    )
 
     status, resumes, tail = drive_to_terminal(run_dir, flags=combo["flags"], max_steps=max_resumes)
     transcript.extend(tail)
@@ -255,6 +268,7 @@ def run_trial(
         combo=str(combo["name"]),
         run_dir=run_dir,
         killed=killed,
+        killed_verified=killed_verified,
         resumes=resumes,
         status=status,
         findings=audit.codes(),
@@ -351,7 +365,9 @@ def render_markdown(report: dict[str, Any]) -> str:
     summary = report["summary"]
     lines += [
         "",
-        f"* 总试次 {summary['trials']}，实际注入成功 {summary['killed']} 次，"
+        f"* 总试次 {summary['trials']}，退出码非零 {summary['killed']} 次，"
+        f"其中**有 `time_hit` marker 证据的 {summary['kills_verified_by_marker']} 次**"
+        f"（无 marker 的 {summary['kills_without_marker']} 次按失败计），"
         f"**新类违例 {summary['unexpected_findings']} 条**，"
         f"已知类违例 {summary['expected_findings']} 条（后者是被对照面显式声明的语义）。",
         "* **敏感性自检**（已知会重复的配置下 oracle 必须报红）："
@@ -360,9 +376,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## 结论与边界",
         "",
-        f"* **{summary['killed']} 次随机时刻注入未发现命名窗口之外的新类违例**。"
-        "按 rule of three，这个次数只把失败率上界压到约 "
-        f"{3 / max(1, summary['killed']):.0%}——**不能**据此声称「覆盖了所有窗口」或「永不重复」。",
+        f"* **{summary['kills_verified_by_marker']} 次有 marker 证据的随机时刻注入未发现"
+        "命名窗口之外的新类违例**。按 rule of three，这个次数只把失败率上界压到约 "
+        f"{3 / max(1, summary['kills_verified_by_marker']):.0%}——**不能**据此声称"
+        "「覆盖了所有窗口」或「永不重复」。",
         "* 注入时刻由 seed 决定且可复现；**落点**（进程被杀的代码位置）受机器时序影响，"
         "因此不同机器上同一 seed 不保证死在同一行——本报告只主张「注入时刻可复现」，"
         "不主张逐行复现。",
@@ -390,7 +407,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workroot", default="")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--md-out", default="")
-    parser.add_argument("--skip-sensitivity", action="store_true")
     parser.add_argument("--calibrate-only", action="store_true", help="只标定窗口并打印")
     args = parser.parse_args(argv)
 
@@ -405,10 +421,11 @@ def main(argv: list[str] | None = None) -> int:
                 mode=phase, flags=combo["flags"], workroot=root / f"calib-root-{index}-{phase}"
             )
             windows.append({"combo": combo["name"], "phase": phase, "window_ms": limit})
-            assert limit > 0, (
-                f"{combo['name']}/{phase}: 标定窗口为 0——最激进的注入也杀不死进程，"
-                "必须修标定（或缩短进程启动），不能继续跑：那种全绿没有信息量"
-            )
+            if limit <= 0:
+                raise SystemExit(
+                    f"{combo['name']}/{phase}: 标定窗口为 0——最激进的注入也杀不死进程，"
+                    "必须修标定（或缩短进程启动），不能继续跑：那种全绿没有信息量"
+                )
     if args.calibrate_only:
         print(json.dumps(windows, ensure_ascii=False, indent=2))
         return 0
@@ -438,13 +455,13 @@ def main(argv: list[str] | None = None) -> int:
                 for trial in trials
                 if trial.combo == combo["name"] and trial.kill_phase == phase
             ]
-            assert len(done) == args.repeats, f"{combo['name']}/{phase}: 试次数不符 {len(done)}"
+            if len(done) != args.repeats:
+                raise SystemExit(f"{combo['name']}/{phase}: 试次数不符 {len(done)}")
 
-    sensitivity = (
-        {"sensitive": True, "findings": [], "note": "已跳过（--skip-sensitivity）"}
-        if args.skip_sensitivity
-        else sensitivity_check(workroot=root)
-    )
+    # 敏感性自检**不可跳过**：它是"这一轮全绿"的唯一支撑证据。
+    # 曾经有过 `--skip-sensitivity`，它会把"没有证明"打印成"通过"（评审 P1-3）——
+    # 一个只能关掉安全阀的旗标没有合法用途，已删除。
+    sensitivity = sensitivity_check(workroot=root)
     report = {
         "command": f"python -m experiments.chaos_fuzz --repeats {args.repeats} --seed {args.seed}",
         "seed": args.seed,
@@ -455,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
         "summary": {
             "trials": len(trials),
             "killed": sum(1 for trial in trials if trial.killed),
+            "kills_verified_by_marker": sum(1 for trial in trials if trial.killed_verified),
+            # 退出码非零但**没有 time_hit marker** ⇒ 那次"注入"其实没有发生（评审 P2-7）：
+            # 它会让统计虚高，因此 >0 时整轮判红。
+            "kills_without_marker": sum(
+                1 for trial in trials if trial.killed and not trial.killed_verified
+            ),
             "unexpected_findings": sum(len(trial.unexpected) for trial in trials),
             "expected_findings": sum(
                 len(trial.findings) - len(trial.unexpected) for trial in trials
@@ -467,7 +490,11 @@ def main(argv: list[str] | None = None) -> int:
     }
     report["verdict"] = (
         "green"
-        if report["summary"]["unexpected_findings"] == 0 and sensitivity.get("sensitive", False)
+        if (
+            report["summary"]["unexpected_findings"] == 0
+            and sensitivity.get("sensitive", False)
+            and report["summary"]["kills_without_marker"] == 0
+        )
         else "red"
     )
     text = render_markdown(report)

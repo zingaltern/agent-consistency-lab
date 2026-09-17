@@ -15,11 +15,11 @@
     "outcome.overflows",
     "outcome.cost_usd",
     "outcome.view_violations",
+    "outcome.input_tokens",
+    "outcome.cache_read_tokens",
+    "outcome.cache_write_tokens",
     "events.sequence",
-    "events.context_tokens",
-    "events.cache_read_tokens",
-    "events.cache_write_tokens",
-    "events.cost_usd",
+    "events.context_tokens / cache_read_tokens / cache_write_tokens / cost_usd",
     "tool_calls.structure"
   ],
   "excluded": [

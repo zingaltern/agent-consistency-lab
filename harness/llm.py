@@ -315,6 +315,19 @@ class ReplayLLMClient:
         self._cassette = store.load()
         self.replay_warnings: list[dict[str, Any]] = []
         self.hits = 0
+        if self._cassette.meta.price_version and (
+            self._cassette.meta.price_version != self.price.version
+        ):
+            # 评审 P2-12：录制时的价目表与当前不同，成本会差一个版本；
+            # 这是**提示**而不是失败（成本口径本来就允许换版本重算），但必须留痕。
+            self.replay_warnings.append(
+                {
+                    "kind": "price_version_mismatch",
+                    "recorded": self._cassette.meta.price_version,
+                    "current": self.price.version,
+                    "note": "录制与回放的价目表版本不同：成本不可直接对比",
+                }
+            )
 
     def _next_attempt(self, step: int) -> int:
         attempt = self._attempts.get(step, 0)
@@ -379,7 +392,12 @@ class ReplayLLMClient:
         if self._budget is not None:
             response.cost_usd = self._budget.charge(bucket=Bucket.MAIN, usage=usage)
             self._budget.enforce_after_charge(Bucket.MAIN)
-        else:
+        elif entry.cost_usd:
             # 直接回放录制的成本：不做二次重算（录制的 canonical usage 是权威）
-            response.cost_usd = entry.cost_usd or usage.cost_usd(self.price)
+            response.cost_usd = entry.cost_usd
+        else:
+            # 录制里没有成本（或**确实为 0**）时才按当前价目表算。
+            # 旧写法 `entry.cost_usd or usage.cost_usd(...)` 会把"确实 0 成本"
+            # 当成缺值（评审 P2-12）。
+            response.cost_usd = usage.cost_usd(self.price)
         return response

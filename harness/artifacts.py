@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,12 @@ class ArtifactStore:
         }
 
     def orphan_count(self, referenced: set[str]) -> int:
+        """历史接口（W4 起用于暴露孤儿数）。
+
+        生产路径已由 :func:`sweep` 取代（它同时给出来源分类与删除清单）；
+        本方法保留是因为 `tests/test_w4_components.py` 仍在用它做轻量断言——
+        保留原因写在这里，免得后来者以为它是"没人用的死代码"（评审 P2-22）。
+        """
         return sum(
             1 for path in self.root.rglob("*") if path.is_file() and path.name not in referenced
         )
@@ -101,6 +108,10 @@ def make_read_artifact_tool(store: ArtifactStore, *, max_limit: int = 8000) -> T
 # ------------------------------------------------------------------ 孤儿回收（R-B5）
 
 
+class ArtifactSweepError(RuntimeError):
+    """回收的前置条件不成立（例如：共享 artifacts root 却没给全引用来源）。"""
+
+
 class SweepReport(BaseModel):
     dry_run: bool
     artifacts_root: str
@@ -110,10 +121,24 @@ class SweepReport(BaseModel):
     kept_referenced: int = 0
     never_deleted: list[str] = Field(default_factory=list)
     scanned_sources: list[str] = Field(default_factory=list)
+    scanned_run_dirs: list[str] = Field(default_factory=list)
+    # 解析失败的 payload 数（评审 P2-13/P1-2）：枚举"哪些对象不能删"时吞掉解析错误，
+    # 等于把损坏 payload 里的引用当作"没有引用"——这个计数让那件事至少可见。
+    unreadable_payloads: int = 0
+    # 共享 artifacts root（不在任何一个被扫描的 run 目录下）：此时**无法**保证
+    # 其它 run 的引用被枚举到，因此 `--apply` 必须显式 --force。
+    shared_root: bool = False
 
 
-def referenced_digests(run_dir: Path) -> tuple[set[str], dict[str, int]]:
-    """全量收集**引用来源**（对抗审查第 21 条：不许只扫当前 run）。
+def referenced_digests(
+    run_dirs: Path | Sequence[Path],
+) -> tuple[set[str], dict[str, int], int]:
+    """收集**引用来源**：``(digests, 每类来源计数, 解析失败的 payload 数)``。
+
+    对抗审查第 21 条的要求是"不许只扫当前 run"——本函数按**调用方给定的 run 目录集合**
+    枚举引用，因此 CLI 支持多个 ``--run-dir``。共享 artifacts root + 只给一个 run 目录时，
+    其它 run 的引用**枚举不到**：那种情况由 ``sweep`` 标记为 ``shared_root`` 并要求 ``--force``
+    （评审 P1-2：docstring 曾经写着"全库扫描"，实现却只打开一个目录）。
 
     四类来源逐条列出，缺一条就会误删：
 
@@ -127,14 +152,20 @@ def referenced_digests(run_dir: Path) -> tuple[set[str], dict[str, int]]:
     """
     import sqlite3
 
+    if isinstance(run_dirs, Path):
+        run_dirs = [run_dirs]
     digests: set[str] = set()
     counts: dict[str, int] = {}
+    unreadable = 0
 
     def _harvest(blob: str, source: str) -> int:
         found = 0
         try:
             payload = json.loads(blob)
         except (TypeError, ValueError):
+            # 不静默：解析失败意味着"这份 payload 里的引用看不见"，
+            # 它的后果是可能误删，因此计数上报、由 sweep 决定是否放行
+            counts[f"{source}:unreadable"] = counts.get(f"{source}:unreadable", 0) + 1
             return 0
         stack = [payload]
         while stack:
@@ -151,8 +182,10 @@ def referenced_digests(run_dir: Path) -> tuple[set[str], dict[str, int]]:
         counts[source] = counts.get(source, 0) + found
         return found
 
-    runtime_db = run_dir / "runtime.db"
-    if runtime_db.exists():
+    for run_dir in run_dirs:
+        runtime_db = Path(run_dir) / "runtime.db"
+        if not runtime_db.exists():
+            continue
         con = sqlite3.connect(runtime_db)
         try:
             for (payload_json,) in con.execute("SELECT payload_json FROM events").fetchall():
@@ -165,14 +198,16 @@ def referenced_digests(run_dir: Path) -> tuple[set[str], dict[str, int]]:
                 _harvest(payload_json, "checkpoint_writes.payload_json")
         finally:
             con.close()
-    return digests, counts
+    unreadable = sum(value for key, value in counts.items() if key.endswith(":unreadable"))
+    return digests, counts, unreadable
 
 
 def sweep(
     store: ArtifactStore,
     *,
-    run_dir: Path,
+    run_dir: Path | Sequence[Path],
     dry_run: bool = True,
+    allow_shared_root: bool = False,
 ) -> SweepReport:
     """回收 ``store.root`` 下**没有任何引用**的 artifact（默认 dry-run）。
 
@@ -185,9 +220,22 @@ def sweep(
     * **分类错误**：被回收后再次 ``get`` 会得到**可读失败**（``FileNotFoundError``
       带 digest），而不是空字符串或旧内容。
     """
-    referenced, counts = referenced_digests(run_dir)
+    run_dirs = [run_dir] if isinstance(run_dir, Path) else list(run_dir)
+    referenced, counts, unreadable = referenced_digests(run_dirs)
     files = [path for path in store.root.rglob("*") if path.is_file()]
     orphans = [path for path in files if path.name not in referenced]
+    shared_root = not any(
+        store.root.resolve() == (Path(item) / "artifacts").resolve() for item in run_dirs
+    )
+    if not dry_run and shared_root and not allow_shared_root:
+        # 评审 P1-2：共享 artifacts root 时，"别的 run 有没有引用这个对象"我们**看不见**。
+        # dry-run 仍然允许（它不删东西），真要删必须显式 --force。
+        raise ArtifactSweepError(
+            f"artifacts root {store.root} 不在任何被扫描的 run 目录下（共享库）："
+            "当前只枚举了 " + "、".join(str(item) for item in run_dirs) + " 的引用，"
+            "无法保证其它 run 的引用被看见。要么把那些 run 目录也传给 --run-dir，"
+            "要么显式 --force（自担误删风险）。"
+        )
     deleted: list[str] = []
     if not dry_run:
         for path in orphans:
@@ -201,6 +249,9 @@ def sweep(
         deleted=deleted,
         kept_referenced=len(files) - len(orphans),
         scanned_sources=sorted(counts),
+        scanned_run_dirs=[str(item) for item in run_dirs],
+        unreadable_payloads=unreadable,
+        shared_root=shared_root,
     )
 
 
@@ -209,16 +260,35 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="harness.artifacts")
-    parser.add_argument("--run-dir", required=True)
+    parser.add_argument(
+        "--run-dir",
+        action="append",
+        required=True,
+        help="引用来源所在的 run 目录（可重复：共享 artifacts 库时把所有引用方都传进来）",
+    )
     parser.add_argument("--artifacts-root", default="", help="缺省 = <run-dir>/artifacts")
     parser.add_argument(
         "--apply", action="store_true", help="真的删除（默认只报告，绝不自动回收）"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="共享 artifacts root 时仍然执行删除（自担误删风险；默认拒绝）",
+    )
     args = parser.parse_args(argv)
 
-    run_dir = Path(args.run_dir)
-    root = Path(args.artifacts_root) if args.artifacts_root else run_dir / "artifacts"
-    report = sweep(ArtifactStore(root), run_dir=run_dir, dry_run=not args.apply)
+    run_dirs = [Path(item) for item in args.run_dir]
+    root = Path(args.artifacts_root) if args.artifacts_root else run_dirs[0] / "artifacts"
+    try:
+        report = sweep(
+            ArtifactStore(root),
+            run_dir=run_dirs,
+            dry_run=not args.apply,
+            allow_shared_root=args.force,
+        )
+    except ArtifactSweepError as exc:
+        print(str(exc))
+        return 2
     print(report.model_dump_json(indent=2))
     return 0
 

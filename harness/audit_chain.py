@@ -21,25 +21,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
-import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 from .events import GENESIS_HASH, Event, EventKind, Source
 from .state import verify_chain
+from .store.snapshot import snapshot_db
 
-
-def _snapshot(db_path: Path) -> Path:
-    target = Path(tempfile.mkdtemp(prefix="audit-chain-"))
-    for suffix in ("", "-wal", "-shm"):
-        source = Path(str(db_path) + suffix)
-        if source.exists():
-            shutil.copy2(source, target / (db_path.name + suffix))
-    return target / db_path.name
+# 快照纪律的唯一实现在 harness/store/snapshot.py（P2-17：三份实现会漂移）
+_snapshot = snapshot_db
 
 
 def _load_events(conn: sqlite3.Connection) -> list[Event]:
@@ -82,11 +75,14 @@ def audit(db_path: Path) -> dict[str, Any]:
             ).fetchall()
         }
     except sqlite3.DatabaseError as exc:
-        return {
-            "ok": False,
-            "error": f"库无法读取：{type(exc).__name__}: {exc}",
-            "violations": [],
-        }
+        message = f"库无法读取：{type(exc).__name__}: {exc}"
+        if "no such column: prev_hash" in str(exc) or "no such column: event_hash" in str(exc):
+            # 评审 P2-18：v2 库上的报错原样透出 SQLite 信息，读者不知道下一步该做什么
+            message += (
+                "\n  这是 **schema v2 的库**（没有链列）：先跑一次 `SqliteStore(path).setup()`"
+                " 触发 v3 迁移（补链并重建 append-only 触发器），再重新校验。"
+            )
+        return {"ok": False, "error": message, "violations": []}
     finally:
         with suppress(NameError, UnboundLocalError):  # 连接都没建起来时不必关闭
             conn.close()

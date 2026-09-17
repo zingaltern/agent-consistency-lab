@@ -21,9 +21,8 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
-import tempfile
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,18 +68,9 @@ class AuditResult:
         }
 
 
-def snapshot_db(path: Path) -> Path:
-    """把 ``path``（连同 ``-wal``/``-shm``）拷进临时目录后返回主库路径。
-
-    必须以快照读：进程刚被 SIGKILL 时，最后一次已提交的效果可能只存在于 WAL 里。
-    """
-    target = Path(tempfile.mkdtemp(prefix="oracle-snap-"))
-    for suffix in ("", "-wal", "-shm"):
-        source = Path(str(path) + suffix)
-        if source.exists():
-            shutil.copy2(source, target / (path.name + suffix))
-    return target / path.name
-
+# 快照纪律的唯一实现在 harness/store/snapshot.py（P2-17）：
+# 三份各写一遍时，只要一份忘了 -wal，"效果发生了几次"的判定就会整个反转。
+from harness.store.snapshot import snapshot_db  # noqa: E402 - 保持模块内可读性
 
 # ------------------------------------------------------------------ 不变量判定
 
@@ -111,6 +101,24 @@ def read_effects(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _runtime_snapshot(runtime_db: Path) -> tuple[sqlite3.Connection | None, list[Finding]]:
+    """读库的统一入口：连 `-wal` 一起快照 + "读不出来 ⇒ inv_log_readable"。
+
+    评审 P2-4：原先只有 `check_no_tamper` 做了这件事，另两个 checker 在坏库上直接抛
+    `sqlite3.DatabaseError`，于是 `audit_run` 整条崩掉——**裁判缺席不是"没有问题"**，
+    而 torn write 探测器的结论恰恰建立在"读不出来要判成发现"上。
+    """
+    snapshot = snapshot_db(runtime_db)
+    try:
+        con = sqlite3.connect(snapshot)
+        con.execute("SELECT 1 FROM events LIMIT 1")
+        return con, []
+    except sqlite3.DatabaseError as exc:
+        with suppress(sqlite3.Error):
+            con.close()
+        return None, _unreadable(runtime_db, exc)
+
+
 def _unreadable(runtime_db: Path, exc: sqlite3.DatabaseError) -> list[Finding]:
     """运行时主库读不出来 = 一条**显式发现**（日志是权威；权威读不了就不是"没问题"）。
 
@@ -132,11 +140,9 @@ def check_no_tamper(runtime_db: Path) -> tuple[list[Finding], dict[str, Any]]:
     （与外部审计的 b3 日志审计同口径：这两条是"日志没有被删改/漏写"的可判定痕迹。）
     """
     findings: list[Finding] = []
-    snapshot = snapshot_db(runtime_db)
-    try:
-        con = sqlite3.connect(snapshot)
-    except sqlite3.DatabaseError as exc:
-        return _unreadable(runtime_db, exc), {"events": 0, "branches": 0, "seq_contiguous": False}
+    con, unreadable = _runtime_snapshot(runtime_db)
+    if con is None:
+        return unreadable, {"events": 0, "branches": 0, "seq_contiguous": False}
     try:
         try:
             rows = con.execute(
@@ -190,11 +196,9 @@ def check_closed_calls(runtime_db: Path) -> tuple[list[Finding], dict[str, Any]]
     反过来（事件在、行缺失）在关掉去重/outbox 时是正常形态，不能当违规。
     """
     findings: list[Finding] = []
-    snapshot = snapshot_db(runtime_db)
-    try:
-        con = sqlite3.connect(snapshot)
-    except sqlite3.DatabaseError as exc:
-        return _unreadable(runtime_db, exc), {"closed_rows": 0, "tool_results": 0}
+    con, unreadable = _runtime_snapshot(runtime_db)
+    if con is None:
+        return unreadable, {"closed_rows": 0, "tool_results": 0}
     try:
         closed_rows = [
             row[0]
@@ -240,9 +244,19 @@ def check_effect_accounting(run_dir: Path) -> tuple[list[Finding], dict[str, Any
     findings: list[Finding] = []
     world_db = run_dir / "world.db"
     runtime_db = run_dir / "runtime.db"
-    facts: dict[str, Any] = {"ledger_rows": 0, "max_per_key": 0}
+    facts: dict[str, Any] = {"ledger_rows": 0, "max_per_key": 0, "ledger_present": False}
     if not world_db.exists():
+        # 评审 P2-5："账本不存在"与"账本为空"必须可区分，而且**裁判缺席不是没问题**：
+        # 没有账本就无法判定副作用次数，静默返回 0 会把"无法判定"读成"没有违规"。
+        findings.append(
+            Finding(
+                code="inv_ledger_present",
+                detail=f"{world_db} 不存在：外部账本缺席，副作用次数无法判定",
+                evidence={"path": str(world_db)},
+            )
+        )
         return findings, facts
+    facts["ledger_present"] = True
 
     snapshot = snapshot_db(world_db)
     con = sqlite3.connect(snapshot)
@@ -256,29 +270,48 @@ def check_effect_accounting(run_dir: Path) -> tuple[list[Finding], dict[str, Any
     finally:
         con.close()
 
-    unknown_keys: set[str] = set()
+    unknown_by_key: dict[str, int] = {}
     if runtime_db.exists():
-        snapshot_runtime = snapshot_db(runtime_db)
-        con = sqlite3.connect(snapshot_runtime)
-        try:
-            unknown_keys = {
-                str(row[0])
-                for row in con.execute(
-                    "SELECT idempotency_key FROM tool_calls WHERE status='unknown'"
-                ).fetchall()
-            }
-        finally:
-            con.close()
+        con, _ = _runtime_snapshot(runtime_db)
+        if con is not None:
+            try:
+                unknown_by_key = {
+                    str(key): int(count)
+                    for key, count in con.execute(
+                        "SELECT idempotency_key, COUNT(*) FROM tool_calls"
+                        " WHERE status='unknown' GROUP BY idempotency_key"
+                    ).fetchall()
+                }
+            finally:
+                con.close()
 
     facts["ledger_rows"] = sum(counts.values())
     facts["max_per_key"] = max(counts.values(), default=0)
+    # 评审 P2-6：unknown 这条"免罪通道"由**被审判的 runtime 自己**写入，且原先无上界——
+    # 把所有键标成 unknown 就能豁免全部重复。按 W2 已声明的语义加上界（每键至多 1 行），
+    # 并把每键的 unknown 行数计入 facts 供报告复算。
+    facts["unknown_rows_by_key"] = unknown_by_key
     for key, count in counts.items():
-        if count > 1 and key not in unknown_keys:
+        if count <= 1:
+            continue
+        unknown_rows = int(unknown_by_key.get(key, 0))
+        if unknown_rows == 0:
             findings.append(
                 Finding(
                     code="inv_effect_accounting",
                     detail=f"键 {key} 有 {count} 行效果，且没有任何 unknown 呈报",
                     evidence={"key": key, "rows": count, "unknown_reported": False},
+                )
+            )
+        elif unknown_rows > 1:
+            findings.append(
+                Finding(
+                    code="inv_effect_accounting",
+                    detail=(
+                        f"键 {key} 有 {count} 行效果，并呈报了 {unknown_rows} 行 unknown——"
+                        "W2 的语义是「至多 1 行 unknown 待人工对账」"
+                    ),
+                    evidence={"key": key, "rows": count, "unknown_rows": unknown_rows},
                 )
             )
     return findings, facts

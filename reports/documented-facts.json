@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 339,
+      "value": 345,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -55,7 +55,7 @@
     },
     {
       "id": "w4-e1-hit-ratio-tail",
-      "value": 0.573812,
+      "value": 0.57425,
       "tolerance": 1e-06,
       "run": "verify",
       "source_cmd": [
@@ -103,7 +103,7 @@
     },
     {
       "id": "w4-e1-cost-per-call-delta-ratio",
-      "value": 1.046145,
+      "value": 1.051454,
       "tolerance": 1e-05,
       "run": "verify",
       "source_cmd": [
@@ -124,12 +124,12 @@
         "docs/posts/03-cache-accounting.md"
       ],
       "doc_literals": [
-        "README.md#成本/调用 +104.6%"
+        "README.md#成本/调用 +105.1%"
       ]
     },
     {
       "id": "w4-e2-token-per-call-delta-ratio",
-      "value": -0.6608,
+      "value": -0.657006,
       "tolerance": 0.0001,
       "run": "verify",
       "source_cmd": [
@@ -154,7 +154,7 @@
     },
     {
       "id": "w4-e2-cost-per-call-delta-ratio",
-      "value": -0.615201,
+      "value": -0.612147,
       "tolerance": 1e-05,
       "run": "verify",
       "source_cmd": [
@@ -174,7 +174,7 @@
         "README.md#**W4**"
       ],
       "doc_literals": [
-        "README.md#成本/调用 -62%"
+        "README.md#成本/调用 -61%"
       ]
     },
     {
@@ -201,7 +201,7 @@
     },
     {
       "id": "w4-e3-total-cost-per-call-usd",
-      "value": 0.014307435,
+      "value": 0.01435851,
       "tolerance": 1e-09,
       "run": "verify",
       "source_cmd": [
@@ -222,12 +222,12 @@
         "docs/w4-report.md"
       ],
       "doc_literals": [
-        "README.md#$0.01431"
+        "README.md#$0.01436"
       ]
     },
     {
       "id": "w4-e3-main-cost-per-call-usd",
-      "value": 0.010734435,
+      "value": 0.01078431,
       "tolerance": 1e-09,
       "run": "verify",
       "source_cmd": [
@@ -247,12 +247,12 @@
         "README.md#**W4**"
       ],
       "doc_literals": [
-        "README.md#$0.01073"
+        "README.md#$0.01078"
       ]
     },
     {
       "id": "w4-e3-compaction-cost-per-call-usd",
-      "value": 0.003573,
+      "value": 0.0035742,
       "tolerance": 1e-09,
       "run": "verify",
       "source_cmd": [
@@ -277,7 +277,7 @@
     },
     {
       "id": "w4-e3-hit-ratio",
-      "value": 0.349584,
+      "value": 0.349869,
       "tolerance": 1e-06,
       "run": "verify",
       "source_cmd": [
@@ -346,7 +346,7 @@
     },
     {
       "id": "w4-e2xe3-cost-ratio",
-      "value": 4.939,
+      "value": 4.895,
       "tolerance": 0.001,
       "run": "verify",
       "source_cmd": [

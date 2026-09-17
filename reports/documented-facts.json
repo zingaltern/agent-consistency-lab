@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 393,
+      "value": 405,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1440,7 +1440,7 @@
     },
     {
       "id": "mutation-survivors",
-      "value": 625,
+      "value": 180,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1453,7 +1453,7 @@
       "source_path": [
         "survivors"
       ],
-      "what": "变异测试基线：三个语义核心模块的幸存变异数（= 当前测试盲区，防倒退用）",
+      "what": "变异测试基线：语义核心模块（4 个）的幸存变异数（= 当前测试盲区，防倒退用；基线是回归守卫，不是覆盖率分数）",
       "docs": [
         "README.md#**W9**",
         "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
@@ -1463,12 +1463,12 @@
         "reports/mutation_baseline.json"
       ],
       "doc_literals": [
-        "README.md#1670 个变异体 / 1031 killed / 625 survived"
+        "README.md#1110 个变异体 / 912 killed / 180 survived"
       ]
     },
     {
       "id": "mutation-survivor-rate",
-      "value": 0.3774,
+      "value": 0.1648,
       "tolerance": 0.0001,
       "run": "verify",
       "source_cmd": [
@@ -1971,7 +1971,7 @@
     },
     {
       "id": "execution-parity-test-count",
-      "value": 6,
+      "value": 7,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [

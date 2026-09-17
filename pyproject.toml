@@ -81,7 +81,13 @@ also_copy = [
     ".github",
     "README.md",
 ]
-pytest_add_cli_args = ["-o", "addopts=", "-p", "no:cacheprovider", "-q"]
+# `-o addopts=` 让默认过滤失效（变异时要跑全量默认用例），但 `mcp` marker 的用例必须在
+# 这里**显式排除**：它们要 spawn 真实服务进程并抢占 fd 0/1（stdio 传输），在 mutmut 的
+# 沙箱 runner 下会因为"操作了已关闭的文件"直接失败——那是"跑不起来"，不是"有盲区"。
+# 这一层的覆盖由 nightly 的 `pytest -q -m mcp` 负责；管线本身仍被默认用例覆盖
+# （test_mcp_mapping 的 23 例就是走 ToolExecutor 的）。
+# 注意 live 组**不**排除：它们不联网、不 spawn，历史上一直在变异时跑。
+pytest_add_cli_args = ["-m", "not mcp", "-o", "addopts=", "-p", "no:cacheprovider", "-q"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # 每个变异体都要跑一遍测试集：超时预算给足（默认 15× 基线 + 1s），否则会把慢变异体误判成存活
 timeout_multiplier = 20.0

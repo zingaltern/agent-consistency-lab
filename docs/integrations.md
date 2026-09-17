@@ -9,7 +9,6 @@
 [`docs/design/2026-09-18-integrations.md`](design/2026-09-18-integrations.md)（设计）、
 [`docs/design/2026-09-18-open-questions-answered.md`](design/2026-09-18-open-questions-answered.md)
 （裁决：为什么把七步管线抽成 `harness/execution.py::ToolExecutor`）、
-[`integrations/observability.md`](../integrations/observability.md)（可观测导出落地）。
 
 ---
 
@@ -98,8 +97,7 @@ pip install -e ".[mcp]"            # 只有这一条路径需要 SDK；内核依
 未闭合的调用重新驱动一次。是否需要探针对账、是否允许重跑，全部由管线按日志与
 outbox 意图行决定——重启不会产生新语义，也不会盲目重跑。
 "被强杀 → 重启 → 副作用恰好一次 / 对照组产生重复"的实测见
-[`integrations/observability.md`](../integrations/observability.md) 同级的崩溃演示
-（`python -m integrations.mcp_crash_demo`）。
+`python -m integrations.mcp_crash_demo --work-root /tmp/mcp-crash`（M2 交付）。
 
 **run 不会自行进入终态**：`completed` 是事件日志折叠出来的结果，需要有人写下 final
 `agent_message`。MCP 驱动的 run 没有模型，因此它的状态在 `running` / `waiting_human`

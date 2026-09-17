@@ -43,6 +43,7 @@ from harness.approval import (
     SCOPE_SESSION,
     ApprovalError,
 )
+from harness.chaos import Chaos
 from harness.events import NewEvent, Source, TreeEventType
 from harness.execution import (
     APPROVAL_TTL_SECONDS,
@@ -202,6 +203,12 @@ def ensure_run(store: SqliteStore, ids: dict[str, str]) -> bool:
     return True
 
 
+def chaos_from_env(run_dir: str | Path, kill_after_ms: int | None = None) -> Chaos:
+    """崩溃窗口来自环境变量：与 ``experiments/worker.py`` 同一套 ``CHAOS_WINDOWS`` 口径
+    （``window:occurrence`` 逗号分隔），marker 落在 run 目录里。"""
+    return Chaos.from_env(Path(run_dir) / "crash_marker.json", kill_after_ms)
+
+
 def build_environment(
     run_dir: str | Path,
     *,
@@ -209,8 +216,14 @@ def build_environment(
     probe: bool = True,
     outbox: bool = True,
     dedup: bool = True,
+    chaos: Chaos | None = None,
 ) -> RunEnvironment:
-    """打开（必要时创建）一个 run 目录，并把它接上共用的执行管线。"""
+    """打开（必要时创建）一个 run 目录，并把它接上共用的执行管线。
+
+    ``chaos`` 默认关闭，且**不**在这里读环境变量：本函数会被测试在同进程内调用，
+    若顺手读 ``CHAOS_WINDOWS``，一个恰好设了该变量的 shell 就能把测试进程杀掉。
+    进程入口（``main`` / ``_serve_stdio``）用 ``chaos_from_env`` 显式传入。
+    """
     path = Path(run_dir)
     path.mkdir(parents=True, exist_ok=True)
     ids = load_or_create_ids(path)
@@ -226,6 +239,7 @@ def build_environment(
         registry=registry,
         dedup=dedup,
         outbox=outbox,
+        chaos=chaos or Chaos.disabled(),
     )
     return RunEnvironment(
         run_dir=path,
@@ -473,7 +487,10 @@ def _result_payload(payload: dict[str, Any], *, is_error: bool, mcp_types: Any) 
 
 
 async def _serve_stdio(run_dir: str | Path, **options: Any) -> None:  # pragma: no cover
-    """stdio 主循环：一个进程一个连接，一个连接一个 run。"""
+    """stdio 主循环：一个进程一个连接，一个连接一个 run。
+
+    崩溃窗口在这里从环境变量读入——**进程入口**是唯一该读它的地方。
+    """
     Server, stdio_server, mcp_types = _load_sdk()
     ListToolsResult = mcp_types.ListToolsResult
     McpTool = mcp_types.Tool
@@ -545,6 +562,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="只列出会下发的工具与 schema（不需要 [mcp] extra），然后退出",
     )
+    parser.add_argument(
+        "--kill-after-ms",
+        type=int,
+        default=None,
+        help="墙钟定时注入：启动后 N 毫秒 SIGKILL 自身（与 CHAOS_WINDOWS 独立，口径同 worker）",
+    )
     parser.add_argument("--json-out", default="", help="把 --list-tools 的结果写到文件")
     return parser.parse_args(argv)
 
@@ -587,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
                 probe=args.probe == "on",
                 outbox=args.outbox == "on",
                 dedup=args.dedup == "on",
+                chaos=chaos_from_env(args.run_dir, args.kill_after_ms),
             )
         )
     except McpUnavailableError as exc:

@@ -273,15 +273,200 @@ def test_both_counter_shapes_satisfy_the_protocol() -> None:
     assert isinstance(_ExecutorCounters(), CounterSink)
 
 
+# ------------------------------------------------- 返回值不是第二权威
+
+def _results_for(store: SqliteStore, tool_call_id: str) -> list[dict[str, Any]]:
+    return [
+        event.payload
+        for event in store.effective_events(BRANCH_ID)
+        if event.type == "tool_result" and event.payload.get("tool_call_id") == tool_call_id
+    ]
+
+
+def _assert_outcome_matches_the_log(
+    store: SqliteStore, outcome: Any, *, expected_status: str, expected_replayed: bool
+) -> None:
+    """``ToolOutcome`` 是**可读形状**，不是第二权威：必须与日志里那条 tool_result 逐字一致。
+
+    这条不变式是 M1 抽取时新增的返回通道的守门人：只断言事件日志的用例抓不到
+    "返回值与日志不一致"的改动（变异门禁实测：新增幸存变异集中在这些 return 上）。
+    """
+    rows = _results_for(store, outcome.tool_call_id)
+    assert rows, f"{outcome.tool_call_id} 只有返回值、日志里没有结论——返回值成了第二权威"
+    last = rows[-1]
+    assert outcome.status == expected_status
+    assert outcome.status == last["status"], f"返回值 {outcome.status} != 日志 {last['status']}"
+    assert outcome.result == last["result"], "返回的 result 与日志不一致"
+    assert outcome.error_class == last["error_class"], "返回的 error_class 与日志不一致"
+    assert outcome.replayed is expected_replayed
+    # 一次调用至多一条结论（INV-003），重放不得追加新的事件
+    assert len(rows) == 1
+
+
+def test_every_outcome_matches_its_event_across_all_pipeline_branches(tmp_path: Path) -> None:
+    """把管线的每条出口都走一遍，逐条核对返回值与日志一致。"""
+    store = _new_store(tmp_path)
+    world = World(tmp_path / "world.db")
+    try:
+        registry = _registry(world)
+
+        def fragile_ok(args: dict, key: str) -> dict:
+            return {"ok": True}
+
+        def fragile_boom(args: dict, key: str) -> dict:
+            raise RuntimeError("下游炸了")
+
+        registry.register(
+            Tool(name="ok_read", effect=Effect.READ, fn=fragile_ok, description="正常的只读")
+        )
+        registry.register(
+            Tool(name="boom_read", effect=Effect.READ, fn=fragile_boom, description="会抛的只读")
+        )
+        registry.register(
+            Tool(
+                name="boom_write",
+                effect=Effect.WRITE_NONIDEMPOTENT,
+                fn=fragile_boom,
+                description="会抛的非幂等写（outbox 开 ⇒ 只能判 unknown）",
+            )
+        )
+        executor = ToolExecutor(store, registry=registry, outbox=True)
+        counters = _ExecutorCounters()
+        ctx = RunContext(RUN_ID, THREAD_ID, BRANCH_ID)
+
+        cases = [
+            ("tc_ok", "ok_read", {}, "executed", False),
+            ("tc_bad_policy", "export_logs", {"limit": 999}, "rejected", False),
+            ("tc_ghost", "no_such_tool", {}, "failed", False),
+            ("tc_boom_read", "boom_read", {}, "failed", False),
+            ("tc_boom_write", "boom_write", {}, "unknown", False),
+        ]
+        for call_id, tool, args, status, replayed in cases:
+            outcome = executor.execute(
+                ctx, ToolCallRequest(tool_call_id=call_id, tool=tool, args=args), counters
+            )
+            _assert_outcome_matches_the_log(
+                store, outcome, expected_status=status, expected_replayed=replayed
+            )
+
+        # 重放：日志里已有结论 → 不追加事件，返回值必须复述日志里的那条
+        replay = executor.execute(
+            ctx, ToolCallRequest(tool_call_id="tc_ok", tool="ok_read", args={}), counters
+        )
+        _assert_outcome_matches_the_log(
+            store, replay, expected_status="executed", expected_replayed=True
+        )
+
+        # 审批后执行：返回值同样是日志的复述
+        gated = ToolCallRequest(
+            tool_call_id="tc_gate", tool="scale_pool", args={"service": "payment", "size": 8}
+        )
+        with pytest.raises(InterruptSignal):
+            executor.execute(ctx, gated, counters)
+        executor.decide(ctx, actor="human:parity")
+        report = executor.resume_open_calls(ctx, counters)
+        assert [outcome.status for outcome in report.outcomes] == ["executed"]
+        assert report.pending is None
+        _assert_outcome_matches_the_log(
+            store, report.outcomes[0], expected_status="executed", expected_replayed=False
+        )
+
+        # 同键不同参：旁路校验字段否决，返回值仍是日志的复述
+        from harness.store import ToolCallStore
+        from harness.tools import canonical_args_sha256, idempotency_key
+
+        key = idempotency_key(RUN_ID, BRANCH_ID, "tc_conflict")
+        ToolCallStore(store).record(
+            tool_call_id="tc_conflict_other",
+            run_id=RUN_ID,
+            branch_id=BRANCH_ID,
+            tool="ok_read",
+            args={"other": True},
+            args_sha256=canonical_args_sha256({"other": True}),
+            idempotency_key=key,
+            effect=Effect.READ.value,
+            status="executed",
+            result={"ok": True},
+        )
+        conflict = executor.execute(
+            ctx, ToolCallRequest(tool_call_id="tc_conflict", tool="ok_read", args={}), counters
+        )
+        _assert_outcome_matches_the_log(
+            store, conflict, expected_status="rejected", expected_replayed=False
+        )
+        assert conflict.error_class == "args_sha256_mismatch"
+
+        # 既有意图行 pending + 探针说"已生效"：**不重跑**，结论来自对账
+        pending_call = ToolCallRequest(
+            tool_call_id="tc_pending", tool="scale_pool", args={"service": "payment", "size": 4}
+        )
+        pending_key = idempotency_key(RUN_ID, BRANCH_ID, pending_call.tool_call_id)
+        ToolCallStore(store).begin(
+            tool_call_id=pending_call.tool_call_id,
+            run_id=RUN_ID,
+            branch_id=BRANCH_ID,
+            tool=pending_call.tool,
+            args=pending_call.args,
+            args_sha256=canonical_args_sha256(pending_call.args),
+            idempotency_key=pending_key,
+            effect=Effect.WRITE_NONIDEMPOTENT.value,
+        )
+        # 下游那边效果已经发生了（崩溃窗口：效果在、runtime 记录没落）
+        world.apply(
+            operation=pending_call.tool,
+            payload=dict(pending_call.args),
+            idempotency_key=pending_key,
+            idempotent_impl=False,
+        )
+        effects_before_reconcile = world.total_effects()
+        reconciled = executor.execute(ctx, pending_call, counters)
+        _assert_outcome_matches_the_log(
+            store, reconciled, expected_status="executed", expected_replayed=True
+        )
+        assert reconciled.result is not None
+        assert reconciled.result["reconstructed_from_probe"] is True
+        assert world.total_effects() == effects_before_reconcile, (
+            "对账路径绝不能再写一次副作用（结论来自探针，不是重跑）"
+        )
+
+        # 防御分支：去重表已有 executed 行、但日志里那条调用还没闭合（例如结果事件缺失）
+        # ——必须按既有行的结论重放，不允许再执行一次。
+        orphan_call = ToolCallRequest(tool_call_id="tc_orphan", tool="ok_read", args={})
+        ToolCallStore(store).record(
+            tool_call_id=orphan_call.tool_call_id,
+            run_id=RUN_ID,
+            branch_id=BRANCH_ID,
+            tool=orphan_call.tool,
+            args=orphan_call.args,
+            args_sha256=canonical_args_sha256(orphan_call.args),
+            idempotency_key=idempotency_key(RUN_ID, BRANCH_ID, orphan_call.tool_call_id),
+            effect=Effect.READ.value,
+            status="executed",
+            result={"from": "dedup_row"},
+        )
+        orphan = executor.execute(ctx, orphan_call, counters)
+        _assert_outcome_matches_the_log(
+            store, orphan, expected_status="executed", expected_replayed=True
+        )
+        assert orphan.result == {"from": "dedup_row"}, "重放必须复述去重行里的结论"
+    finally:
+        store.close()
+        world.close()
+
+
 # ---------------------------------------------------------------- 结构证明
 
 # 管线私有件：只允许出现在 harness/execution.py。驱动方（loop 与 integrations/）
 # 一旦出现其中之一，就说明"共用一条管线"被破坏了。
+#
+# 注意判据是**调用形状**而不是窗口名：驱动方可以（也必须）**命名**窗口来配置注入
+# （`integrations/mcp_crash_demo.py` 的 `CRASH_WINDOW` 就是），但不得自己**命中**它。
+# loop 侧的 `.hit("after_resume")` 是合法的（恢复流程归 loop），不在下面这张表里。
 PIPELINE_PATTERNS = (
-    "pre_tool_exec",
-    "post_tool_effect_pre_record",
-    "post_record_pre_commit",
-    "post_approval_pre_exec",
+    'hit("pre_tool_exec")',
+    'hit("post_tool_effect_pre_record")',
+    'hit("post_record_pre_commit")',
+    'hit("post_approval_pre_exec")',
     "tool.fn(",
     "_tool_calls.begin(",
     "_tool_calls.complete(",
@@ -302,11 +487,11 @@ def test_pipeline_lives_only_in_the_execution_module() -> None:
     """四个崩溃窗口与 outbox 状态机都在 execution.py，且驱动方一处都没有。"""
     execution_source = (PROJECT_ROOT / "harness" / "execution.py").read_text(encoding="utf-8")
     missing = [
-        pattern
-        for pattern in ("pre_tool_exec", "post_tool_effect_pre_record", "post_record_pre_commit")
-        if pattern not in execution_source
+        f'hit("{window}")'
+        for window in ("pre_tool_exec", "post_tool_effect_pre_record", "post_record_pre_commit")
+        if f'hit("{window}")' not in execution_source
     ]
-    assert not missing, f"execution.py 里找不到这些窗口（扫描会失去意义）：{missing}"
+    assert not missing, f"execution.py 里找不到这些命中点（扫描会失去意义）：{missing}"
 
     for relative in DRIVER_MODULES:
         source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
@@ -322,6 +507,13 @@ def test_pipeline_scan_flags_a_synthetic_violation() -> None:
     """正对照：扫描函数对合成坏源码必须报违规，否则"全绿"毫无意义。"""
     sneaky = "def handle(self, tool):\n    return tool.fn(args, key)  # 绕过七步\n"
     assert scan_for_pipeline_private_parts(sneaky) == ["tool.fn("]
+    window_hit = 'def drive(self):\n    self._chaos.hit("post_tool_effect_pre_record")\n'
+    assert scan_for_pipeline_private_parts(window_hit) == [
+        'hit("post_tool_effect_pre_record")'
+    ], "在驱动方自己命中管线窗口，扫描器必须报"
+    # 只**命名**窗口（配置注入）不算违规：崩溃演示必须能写出要杀哪个窗口
+    naming = 'CRASH_WINDOW = "post_tool_effect_pre_record"\n'
+    assert scan_for_pipeline_private_parts(naming) == []
     assert scan_for_pipeline_private_parts("def ok(self):\n    return 1\n") == []
 
 

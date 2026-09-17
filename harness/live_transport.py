@@ -27,7 +27,7 @@ import urllib.request
 from typing import Any
 
 from .llm import RawCompletion
-from .tools import ToolCallRequest
+from .tools import ToolCallRequest, tool_param_schema
 
 
 class LiveTransportError(RuntimeError):
@@ -152,6 +152,7 @@ def tools_schema_from_registry(registry: Any) -> list[dict[str, Any]]:
     参数 schema 取 ``Tool.parameters``；未声明时回退到空参数表（向后兼容：
     既有工具不声明 schema 时，下发的形状与从前逐字相同）。schema 是"工具自述"的
     一部分——它必须与 ``fn`` 实际接受的字段一致，否则真实模型的合法调用会被判成参数错误。
+    回退形状只有一处定义（``harness/tools.py::tool_param_schema``），MCP 侧同源。
     """
     return [
         {
@@ -159,7 +160,7 @@ def tools_schema_from_registry(registry: Any) -> list[dict[str, Any]]:
             "function": {
                 "name": tool.name,
                 "description": tool.description or tool.name,
-                "parameters": tool.parameters or {"type": "object", "properties": {}},
+                "parameters": tool_param_schema(tool),
             },
         }
         for tool in registry

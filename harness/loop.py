@@ -23,25 +23,26 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from .approval import (
-    DECISION_APPROVED,
-    DECISION_REJECTED,
-    SCOPE_ONCE,
-    SCOPE_SESSION,
-    ApprovalBinding,
-    ApprovalError,
-)
+from .approval import DECISION_APPROVED, SCOPE_ONCE, ApprovalBinding
 from .budget import BudgetExceeded
 from .chaos import Chaos
 from .context import ViewBuilder
-from .events import ArtifactEventType, Event, NewEvent, Source, TreeEventType
+from .events import Event, NewEvent, Source, TreeEventType
+from .execution import (
+    APPROVAL_TTL_SECONDS,
+    InterruptRequest,
+    InterruptSignal,
+    RunContext,
+    ToolExecutor,
+    ToolOutcome,
+    append_error_artifact,
+)
 from .ids import new_id
 from .llm import ContextOverflow, LLMClient, ModelResponse
 from .model import Model, ModelTurn
@@ -49,19 +50,7 @@ from .prompts import DEFAULT_OPS_SYSTEM_PROMPT
 from .state import DerivedState, RunStatus, reduce_events
 from .store.checkpoints import SqliteCheckpointSaver, Write
 from .store.sqlite_store import SqliteStore
-from .store.tool_calls import ToolCallRecord, ToolCallStore
-from .tools import (
-    Effect,
-    ProbeOutcome,
-    ProbeResult,
-    Tool,
-    ToolCallRequest,
-    ToolRegistry,
-    canonical_args_sha256,
-    idempotency_key,
-)
-
-APPROVAL_TTL_SECONDS = 3600.0
+from .tools import ToolCallRequest, ToolRegistry
 
 # 刻意写成接近真实的运维处置规范长度：系统提示是"稳定前缀"的主体，
 # 它必须足够大才会进入供应商的最小可缓存长度（本模型设 1024 token）。
@@ -89,37 +78,13 @@ class RunOutcome(BaseModel):
     checkpoint_mismatches: int = 0
 
 
-class InterruptRequest(BaseModel):
-    interrupt_id: str
-    interrupt_index: int
-    tool_call_id: str
-    tool: str
-    args: dict[str, Any] = Field(default_factory=dict)
-    args_sha256: str
-    reason: str = ""
-
-
 class LoopError(RuntimeError):
     """调用方误用（例如在非空分支上 start、在终态上 resume 且期望有副作用）。"""
 
 
-class InterruptSignal(Exception):
-    """控制流信号：不是错误，但绝不能被业务代码吞掉。
-
-    对齐 LangGraph 的 ``interrupt()`` 语义——恢复时当前步骤从头重跑，
-    因此 interrupt 之前的副作用必须幂等。
-    """
-
-    def __init__(self, request: InterruptRequest) -> None:
-        super().__init__(f"interrupt: {request.reason}")
-        self.request = request
-
-
-@dataclass
-class _Ctx:
-    run_id: str
-    thread_id: str
-    branch_id: str
+# 三身份上下文与 interrupt 信号住在 harness/execution.py（与工具管线同处一个模块，
+# 因为外部驱动方也要用同一套）。这里保留名字，既有导入与文档引用不受影响。
+_Ctx = RunContext
 
 
 @dataclass
@@ -184,20 +149,26 @@ class Loop:
     ) -> None:
         self._store = store
         self._saver = saver
-        self._tool_calls = ToolCallStore(store)
         self._llm = llm
         self._registry = registry
+        self._chaos = chaos or Chaos.disabled()
+        # 七步管线 + 审批决策 + 恢复段住在 harness/execution.py：loop 与外部驱动方
+        # （MCP 工具服务）共用同一实现，loop 这边只负责"模型怎么驱动它"。
+        self._exec = ToolExecutor(
+            store,
+            registry=registry,
+            dedup=dedup,
+            outbox=outbox,
+            chaos=self._chaos,
+            tamper=tamper,
+        )
         self._builder = builder or ViewBuilder(
             system_prompt=DEFAULT_SYSTEM_PROMPT, registry=registry
         )
         self._compactor = compactor
         self._budget = budget
-        self._dedup = dedup
-        self._outbox = outbox
-        self._chaos = chaos or Chaos.disabled()
         self._max_steps = max_steps
         self._ns = checkpoint_ns
-        self._tamper = tamper
         self._last_view_violations = 0
 
     # ------------------------------------------------------------------ public
@@ -244,12 +215,8 @@ class Loop:
         counters.checkpoint_mismatches = self._checkpoint_cross_check(ctx)
         if state.pending_interrupt_id is not None:
             return counters.to_outcome(state.status.value, state.step)
-        try:
-            for call_id in sorted(state.open_tool_calls):
-                request = self._tool_request_from_log(ctx, call_id)
-                if request is not None:
-                    self._execute_tool(ctx, request, self._registry, counters)
-        except InterruptSignal:
+        report = self._exec.resume_open_calls(ctx, counters)
+        if report.pending is not None:
             self._commit(ctx, f"model:{state.step}", [], step=state.step, counters=counters)
             final = self._state(ctx)
             return counters.to_outcome(final.status.value, final.step)
@@ -272,79 +239,16 @@ class Loop:
 
         改参时：原调用闭合为 ``superseded``，另起新 tool_call_id（因此是新幂等键），
         批准绑定到新调用与新参数——旧批准无法复用到新参数上。
+        实现住在 ``harness/execution.py::ToolExecutor.decide``（与外部驱动方共用）。
         """
-        ctx = _Ctx(run_id, thread_id, branch_id)
-        state = self._state(ctx)
-        if state.pending_interrupt_id is None:
-            raise ApprovalError("no open interrupt to approve")
-        request = self._interrupt_request(ctx, state.pending_interrupt_id)
-
-        edited = (
-            approved_args is not None
-            and canonical_args_sha256(approved_args) != request.args_sha256
-        )
-        target_call_id = request.tool_call_id
-        if decision == DECISION_REJECTED:
-            if edited:
-                raise ApprovalError("rejection cannot carry edited args")
-            self._append_tool_result(
-                ctx, request.tool_call_id, "rejected", None, "approval_rejected"
-            )
-        elif edited:
-            target_call_id = f"{request.tool_call_id}__edit1"
-            self._append_tool_result(
-                ctx, request.tool_call_id, "superseded", None, "superseded_by_edit"
-            )
-            self._append_tool_call_event(
-                ctx,
-                ToolCallRequest(
-                    tool_call_id=target_call_id,
-                    tool=request.tool,
-                    args=dict(approved_args or {}),
-                ),
-                effect=None,
-                idempotency_key_value=None,
-            )
-
-        effective_args = dict(approved_args) if edited else request.args
-        binding = ApprovalBinding(
-            tool_call_id=target_call_id,
-            tool=request.tool,
-            requested_args_sha256=request.args_sha256,
-            approved_args_sha256=canonical_args_sha256(effective_args),
+        return self._exec.decide(
+            RunContext(run_id, thread_id, branch_id),
             decision=decision,
             actor=actor,
-            issued_at=time.time(),
-            expires_at=time.time() + ttl_seconds,
+            ttl_seconds=ttl_seconds,
+            approved_args=approved_args,
             scope=scope,
-            edited=edited,
-            requested_args=request.args,
-            approved_args=effective_args,
         )
-        self._store.append(
-            NewEvent.artifact(
-                run_id=run_id,
-                branch_id=branch_id,
-                type=ArtifactEventType.APPROVAL,
-                payload=binding.model_dump(),
-            )
-        )
-        self._store.append(
-            NewEvent.tree(
-                run_id=run_id,
-                branch_id=branch_id,
-                type=TreeEventType.RESUME,
-                source=Source.USER,
-                payload={
-                    "interrupt_id": request.interrupt_id,
-                    "interrupt_index": request.interrupt_index,
-                    "approval_id": binding.approval_id,
-                    "decision": decision,
-                    "tool_call_id": target_call_id,
-                },
-            )
-        )
-        return binding
 
     # ------------------------------------------------------------------- drive
 
@@ -373,7 +277,7 @@ class Loop:
             interrupted = False
             try:
                 for request in turn.tool_calls:
-                    self._execute_tool(ctx, request, self._registry, counters)
+                    self._execute_tool(ctx, request, counters)
                     writes.append(
                         Write(
                             task_id=f"tool:{request.tool_call_id}",
@@ -416,7 +320,9 @@ class Loop:
             except ContextOverflow as exc:
                 counters.overflows += 1
                 if self._compactor is None or attempt == 2:
-                    self._append_error_artifact(ctx, "context_overflow", str(exc), fatal=True)
+                    append_error_artifact(
+                        self._store, ctx, "context_overflow", str(exc), fatal=True
+                    )
                     return None
                 record = self._compactor.compact(
                     run_id=ctx.run_id,
@@ -425,12 +331,14 @@ class Loop:
                     reason="overflow",
                 )
                 if record is None:
-                    self._append_error_artifact(ctx, "context_overflow", "无可压缩内容", fatal=True)
+                    append_error_artifact(
+                        self._store, ctx, "context_overflow", "无可压缩内容", fatal=True
+                    )
                     return None
                 counters.compactions += 1
                 view = self._build_view(ctx, counters)
             except BudgetExceeded as exc:
-                self._append_error_artifact(ctx, "budget_exceeded", str(exc), fatal=True)
+                append_error_artifact(self._store, ctx, "budget_exceeded", str(exc), fatal=True)
                 return None
             else:
                 counters.input_tokens += response.usage.input_tokens
@@ -461,296 +369,21 @@ class Loop:
         self,
         ctx: _Ctx,
         request: ToolCallRequest,
-        registry: ToolRegistry,
         counters: _Counters,
-    ) -> None:
-        key = idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id)
-        args_sha256 = canonical_args_sha256(request.args)
+    ) -> ToolOutcome:
+        """七步管线的**唯一**实现在 ``harness/execution.py::ToolExecutor.execute``。
 
-        # 1) 日志权威：已有结论的调用只重放，不再产生副作用
-        if self._has_result(ctx, request.tool_call_id):
-            counters.replayed += 1
-            return
-
-        # 2) 工具解析：模型幻觉出的工具名也是一次失败调用，必须被记录并闭合，
-        #    而不是让 KeyError 穿透 loop（否则 run 永远停在 RUNNING、调用悬挂）。
-        try:
-            tool = registry.get(request.tool)
-        except KeyError:
-            self._append_tool_call_event(ctx, request, None, None)
-            counters.tool_failures += 1
-            self._append_error_artifact(ctx, "unknown_tool", f"{request.tool!r} is not registered")
-            self._append_tool_result(ctx, request.tool_call_id, "failed", None, "unknown_tool")
-            return
-
-        # 3) 补记决策（幂等）
-        self._ensure_tool_call_event(ctx, request, tool.effect, key, args_sha256)
-
-        # 3) 既有意图行处置
-        existing = self._tool_calls.lookup(key) if (self._dedup or self._outbox) else None
-        if existing is not None and existing.args_sha256 != args_sha256:
-            # 同键不同参：旁路校验字段在这里起作用——绝不允许把另一次参数的执行结果
-            # 当成本次调用的重放（那是静默的错误答案，比报错危险得多）。
-            counters.rejected += 1
-            self._append_error_artifact(
-                ctx,
-                "args_sha256_mismatch",
-                f"key {key} recorded args {existing.args_sha256[:12]} != actual {args_sha256[:12]}",
-            )
-            self._append_tool_result(
-                ctx, request.tool_call_id, "rejected", None, "args_sha256_mismatch"
-            )
-            return
-        if existing is not None:
-            if existing.status == "executed":
-                counters.replayed += 1
-                self._append_tool_result(ctx, request.tool_call_id, "executed", existing.result)
-                return
-            if existing.status == "pending":
-                if not self._resolve_pending(ctx, existing, tool, request, counters):
-                    return
-            elif existing.status == "unknown":
-                counters.unknown += 1
-                self._append_tool_result(
-                    ctx,
-                    request.tool_call_id,
-                    "unknown",
-                    None,
-                    "unknown_effect_unresolved",
-                )
-                return
-
-        # 4) 审批门
-        binding = self._find_approval(ctx, request.tool_call_id, tool.name)
-        if binding is not None:
-            ok, reason = binding.validates(
-                tool_call_id=request.tool_call_id, tool=tool.name, args_sha256=args_sha256
-            )
-            if not ok:
-                counters.rejected += 1
-                self._append_error_artifact(ctx, reason, f"审批校验未通过: {reason}")
-                self._append_tool_result(ctx, request.tool_call_id, "rejected", None, reason)
-                return
-            self._chaos.hit("post_approval_pre_exec")
-        elif tool.requires_approval:
-            self._raise_interrupt(ctx, request, args_sha256)
-            return
-
-        # 5) TOCTOU：执行前用实际参数复核批准的 hash
-        if self._tamper is not None:
-            request = self._tamper(request)
-        actual_sha = canonical_args_sha256(request.args)
-        if binding is not None and actual_sha != binding.approved_args_sha256:
-            counters.rejected += 1
-            self._append_error_artifact(
-                ctx, "args_sha256_mismatch", "执行前参数与批准参数不一致（TOCTOU）"
-            )
-            self._append_tool_result(
-                ctx, request.tool_call_id, "rejected", None, "args_sha256_mismatch"
-            )
-            return
-
-        # 5b) 参数级安全域（R-B2）：闸门在**执行 handler 前的最后一刻**，
-        # 输入是实际 request.args（不是审批记录里的 hash）——否则会出现
-        # "审批时看不懂结构化参数、批准了被禁止值"的缝隙。
-        # 位置刻意放在 outbox 预写之前：被拒的调用不该留下意图行。
-        if tool.arg_policy is not None:
-            allowed, reason = tool.arg_policy.evaluate(request.args)
-            if not allowed:
-                counters.rejected += 1
-                self._append_error_artifact(
-                    ctx,
-                    "arg_policy_violation",
-                    f"{request.tool} 参数越出工具自述的安全域（{reason}；"
-                    f"策略 {tool.arg_policy.describe()}）",
-                )
-                self._append_tool_result(
-                    ctx, request.tool_call_id, "rejected", None, "arg_policy_violation"
-                )
-                return
-
-        # 6) outbox 预写意图（仅非幂等写、且尚无意图行）
-        outbox_path = self._outbox and tool.effect is Effect.WRITE_NONIDEMPOTENT
-        if outbox_path and existing is None:
-            self._tool_calls.begin(
-                tool_call_id=request.tool_call_id,
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                tool=request.tool,
-                args=request.args,
-                args_sha256=actual_sha,
-                idempotency_key=key,
-                effect=tool.effect.value,
-            )
-
-        # 7) 执行与记录：权威记录（事件）先落，意图行后闭合
-        self._chaos.hit("pre_tool_exec")
-        try:
-            result = tool.fn(request.args, key)
-        except Exception as exc:
-            self._handle_tool_failure(ctx, request, tool, exc, counters, outbox_path=outbox_path)
-            return
-        self._chaos.hit("post_tool_effect_pre_record")
-        self._append_tool_result(ctx, request.tool_call_id, "executed", result)
-        if outbox_path:
-            self._tool_calls.complete(key, result)
-        else:
-            self._tool_calls.record(
-                tool_call_id=request.tool_call_id,
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                tool=request.tool,
-                args=request.args,
-                args_sha256=actual_sha,
-                idempotency_key=key,
-                effect=tool.effect.value,
-                status="executed",
-                result=result,
-            )
-        counters.executed += 1
-        self._chaos.hit("post_record_pre_commit")
-
-    def _handle_tool_failure(
-        self,
-        ctx: _Ctx,
-        request: ToolCallRequest,
-        tool: Tool,
-        exc: Exception,
-        counters: _Counters,
-        *,
-        outbox_path: bool,
-    ) -> None:
-        """工具抛异常时的分类处置。
-
-        关键判断：异常**不代表效果未发生**（可能写完才抛）。因此
-        非幂等写（有 outbox 意图行）一律按 ``unknown`` 处置、等探针对账；
-        只读/幂等工具按 ``failed`` 处置。两种情况都记录 error artifact，
-        并且绝不把异常抛给调用方——否则 run 会永久停在 RUNNING、调用悬挂、
-        每次 resume 重放同一副作用（审计实测的重试风暴）。
+        这里只做委托：loop 侧不得出现第二条执行路径（有结构断言守着）。
+        registry 不再逐调用传入——executor 持有它，避免"两个 registry 来源"。
+        需要审批时抛 ``InterruptSignal``，与从前逐字一致。
         """
-        error_class = f"tool_error:{type(exc).__name__}"
-        key = idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id)
-        if outbox_path:
-            self._tool_calls.mark_unknown(key, error_class)
-            status = "unknown"
-        else:
-            self._tool_calls.record(
-                tool_call_id=request.tool_call_id,
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                tool=request.tool,
-                args=request.args,
-                args_sha256=canonical_args_sha256(request.args),
-                idempotency_key=key,
-                effect=tool.effect.value,
-                status="failed",
-                result=None,
-                error_class=error_class,
-            )
-            status = "failed"
-        counters.tool_failures += 1
-        self._append_error_artifact(ctx, error_class, f"{request.tool}: {exc}")
-        self._append_tool_result(ctx, request.tool_call_id, status, None, error_class)
+        return self._exec.execute(ctx, request, counters)
 
-    def _resolve_pending(
-        self,
-        ctx: _Ctx,
-        existing: ToolCallRecord,
-        tool: Tool,
-        request: ToolCallRequest,
-        counters: _Counters,
-    ) -> bool:
-        """处置 pending 意图。返回 True 表示"确认未生效、可安全执行"。"""
-        if tool.probe is None:
-            self._tool_calls.mark_unknown(existing.idempotency_key, "no_probe_available")
-            counters.unknown += 1
-            self._append_error_artifact(
-                ctx, "unknown_effect", "pending 意图无法对账：下游不支持按键读回"
-            )
-            self._append_tool_result(ctx, request.tool_call_id, "unknown", None, "unknown_effect")
-            return False
-        try:
-            probe = tool.probe(request.args, existing.idempotency_key)
-        except Exception as exc:
-            probe = ProbeResult(
-                outcome=ProbeOutcome.UNKNOWN,
-                detail={"probe_error": f"{type(exc).__name__}: {exc}"},
-            )
-        counters.probes += 1
-        if probe.outcome is ProbeOutcome.APPLIED:
-            result = {
-                "operation": request.tool,
-                "reconstructed_from_probe": True,
-                **probe.detail,
-            }
-            self._tool_calls.complete(existing.idempotency_key, result)
-            self._append_tool_result(ctx, request.tool_call_id, "executed", result)
-            counters.reconciled += 1
-            return False
-        if probe.outcome is ProbeOutcome.NOT_APPLIED:
-            return True
-        self._tool_calls.mark_unknown(existing.idempotency_key, "probe_inconclusive")
-        counters.unknown += 1
-        self._append_error_artifact(ctx, "unknown_effect", "探针结论不确定，转人工对账")
-        self._append_tool_result(ctx, request.tool_call_id, "unknown", None, "unknown_effect")
-        return False
-
-    # ----------------------------------------------------------------- approval
-
-    def _raise_interrupt(self, ctx: _Ctx, request: ToolCallRequest, args_sha256: str) -> None:
-        state = self._state(ctx)
-        if state.pending_interrupt_id is not None:
-            raise InterruptSignal(self._interrupt_request(ctx, state.pending_interrupt_id))
-        payload = InterruptRequest(
-            interrupt_id=new_id("int"),
-            interrupt_index=self._interrupt_count(ctx),
-            tool_call_id=request.tool_call_id,
-            tool=request.tool,
-            args=request.args,
-            args_sha256=args_sha256,
-            reason=f"{request.tool} 是高危写操作，需要人工审批",
-        )
-        self._store.append(
-            NewEvent.tree(
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                type=TreeEventType.INTERRUPT,
-                source=Source.AGENT,
-                payload=payload.model_dump(),
-            )
-        )
-        raise InterruptSignal(payload)
-
-    def _interrupt_request(self, ctx: _Ctx, interrupt_id: str) -> InterruptRequest:
-        for event in self._log(ctx):
-            if (
-                event.type == TreeEventType.INTERRUPT.value
-                and event.payload.get("interrupt_id") == interrupt_id
-            ):
-                return InterruptRequest.model_validate(event.payload)
-        raise ApprovalError(f"interrupt {interrupt_id!r} not found in log")
-
-    def _interrupt_count(self, ctx: _Ctx) -> int:
-        return sum(1 for e in self._log(ctx) if e.type == TreeEventType.INTERRUPT.value)
-
-    def _find_approval(self, ctx: _Ctx, tool_call_id: str, tool: str) -> ApprovalBinding | None:
-        """最近一条可用于该调用的批准（once 绑定调用；session 绑定工具+参数）。"""
-        candidates: list[tuple[tuple[int, int, float], ApprovalBinding]] = []
-        for event in self._log(ctx):
-            if event.type != ArtifactEventType.APPROVAL.value:
-                continue
-            binding = ApprovalBinding.model_validate(event.payload)
-            exact = binding.tool_call_id == tool_call_id
-            reusable = binding.scope == SCOPE_SESSION and binding.tool == tool
-            if not (exact or reusable):
-                continue
-            approved = 1 if binding.decision == DECISION_APPROVED else 0
-            # 排序优先级：精确绑定 > 可复用；批准 > 拒绝；同档取最新。
-            # 否则一条更晚的 session 拒绝会否决更早的、精确绑定本调用的批准。
-            candidates.append(((int(exact), approved, binding.issued_at), binding))
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: item[0])[1]
+    def _find_approval(
+        self, ctx: _Ctx, tool_call_id: str, tool: str
+    ) -> ApprovalBinding | None:
+        """保留符号的薄委托（审计回归用例直接调用它，那个 P0 不该因为搬家而失守）。"""
+        return self._exec.find_approval(ctx, tool_call_id, tool)
 
     # ------------------------------------------------------------------ helpers
 
@@ -769,7 +402,8 @@ class Loop:
             return 0
         if any(event.event_id == last_event_id for event in self._log(ctx)):
             return 0
-        self._append_error_artifact(
+        append_error_artifact(
+            self._store,
             ctx,
             "checkpoint_log_mismatch",
             f"checkpoint {latest.checkpoint.id} references missing event {last_event_id}",
@@ -820,100 +454,6 @@ class Loop:
     def _log(self, ctx: _Ctx) -> list[Event]:
         return self._store.effective_events(ctx.branch_id)
 
-    def _has_result(self, ctx: _Ctx, tool_call_id: str) -> bool:
-        return tool_call_id in self._state(ctx).closed_tool_calls
-
-    def _ensure_tool_call_event(
-        self,
-        ctx: _Ctx,
-        request: ToolCallRequest,
-        effect: Effect,
-        key: str,
-        args_sha256: str,
-    ) -> None:
-        state = self._state(ctx)
-        if (
-            request.tool_call_id in state.open_tool_calls
-            or request.tool_call_id in state.closed_tool_calls
-        ):
-            return
-        self._store.append(
-            NewEvent.tree(
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                type=TreeEventType.TOOL_CALL,
-                source=Source.AGENT,
-                payload={
-                    "tool_call_id": request.tool_call_id,
-                    "tool": request.tool,
-                    "args": request.args,
-                    "args_sha256": args_sha256,
-                    "idempotency_key": key,
-                    "effect": effect.value,
-                },
-            )
-        )
-
-    def _append_tool_call_event(
-        self,
-        ctx: _Ctx,
-        request: ToolCallRequest,
-        effect: Effect | None,
-        idempotency_key_value: str | None,
-    ) -> None:
-        self._store.append(
-            NewEvent.tree(
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                type=TreeEventType.TOOL_CALL,
-                source=Source.AGENT,
-                payload={
-                    "tool_call_id": request.tool_call_id,
-                    "tool": request.tool,
-                    "args": request.args,
-                    "args_sha256": canonical_args_sha256(request.args),
-                    "idempotency_key": idempotency_key_value
-                    or idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id),
-                    "effect": effect.value if effect is not None else None,
-                },
-            )
-        )
-
-    def _append_tool_result(
-        self,
-        ctx: _Ctx,
-        tool_call_id: str,
-        status: str,
-        result: dict[str, Any] | None,
-        error_class: str | None = None,
-    ) -> None:
-        self._store.append(
-            NewEvent.tree(
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                type=TreeEventType.TOOL_RESULT,
-                source=Source.TOOL,
-                payload={
-                    "tool_call_id": tool_call_id,
-                    "status": status,
-                    "result": result,
-                    "error_class": error_class,
-                },
-            )
-        )
-
-    def _append_error_artifact(
-        self, ctx: _Ctx, error_class: str, message: str, *, fatal: bool = False
-    ) -> None:
-        self._store.append(
-            NewEvent.artifact(
-                run_id=ctx.run_id,
-                branch_id=ctx.branch_id,
-                type=ArtifactEventType.ERROR,
-                payload={"error_class": error_class, "message": message, "fatal": fatal},
-            )
-        )
-
     def _append_agent_message(
         self, ctx: _Ctx, turn: ModelTurn, *, response: ModelResponse, final: bool
     ) -> None:
@@ -937,19 +477,6 @@ class Loop:
                 },
             )
         )
-
-    def _tool_request_from_log(self, ctx: _Ctx, tool_call_id: str) -> ToolCallRequest | None:
-        for event in self._log(ctx):
-            if (
-                event.type == TreeEventType.TOOL_CALL.value
-                and event.payload.get("tool_call_id") == tool_call_id
-            ):
-                return ToolCallRequest(
-                    tool_call_id=tool_call_id,
-                    tool=event.payload["tool"],
-                    args=event.payload.get("args", {}),
-                )
-        return None
 
 
 __all__ = [

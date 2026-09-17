@@ -8,6 +8,13 @@ from .chaos import WINDOWS, Chaos
 from .compaction import CompactionPolicy, CompactionRecord, Compactor
 from .context import Block, View, ViewBuilder
 from .events import ArtifactEventType, Event, EventKind, NewEvent, Source, TreeEventType
+from .execution import (
+    CounterSink,
+    InterruptRequest,
+    RunContext,
+    ToolExecutor,
+    ToolOutcome,
+)
 from .llm import ContextOverflow, ModelResponse, ModelWindow, ScriptedLLMClient
 from .loop import DEFAULT_SYSTEM_PROMPT, InterruptSignal, Loop, LoopError, RunOutcome
 from .model import Model, ModelTurn
@@ -48,10 +55,12 @@ __all__ = [
     "CompactionRecord",
     "Compactor",
     "ContextOverflow",
+    "CounterSink",
     "DerivedState",
     "Effect",
     "Event",
     "EventKind",
+    "InterruptRequest",
     "InterruptSignal",
     "Loop",
     "LoopError",
@@ -64,12 +73,15 @@ __all__ = [
     "PriceTable",
     "ProbeOutcome",
     "ProbeResult",
+    "RunContext",
     "RunOutcome",
     "RunStatus",
     "ScriptedLLMClient",
     "Source",
     "Tool",
     "ToolCallRequest",
+    "ToolExecutor",
+    "ToolOutcome",
     "ToolRegistry",
     "TreeEventType",
     "Usage",

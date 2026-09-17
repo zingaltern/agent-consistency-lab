@@ -18,6 +18,8 @@
    **崩溃注入必须真 SIGKILL 子进程**，不得 mock 或"模拟抛异常"。
 4. **文档里的每个数字都要有可再生命令**；改代码导致数字变化 → 同步更新所有引用处
    （README / HANDOFF / docs/ / reports/）。历史 P2 里 7/8 都是这条没做到。
+   **W9 起这条由门禁强制**：数字登记在 `reports/documented-facts.json`（claim），
+   `scripts/check_facts.py` 逐条重跑比对；新增或修改数字时必须同时登记/更新 claim。
 5. **每个缺陷修复附回归用例**（写明"修复前会怎样"）；**每条新门禁须做退化注入验证**
    （把机制改坏 → CI 必须变红）。
 6. **禁止自证**：不得用 ground truth 喂被判定的机制；跨系统比较的随机种子不得含 system 名
@@ -39,6 +41,7 @@ git switch -c feat/<slug>
 # 语义相关改动还要跑：
 .venv/bin/python -m experiments.crash_matrix --repeats 5
 .venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate
+.venv/bin/python scripts/check_facts.py --run verify    # 文档里的数字有变就必须跑（CI job facts）
 git add -A && git commit
 # 合并（二选一，取决于 main 是否已开启 branch protection，见 docs/development.md §2.2/§2.4）：
 git push -u origin <branch>                                     # ← 受保护：推分支后在 GitHub 开 PR 合并

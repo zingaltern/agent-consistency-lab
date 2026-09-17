@@ -93,6 +93,9 @@ git push -u origin <branch>        # 推分支
 | 6 | 文档数字与 `reports/*.json` 一致 | 见 §4 |
 | 7 | 新增/修改的机制附回归用例 | 见 [`testing.md`](testing.md) §3 |
 
+* W9 起还多了两条**不属于合并门槛、但会红的**作业（都跑在 nightly，失败同样要处理）：
+  `mutation`（变异门禁：新增幸存变异 = 测试盲区扩大）与 `chaos-fuzz`（随机时刻注入 +
+  三档谱系探测器）。本地复现命令见 [`testing.md`](testing.md) §2。
 * 门槛 6 的执行者是 **CI job `facts`**：`.venv/bin/python scripts/check_facts.py --run verify`
   逐条重跑 `reports/documented-facts.json` 里的轻 claim 并比对 JSON 路径；
   整量类（`crash_matrix --repeats 5`、1536 次评测、阈值扫描）在
@@ -127,6 +130,9 @@ Settings → Branches → **Add branch protection rule**：
 
 * **风格即法规**：`ruff` 配置（line-length 100、target py311、select E/F/I/UP/B/SIM/RUF）
   是唯一风格标准，不要再引入第二套。
+* **模型接入的边界**（W9）：三种模型模式（`scripted`/`record`/`replay`）走同一条 loop，
+  **不得**为某一种模式改承诺层代码；录制物默认写 `/tmp`，key 只从环境变量读，
+  绝不写进仓库文件、报告或事件 payload。
 * **确定性**：任何涉及随机的地方必须显式播种；评测的种子遵循 **CRN 规则**——
   `f"{profile.seed}:{scenario.id}:{repeat}"`，**不含 system 名**（含了会产生哈希伪影，
   审计实测 p=0.0009）。崩溃注入的子进程固定 `PYTHONHASHSEED=0`。

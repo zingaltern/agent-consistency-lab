@@ -1379,7 +1379,7 @@
     },
     {
       "id": "mutation-survivors",
-      "value": 628,
+      "value": 625,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1400,7 +1400,7 @@
     },
     {
       "id": "mutation-survivor-rate",
-      "value": 0.3857,
+      "value": 0.3774,
       "tolerance": 0.0001,
       "run": "verify",
       "source_cmd": [

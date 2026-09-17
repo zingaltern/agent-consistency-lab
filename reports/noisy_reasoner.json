@@ -37,7 +37,7 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007055,
-      "avg_wall_ms": 14.24,
+      "avg_wall_ms": 15.14,
       "rates": {
         "correct": 0.6666666666666666,
         "resolved": 0.6666666666666666,
@@ -62,7 +62,7 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007056,
-      "avg_wall_ms": 14.15,
+      "avg_wall_ms": 15.02,
       "rates": {
         "correct": 0.4583333333333333,
         "resolved": 0.4583333333333333,
@@ -87,7 +87,7 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007268,
-      "avg_wall_ms": 2.39,
+      "avg_wall_ms": 2.63,
       "rates": {
         "correct": 0.6666666666666666,
         "resolved": 0.6666666666666666,
@@ -112,7 +112,7 @@
       "avg_steps": 3.38,
       "avg_input_tokens": 2122.8,
       "avg_cost_usd": 0.007268,
-      "avg_wall_ms": 2.31,
+      "avg_wall_ms": 2.47,
       "rates": {
         "correct": 0.4583333333333333,
         "resolved": 0.4583333333333333,
@@ -137,7 +137,7 @@
       "avg_steps": 5.0,
       "avg_input_tokens": 1315.0,
       "avg_cost_usd": 0.005745,
-      "avg_wall_ms": 0.56,
+      "avg_wall_ms": 0.55,
       "rates": {
         "correct": 0.6666666666666666,
         "resolved": 0.6666666666666666,
@@ -162,7 +162,7 @@
       "avg_steps": 5.0,
       "avg_input_tokens": 1315.0,
       "avg_cost_usd": 0.005745,
-      "avg_wall_ms": 0.55,
+      "avg_wall_ms": 0.56,
       "rates": {
         "correct": 0.4583333333333333,
         "resolved": 0.4583333333333333,

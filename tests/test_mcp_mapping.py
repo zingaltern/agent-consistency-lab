@@ -225,6 +225,30 @@ def test_approve_without_pending_call_is_readable(env) -> None:
     assert handles_readably(payload)
 
 
+def test_pending_order_follows_the_log_not_the_generated_ids(env, monkeypatch) -> None:
+    """回归：待审批队列的顺序必须按"谁先来"（日志先后），**不能**按 tool_call_id。
+
+    修复前 ``pending_approvals`` 用 ``sorted(state.open_tool_calls)`` 排序，而
+    ``tool_call_id`` 由 ``new_id`` 生成、每次运行都不同 —— 队列顺序随运行而变。
+    CI 上实测过：同一条用例在开发机与 runner 上得到相反顺序（``[True, False]`` vs
+    ``[False, True]``），也就是"当前这条排第一"这条断言本身在不稳定地抛硬币。
+
+    本用例把 id 固定成**后到的那条字典序更小**（``tc_zzz_first`` / ``tc_aaa_second``），
+    于是"按 id 排序"必然得到相反顺序 —— 修复前这条用例必红，修复后按日志先后必绿。
+    """
+    ids = iter(["tc_zzz_first", "tc_aaa_second"])
+    monkeypatch.setattr(mcp_server, "new_id", lambda _prefix: next(ids))
+
+    first = handle_tools_call(env, "scale_pool", {"service": "payment", "size": 64})
+    second = handle_tools_call(env, "scale_pool", {"service": "search", "size": 8})
+    assert first["tool_call_id"] == "tc_zzz_first"
+    assert second["queued_tool_call_id"] == "tc_aaa_second"
+
+    pending = handle_tools_call(env, LIST_TOOL, {})["pending"]
+    assert [item["tool_call_id"] for item in pending] == ["tc_zzz_first", "tc_aaa_second"]
+    assert [item["is_current"] for item in pending] == [True, False]
+
+
 def handles_readably(payload: dict) -> bool:
     return isinstance(payload.get("message"), str) and bool(payload["message"])
 

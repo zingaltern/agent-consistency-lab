@@ -185,43 +185,46 @@ class ToolExecutor:
     def tool_request_from_log(self, ctx: RunContext, tool_call_id: str) -> ToolCallRequest | None:
         return self._tool_request_from_log(ctx, tool_call_id)
 
-    def pending_approvals(self, ctx: RunContext) -> list[dict[str, Any]]:
-        """日志里有、但还没闭合的**需审批**调用（按调用在日志里的先后排序）。
+    def open_calls_in_log_order(self, ctx: RunContext, state: DerivedState) -> list[str]:
+        """未闭合的调用 id，按**它们在日志里出现的先后**排序（不按 ``tool_call_id``）。
 
-        返回的是描述不是权威：权威仍是 interrupt / tool_result 事件本身。
-        同时暴露"哪一条正卡在审批门"（``is_current``），因为 INV-004 保证同一时刻
-        至多一条 interrupt——其余调用是**排在前一条之后**等待，不是被丢弃。
+        为什么不能用 ``sorted(state.open_tool_calls)``：``tool_call_id`` 由 ``new_id``
+        生成——3.14 上是 ``uuid7``（时间有序），3.11/3.12 上没有 uuid7、回退成 ``uuid4``
+        （随机）。于是"按 id 排序"在开发机与 CI runner 上给出**不同的顺序**，并且同一台
+        机器每次运行也可能不同。两处调用点都因此出过问题（MCP 的待审批队列顺序、
+        恢复段先驱动哪一条），根因是同一个。
 
-        为什么不用 ``sorted(tool_call_id)``：``tool_call_id`` 由 ``new_id`` 生成、
-        每次运行都不同，按它排序会让**队列顺序随运行而变**（CI 上实测过：同一条用例在
-        开发机与 runner 上得到相反顺序）。顺序应当表达"谁先来"，那是日志的权威信息：
-        先来的那条正在审批门等，后来的排在它后面。
+        顺序的权威来源是日志：先来的那条正在审批门等，后来的排在它后面。
+        日志里找不到 id 的开放调用（理论上不该出现）按 id 追加到末尾——
+        "不丢项"优先于"顺序好看"。
         """
-        events = self.log(ctx)
-        state, _ = reduce_events(events)
-        current = (
-            self._interrupt_request(ctx, state.pending_interrupt_id)
-            if state.pending_interrupt_id is not None
-            else None
-        )
-        # 按调用事件在日志里的先后收集 id（去重保序）
         ordered: list[str] = []
         seen: set[str] = set()
-        for event in events:
+        for event in self.log(ctx):
             if event.type != TreeEventType.TOOL_CALL.value:
                 continue
             call_id = str(event.payload.get("tool_call_id") or "")
             if call_id and call_id not in seen:
                 seen.add(call_id)
                 ordered.append(call_id)
-        # 兜底：未在日志里找到 id 的开放调用（理论上不该出现）按 id 追加到末尾，
-        # 保证"不丢项"优先于"顺序好看"
         ordered.extend(sorted(set(state.open_tool_calls) - seen))
+        return [call_id for call_id in ordered if call_id in state.open_tool_calls]
 
+    def pending_approvals(self, ctx: RunContext) -> list[dict[str, Any]]:
+        """日志里有、但还没闭合的**需审批**调用（按调用在日志里的先后排序）。
+
+        返回的是描述不是权威：权威仍是 interrupt / tool_result 事件本身。
+        同时暴露"哪一条正卡在审批门"（``is_current``），因为 INV-004 保证同一时刻
+        至多一条 interrupt——其余调用是**排在前一条之后**等待，不是被丢弃。
+        """
+        state = self.derived_state(ctx)
+        current = (
+            self._interrupt_request(ctx, state.pending_interrupt_id)
+            if state.pending_interrupt_id is not None
+            else None
+        )
         out: list[dict[str, Any]] = []
-        for call_id in ordered:
-            if call_id not in state.open_tool_calls:
-                continue
+        for call_id in self.open_calls_in_log_order(ctx, state):
             request = self._tool_request_from_log(ctx, call_id)
             if request is None:
                 continue
@@ -428,15 +431,21 @@ class ToolExecutor:
         return ToolOutcome(request.tool_call_id, "executed", result, None, replayed=False)
 
     def resume_open_calls(self, ctx: RunContext, counters: CounterSink) -> ResumeReport:
-        """恢复段：把日志里**未闭合**的调用按 tool_call_id 排序重新驱动一次。
+        """恢复段：把日志里**未闭合**的调用按**日志先后**重新驱动一次。
 
         这是 ``Loop.resume`` 与"外部驱动方重启后续跑"共用的那段。
         是否需要先探针对账由管线第 3 步决定；本方法不做任何自己的判断。
         未获批的调用会被审批门拦下，此时**已经执行的那几条仍然随报告返回**。
+
+        顺序为什么重要：撞上未获批的调用会抛 ``InterruptSignal`` 并**提前返回**。
+        若顺序把"排队那条"排在前面（按随机 ``tool_call_id`` 排序时会发生，见
+        :meth:`open_calls_in_log_order`），刚被批准、本该本轮执行的那条就轮不到——
+        MCP 侧实测过：批准第一条后回执里的 ``executed`` 是空的（3.11/3.12 runner）。
+        按日志先后驱动则"先来的先执行，后面的仍停在门里"，与审批语义一致。
         """
         state = self.derived_state(ctx)
         outcomes: list[ToolOutcome] = []
-        for call_id in sorted(state.open_tool_calls):
+        for call_id in self.open_calls_in_log_order(ctx, state):
             request = self._tool_request_from_log(ctx, call_id)
             if request is None:
                 continue

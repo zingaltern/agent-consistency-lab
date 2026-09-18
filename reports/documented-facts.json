@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 407,
+      "value": 425,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1440,7 +1440,7 @@
     },
     {
       "id": "mutation-survivors",
-      "value": 180,
+      "value": 700,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1451,24 +1451,22 @@
         "{out}"
       ],
       "source_path": [
-        "survivors"
+        "survivor_count"
       ],
       "what": "变异测试基线：语义核心模块（4 个）的幸存变异数（= 当前测试盲区，防倒退用；基线是回归守卫，不是覆盖率分数）",
       "docs": [
-        "README.md#**W9**",
-        "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
-        "docs/design/2026-09-17-review-response.md#2. P0（不修不能合）",
-        "docs/independent-test-2026-09-17/report.md#3. 缺陷列表",
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
         "docs/testing.md#3. 改动 → 测试义务（硬性）",
         "reports/mutation_baseline.json"
       ],
       "doc_literals": [
-        "README.md#1110 个变异体 / 912 killed / 180 survived"
+        "README.md#2049 个变异体 / 1331 killed / 700 survived"
       ]
     },
     {
       "id": "mutation-survivor-rate",
-      "value": 0.1648,
+      "value": 0.3447,
       "tolerance": 0.0001,
       "run": "verify",
       "source_cmd": [
@@ -1481,11 +1479,10 @@
       "source_path": [
         "survivor_rate"
       ],
-      "what": "幸存率（分母只含被判定的变异体；no tests 是另一类盲区，不混入分母）",
+      "what": "幸存率（分母只含被判定的变异体；`no tests` 与无结论类是另一类盲区，不混入分母。**不是覆盖率**）",
       "docs": [
-        "README.md#**W9**",
-        "docs/HANDOFF.md#八、W9：设计文档 A+B 的交付（本轮）",
-        "docs/design/2026-09-17-review-response.md#2. P0（不修不能合）",
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
         "docs/testing.md#3. 改动 → 测试义务（硬性）",
         "reports/mutation_baseline.json"
       ]
@@ -2192,6 +2189,147 @@
       "what": "可观测导出落地用例数（恰好一次 POST / 推导标记只落在模型 span / trace 里没有账本 / 接收器正对照）",
       "docs": [
         "integrations/observability.md#6. 这一层怎么被守住"
+      ]
+    },
+    {
+      "id": "mutation-total",
+      "value": 2049,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "counts",
+        "total"
+      ],
+      "what": "变异测试基线：本轮**实际产出**的变异体总数（四个模块，pyproject [tool.mutmut].only_mutate）",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "mutation-killed",
+      "value": 1331,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "counts",
+        "killed"
+      ],
+      "what": "变异测试基线：被判死的变异体数（判定类的一半）",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "mutation-no-tests",
+      "value": 18,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "no_tests_count"
+      ],
+      "what": "未覆盖类：`no tests` 变异体数（连覆盖都没有，另一类盲区；新增即判失败）",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "mutation-inconclusive",
+      "value": 0,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "inconclusive_count"
+      ],
+      "what": "无结论类变异体数（`segfault`/`timeout`/`suspicious`/`skipped`/`not checked`/`caught by type check`/`check was interrupted by user`）。2026-09-18 之前是 906 条 `segfault` + 6 条 `timeout` = 912 条，全部不计入门禁任何计数；根因（macOS fork 子进程碰系统代理解析 → SIGSEGV）修掉后归零",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "mutation-invisible-share",
+      "value": 0.0088,
+      "tolerance": 0.0001,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "invisible_share"
+      ],
+      "what": "不可见空间占比 =（无结论类 + 未覆盖类）/ 总数。门禁每次运行都打印它，防止 `survivor_rate` 被读成覆盖率",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "mutation-segfault",
+      "value": 0,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/mutation_check.py",
+        "--summary-only",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "status_counts",
+        "segfault"
+      ],
+      "what": "`segfault` 判决的变异体数（修好之后为 0；修复前 906，见 docs/design/2026-09-18-mutation-segfault-investigation.md §1）",
+      "docs": [
+        "README.md#**变异测试常设化**",
+        "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
+        "docs/testing.md#3. 改动 → 测试义务（硬性）",
+        "reports/mutation_baseline.json"
       ]
     }
   ]

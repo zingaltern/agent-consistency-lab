@@ -249,6 +249,27 @@ def test_pending_order_follows_the_log_not_the_generated_ids(env, monkeypatch) -
     assert [item["is_current"] for item in pending] == [True, False]
 
 
+def test_resume_drives_the_approved_call_before_the_queued_one(env, monkeypatch) -> None:
+    """批准第一条之后，**本轮就要执行它**——不能因为先撞上排队那条的审批门而空转。
+
+    修复前 ``resume_open_calls`` 用 ``sorted(state.open_tool_calls)``：``tool_call_id``
+    在 3.14 上是 uuid7（时间有序）、在 3.11/3.12 上回退成 uuid4（随机）。顺序一旦把
+    排队那条排在前面，函数会在它身上抛 ``InterruptSignal`` 并**提前返回**，于是本条
+    回执的 ``executed`` 为空 —— CI 的 3.11/3.12 runner 上实际发生过。
+
+    本用例把 id 固定成"后到的那条字典序更小"，于是在任何解释器上都必红 → 修复后必绿。
+    """
+    ids = iter(["tc_zzz_first", "tc_aaa_second"])
+    monkeypatch.setattr(mcp_server, "new_id", lambda _prefix: next(ids))
+
+    first = handle_tools_call(env, "scale_pool", {"service": "payment", "size": 64})
+    handle_tools_call(env, "scale_pool", {"service": "search", "size": 8})
+
+    payload = handle_tools_call(env, APPROVE_TOOL, {"tool_call_id": first["tool_call_id"]})
+    assert [item["status"] for item in payload["executed"]] == ["executed"]
+    assert env.world.total_effects() == 1
+
+
 def handles_readably(payload: dict) -> bool:
     return isinstance(payload.get("message"), str) and bool(payload["message"])
 

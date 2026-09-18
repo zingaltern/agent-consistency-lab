@@ -4,12 +4,17 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W9（设计文档 A+B 交付 + 评审修复）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
+更新时间：W10（设计文档 C 的外围集成 + 变异门禁判据修复）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
 
 > **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
 > `reports/documented-facts.json`（claim 清单，条数以 `check_facts.py --list` 为准），
 > 由 `scripts/check_facts.py` 逐条重跑比对
 > （CI job `facts` 跑轻集、`nightly.yml` 跑整量集）。改代码导致数字变化时，先跑这条命令。
+
+> **W10 先读这一段**：本轮做了两件事——(1) 外围集成（MCP 工具服务 + 可观测接收器，见 §九）；
+> (2) **变异门禁的判据修复**（两条 P0 由独立验证证伪：缺项被当好消息、对新增未覆盖代码不敏感）。
+> 动变异门禁、动 `integrations/`、或要引用"变异存活率"之前，先读 **§九的"已知盲区"**——
+> `survivor_rate` 不是覆盖率，且单条变异体的判决不承诺稳定。
 
 ---
 
@@ -34,7 +39,7 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 | 测试 | 用例数见 claim `tests-collected`（`scripts/count_tests.py` 再生；默认集已过滤 `live` marker 的用例，CI 用 `pytest -m live` 单跑其中的反例）；`tests/test_audit_regressions.py` 是审计回归 |
 | 六条命令 | `pytest` / `crash_matrix --repeats 5` / `context_cost` / `opsenv.suite --gate` / `context_sweep --repeats 2` / `scripts/check_facts.py`（README「如何复现全部结论」一节） |
 | 报告 | `docs/semantics.md`（承诺清单）+ `docs/w2..w7-report.md` + `reports/*.md`（表格入库、明细走 `--runs-out` 不入库） |
-| 产出物 | `harness/`（内核 ~3.9k 行）、`opsenv/`（场景与评测 ~1.7k 行）、`fakeworld/`（受控世界）、`experiments/`、`tests/` |
+| 产出物 | `harness/`（内核 ~3.9k 行）、`opsenv/`（场景与评测 ~1.7k 行）、`fakeworld/`（受控世界）、`experiments/`、`tests/`、`integrations/`（**外围集成**：MCP 工具服务 / 崩溃演示 / 可观测接收器，见 §九；独立 extra、内核不依赖它） |
 
 ---
 
@@ -80,6 +85,13 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
    默认 dry-run，只由显式 CLI 调用）。
 5. W6 的 holdout 尚未被真正当考卷（无调参过程）；W7 的 holdout 每档 n=4，仅方向确认。
 6. agent 路线（harness/langgraph）的**取证充分性代理指标无方差**，不能当线上监控指标（κ 不适用）。
+7. **变异门禁的已知盲区**（W10 新增，完整记录见 §九）：不可见空间 18/2049 = **0.9%**；
+   **单条变异体的判决不承诺稳定**（实测 `_replay_outcome__mutmut_37` 随负载在 survived ↔ killed 翻转）；
+   `[tool.mutmut].only_mutate` 之外的代码不参与变异，门禁不红是**范围外**而不是漏检。
+   引用"变异存活率"前先读这三条。
+8. `integrations/` 的 MCP 服务是**本地单用户**形态：不承诺并发、多用户、远程访问、断线重连时序，
+   也不承诺任何性能数字（`docs/integrations.md` §6）。租约**没有**接进 MCP 写路径——
+   与 `semantics.md` §3 一致，后果由外部账本裁决。
 
 ---
 
@@ -192,3 +204,55 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
 * P2 的 26 条里，与正确性/安全性相关的已一并修掉（写入侧链保护、oracle 三处统一、
   账本缺席判定、unknown 上界、崩溃探测器的信号与进程回收、成本回放口径、快照纪律去重…），
   逐条状态见修复分支的提交信息与测试。
+
+---
+
+## 九、W10：外围集成（设计文档 C）+ 变异门禁判据修复（2026-09-18）
+
+### 交付了什么
+
+| 交付 | 落点 | 一句话 |
+|---|---|---|
+| MCP 工具服务 | `integrations/mcp_server.py` | stdio、一进程一 run、`tools/call` 走 `harness/execution.py::ToolExecutor` 的**七步管线**；写操作停在审批门，`approve` 支持 reject 与改参（沿用既有 `__edit1` 语义）；**不依赖 elicitation** |
+| 崩溃演示 | `integrations/mcp_crash_demo.py` | 真 SIGKILL 服务进程 → 重启 → 同一 run 续跑 → 外部账本恰好 1 次；**含对照组**（只关 outbox 就是 2 次） |
+| 可观测 | `integrations/observability.md` + `otlp_local_sink` | 路径①本机接收器**已实测**；Jaeger / 任意 OTLP 后端**本机未实测**（无 Docker / 无凭据），如实标注 |
+| 管线抽取 | `harness/execution.py::ToolExecutor` | loop 与 MCP 共用同一实现；"两处调用点行为一致"有差分 / 委托 spy / 结构扫描三条证明 |
+| 变异门禁重写 | `scripts/mutation_check.py` + 基线 v2 | 六条红灯条件（新增幸存 / **判定→无结论** / **条目缺失** / **新增 no tests** / 结果集为空 / 不可见空间增长），**全状态记账** |
+
+**文件与依赖边界**：`integrations/` 独立目录 + `[mcp]` extra（**不进 `dev`**）+ `mcp` marker（默认过滤）；
+内核依赖仍只有 `pydantic`；依赖方向单向，由 AST 扫描用例守着（内核目录不得 import `integrations`）。
+
+### 两轮独立验证（PR #13 与 #17）
+
+* **语义与功能面未被证伪**：包括"MCP 服务进程 vs 进程内 `Loop` 的事件序列逐位相同"这条独立对拍。
+* **变异门禁被证伪两条 P0**（"缺项被当好消息"、"对新增未覆盖代码不敏感"）→ 判据已重写、
+  基线换 v2（逐变异体状态 + 不可见空间占比），并用**实跑**的退化注入验证"改坏必红"。
+* `segfault` 误判的根因（45% 变异体没有判决）已定位并修掉：macOS 上
+  `urllib.request.getproxies()` 会读 SystemConfiguration，**父进程热过之后 fork 出的子进程再调会 SIGSEGV**；
+  mutmut 用 fork 隔离 ⇒ 判决记成 `segfault` 且不计入任何计数 ⇒ 真幸存变异从视野里消失。
+  修法在 `tests/conftest.py`（`no_proxy=*` 让 `getproxies()` 在环境变量层短路）；
+  崩溃机理与最小复现见 `docs/design/2026-09-18-mutation-segfault-investigation.md`。
+* 逐条处置见 `docs/design/2026-09-18-review-response-integrations.md`。
+
+### 已知盲区（**改门禁或引用存活率之前必读**）
+
+1. **不可见空间 = 18/2049 = 0.9%**（修复前 45.1%）。`survivor_rate` = 0.3447，
+   **不是覆盖率**——每次运行都会把这行打出来。
+2. 那 700 条幸存变异里，相当一部分由**子进程驱动**的验证（崩溃矩阵 / 四系统评测）在外面兜着，
+   mutmut 看不见；基线 `note` 写了这一点。
+3. **单条变异体的判决不承诺稳定**：实测 `_replay_outcome__mutmut_37` 随机器负载在
+   survived ↔ killed 之间翻转。门禁对"判决集合的变化"敏感，但对**单条的抖动**没有免疫力——
+   夜里误报红灯的可能性存在。
+4. `[tool.mutmut].only_mutate` 之外的代码不参与变异：注入到未变异模块的代码不会让门禁变红，
+   那是**范围外**，不是漏检。
+5. `mutmut print-time-estimates` 输出里的 `<no tests>` 是**耗时估计占位**、不是状态标签。
+6. **判据的强度只到"已覆盖代码的盲区倒退"**：`no tests` 只在**新增**时红灯；
+   基线里既有的 18 条 `no tests` 是已知的未覆盖面，不是门禁的承诺面。
+
+### 本轮之后仍需注意的
+
+* `integrations/` 的 MCP 服务是**本地单用户**形态；不承诺并发/多用户/远程/断线重连时序，
+  也不承诺性能数字（`docs/integrations.md` §6）。租约**没有**接进 MCP 写路径。
+* nightly 的 mutation 作业预算已从 25 分钟放宽到 **45 分钟**（`--timeout 2400`）：
+  修掉误判后原先"一进去就崩"的那部分变异体会真的跑完，**本机空闲冷跑实测 631.5 秒**。
+  这是预算调整，不是判据放宽（超时仍判失败）。

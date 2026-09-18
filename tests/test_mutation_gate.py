@@ -69,7 +69,7 @@ def _run_gate(
     module = _load_script()
     calls: dict[str, Any] = {}
     monkeypatch.setattr(module, "run_mutmut", lambda **kwargs: calls.update(kwargs))
-    monkeypatch.setattr(module, "collect_status", lambda: _buckets(current))
+    monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets(current))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
     baseline_path = tmp_path / "baseline.json"
     payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
@@ -239,7 +239,7 @@ def test_empty_result_set_is_a_failure_not_a_pass(tmp_path: Path, monkeypatch) -
     """
     module = _load_script()
     monkeypatch.setattr(module, "run_mutmut", lambda **_: None)
-    monkeypatch.setattr(module, "collect_status", lambda: {})
+    monkeypatch.setattr(module, "collect_status", lambda **_kwargs: {})
     baseline = tmp_path / "baseline.json"
     baseline.write_text(
         json.dumps({"survivors": ["harness.loop.x__mutmut_1"], "counts": {"survived": 1}}),
@@ -451,11 +451,53 @@ def test_summary_only_reports_survivors_as_a_list(
     assert json.loads(capsys.readouterr().out.splitlines()[0])["survivor_count"] == 2
 
 
-def test_script_reports_timeout_as_failure() -> None:
-    """超时必须判失败：跑不完 ≠ 没有回归（docs/testing.md §2 的退出码纪律）。"""
-    source = SCRIPT.read_text(encoding="utf-8")
-    assert "这是**失败**而不是跳过" in source
-    assert "TimeoutExpired" in source
+def test_timeout_fails_and_still_writes_the_artifact(monkeypatch, tmp_path: Path) -> None:
+    """超时必须判失败，**而且**留下产物：跑不完 ≠ 没有回归。
+
+    为什么"产物"这一半同等重要：nightly 上传的就是 `--json-out` 指向的文件，
+    而"跑不起来"恰恰是最需要产物的那条路径——修复前它走裸 `SystemExit`，
+    退出码虽然是对的，但文件根本不存在，夜里出问题只留一行 stderr、artifact 是空的
+    （独立验证报告 P1-1）。
+
+    本用例是**行为断言**，替代先前那条只读源码字符串的版本：那种断言在重构后会假绿
+    （把实现搬走、字符串还在，它就继续通过）。
+    """
+    module = _load_script()
+    json_out = tmp_path / "mutation.json"
+
+    def _timeout(*_args: Any, **_kwargs: Any) -> Any:
+        raise module.subprocess.TimeoutExpired(cmd="mutmut run", timeout=1.0, output="partial")
+
+    monkeypatch.setattr(module.subprocess, "run", _timeout)
+    with pytest.raises(SystemExit) as excinfo:
+        module.run_mutmut(module=None, timeout=1.0, max_children=1, json_out=str(json_out))
+
+    assert "超时失败" in str(excinfo.value), "超时必须判失败，不能静默跳过"
+    payload = json.loads(json_out.read_text(encoding="utf-8"))
+    assert payload["verdict"] == "aborted"
+    assert payload["reason"] == "timeout"
+    assert "超时失败" in payload["message"]
+
+
+def test_unreadable_results_fail_and_still_write_the_artifact(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """读结果失败同样：判失败 + 留产物（`reason` 给机器读，`message` 给人读）。"""
+    import types
+
+    module = _load_script()
+    json_out = tmp_path / "mutation.json"
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=1, stdout="", stderr="cannot read"),
+    )
+    with pytest.raises(SystemExit):
+        module.collect_status(json_out=str(json_out))
+
+    payload = json.loads(json_out.read_text(encoding="utf-8"))
+    assert payload["verdict"] == "aborted"
+    assert payload["reason"] == "results_unreadable"
 
 
 def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:

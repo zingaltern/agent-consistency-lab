@@ -74,6 +74,13 @@ scripts/mutation_check.py --update-baseline            1110 个变异体 / 912 k
 > ⇒ 用例数一律以 claim `tests-collected`（`scripts/count_tests.py` 的 `--collect-only` 计数，
 > 与环境中的 extra 无关）为准，不在正文手写"passed"数。
 
+> **快照范围（2026-09-18 补记，来源：门禁再验证报告）**：上面这个代码块的数字全部是
+> **M3 分支（`1d4b3f3`）的快照**，不是"当前 main"。后续修复轮（PR #14–#16）之后 tip 上是
+> `428 passed / 427+1 skipped（缺 otel）/ pytest -m mcp 15 / check_facts 44-44`，
+> 变异基线也从 v1 换成 v2（1331 killed / 700 survived / 率 0.3447）。
+> 本文件作为交付当时的记录**不回改数字**，只在此标明读法：要引用"现在是多少"，
+> 请以 claim 与 `reports/*.json` 为准。
+
 ---
 
 ## 边界自检

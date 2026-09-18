@@ -71,7 +71,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
@@ -128,7 +128,9 @@ def _mutmut_argv(module: str | None) -> list[str]:
     return argv
 
 
-def run_mutmut(*, module: str | None, timeout: float, max_children: int) -> None:
+def run_mutmut(
+    *, module: str | None, timeout: float, max_children: int, json_out: str = ""
+) -> None:
     argv = _mutmut_argv(module)
     print(f"[mutation] 运行: {' '.join(argv)} --max-children {max_children}（上限 {timeout:.0f}s）")
     started = time.perf_counter()
@@ -141,26 +143,30 @@ def run_mutmut(*, module: str | None, timeout: float, max_children: int) -> None
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SystemExit(
+        _abort(
+            "timeout",
             f"[mutation] 超时失败：{timeout:.0f} 秒内没跑完（module={module or '全部'}）。\n"
             "  这是**失败**而不是跳过：跑不完就无法判定「有没有新增盲区」。\n"
             "  处置：缩小 --module 范围、提高 runner 并行度，或在 PR 里记录本次跳过及原因。\n"
             "  已产生的输出尾部："
-            f"{(exc.stdout or '')[-200:] if isinstance(exc.stdout, str) else ''}"
-        ) from exc
+            f"{(exc.stdout or '')[-200:] if isinstance(exc.stdout, str) else ''}",
+            json_out=json_out,
+        )
     print(f"[mutation] 用时 {time.perf_counter() - started:.1f}s")
     if proc.returncode != 0:
         # `mutmut run` 非 0 = 本轮没跑成功（配置没生效、collect error、被 OOM 杀…）。
         # 绝不能继续判定：mutmut 的结果读的是 `mutants/` 缓存，失败时残留的旧结果
         # 会被当成"这一轮的结果"（评审 P0-1）。
-        raise SystemExit(
+        _abort(
+            "mutmut_run_failed",
             f"[mutation] `mutmut run` 退出码 {proc.returncode}：本轮没有跑成功，判定作废。\n"
             f"  stdout 尾部：{proc.stdout.strip()[-300:]}\n"
-            f"  stderr 尾部：{proc.stderr.strip()[-300:]}"
+            f"  stderr 尾部：{proc.stderr.strip()[-300:]}",
+            json_out=json_out,
         )
 
 
-def collect_status() -> dict[str, list[str]]:
+def collect_status(*, json_out: str = "") -> dict[str, list[str]]:
     """读 mutmut 的结果表：``{status: [mutant 名]}``。**全状态**，不做任何过滤。"""
     proc = subprocess.run(
         # mutmut 3.x 的 --all 是**带值**选项（default=False 且没有 is_flag），
@@ -174,7 +180,11 @@ def collect_status() -> dict[str, list[str]]:
         timeout=300,
     )
     if proc.returncode != 0:
-        raise SystemExit(f"[mutation] 读结果失败：{proc.stderr[-400:]}")
+        _abort(
+            "results_unreadable",
+            f"[mutation] 读结果失败：{proc.stderr[-400:]}",
+            json_out=json_out,
+        )
     buckets: dict[str, list[str]] = {}
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -384,6 +394,29 @@ def _write_json_out(path: str, payload: dict[str, Any]) -> None:
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _abort(reason: str, message: str, *, json_out: str) -> NoReturn:
+    """判定**作废**时的退出路径：先落产物，再退出。
+
+    为什么要有这个 helper：nightly 上传的就是 `--json-out` 指向的文件，而"跑不起来"
+    （超时 / `mutmut run` 非零退出 / 结果读不出）恰恰是最需要产物的那条路径——
+    先前这三条路都是裸 `SystemExit`，夜里出问题只留一行 stderr，artifact 是空的
+    （独立验证报告 P1-1）。
+
+    ``reason`` 是给机器读的稳定标识（timeout / mutmut_run_failed / results_unreadable），
+    ``message`` 是给人读的原文——两者都不做截断，产物里要能直接定位原因。
+    """
+    _write_json_out(
+        json_out,
+        {
+            "schema": "mutation-run/v2",
+            "verdict": "aborted",
+            "reason": reason,
+            "message": message,
+        },
+    )
+    raise SystemExit(message)
+
+
 def _summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """`--summary-only` / `--json-out` 的公开字段。
 
@@ -468,9 +501,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.module and module_filter != args.module:
         print(f"[mutation] `--module {args.module}` → 变异体名 glob `{module_filter}`")
     run_mutmut(
-        module=module_filter or None, timeout=args.timeout, max_children=args.max_children
+        module=module_filter or None,
+        timeout=args.timeout,
+        max_children=args.max_children,
+        json_out=args.json_out,
     )
-    buckets = collect_status()
+    buckets = collect_status(json_out=args.json_out)
     summary = mutation_summary(buckets)
     print(
         f"[mutation] killed={summary['killed']} survived={len(summary['survived'])} "

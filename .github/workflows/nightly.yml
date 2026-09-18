@@ -19,7 +19,13 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,eval]"
+          # 带上 [mcp]：本作业要跑 MCP 那一条（SDK 客户端驱动真实 stdio 服务）。
+          # 它**不进** dev extra：装 dev 不该把 MCP 全家桶一起拉进来。
+          pip install -e ".[dev,eval,mcp]"
+      - name: MCP tool service (official SDK client over stdio)
+        # 这一层只打在 `mcp` marker 上：默认 pytest 过滤掉，verify 作业不装 extra 也不跑。
+        # 缺 extra 时它们是 skip（用例内部 importorskip），不会把"没跑"伪装成"通过"。
+        run: pytest -q -m mcp
       - name: Documented facts (nightly class)
         # crash_matrix --repeats 5（70 次真实 SIGKILL）、1536 次整量评测、阈值扫描：
         # 这些是文档引用的整量数字，verify 里跑不起，但必须有人跑。

@@ -205,6 +205,18 @@ class ToolRegistry:
         return len(self._tools)
 
 
+# 未声明 ``parameters`` 的工具下发空参数表——**这一处是唯一定义**：
+# 下发给模型的 schema（``harness/live_transport.py``）与下发给 MCP 客户端的
+# ``inputSchema``（``integrations/mcp_server.py``）都取 ``tool_param_schema``，
+# 避免"两个地方各写一份回退形状"然后悄悄分叉。
+EMPTY_PARAM_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+
+
+def tool_param_schema(tool: Tool) -> dict[str, Any]:
+    """工具的参数 schema：声明了就用声明，没声明就回退空参数表。"""
+    return tool.parameters or EMPTY_PARAM_SCHEMA
+
+
 def idempotency_key(run_id: str, branch_id: str, tool_call_id: str) -> str:
     """确定性的幂等键 = hash(run_id, branch_id, tool_call_id)。
 

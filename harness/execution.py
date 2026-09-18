@@ -186,20 +186,42 @@ class ToolExecutor:
         return self._tool_request_from_log(ctx, tool_call_id)
 
     def pending_approvals(self, ctx: RunContext) -> list[dict[str, Any]]:
-        """日志里有、但还没闭合的**需审批**调用（按 tool_call_id 排序）。
+        """日志里有、但还没闭合的**需审批**调用（按调用在日志里的先后排序）。
 
         返回的是描述不是权威：权威仍是 interrupt / tool_result 事件本身。
         同时暴露"哪一条正卡在审批门"（``is_current``），因为 INV-004 保证同一时刻
         至多一条 interrupt——其余调用是**排在前一条之后**等待，不是被丢弃。
+
+        为什么不用 ``sorted(tool_call_id)``：``tool_call_id`` 由 ``new_id`` 生成、
+        每次运行都不同，按它排序会让**队列顺序随运行而变**（CI 上实测过：同一条用例在
+        开发机与 runner 上得到相反顺序）。顺序应当表达"谁先来"，那是日志的权威信息：
+        先来的那条正在审批门等，后来的排在它后面。
         """
-        state = self.derived_state(ctx)
+        events = self.log(ctx)
+        state, _ = reduce_events(events)
         current = (
             self._interrupt_request(ctx, state.pending_interrupt_id)
             if state.pending_interrupt_id is not None
             else None
         )
+        # 按调用事件在日志里的先后收集 id（去重保序）
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for event in events:
+            if event.type != TreeEventType.TOOL_CALL.value:
+                continue
+            call_id = str(event.payload.get("tool_call_id") or "")
+            if call_id and call_id not in seen:
+                seen.add(call_id)
+                ordered.append(call_id)
+        # 兜底：未在日志里找到 id 的开放调用（理论上不该出现）按 id 追加到末尾，
+        # 保证"不丢项"优先于"顺序好看"
+        ordered.extend(sorted(set(state.open_tool_calls) - seen))
+
         out: list[dict[str, Any]] = []
-        for call_id in sorted(state.open_tool_calls):
+        for call_id in ordered:
+            if call_id not in state.open_tool_calls:
+                continue
             request = self._tool_request_from_log(ctx, call_id)
             if request is None:
                 continue

@@ -82,6 +82,25 @@ pip install -e ".[mcp]"            # 只有这一条路径需要 SDK；内核依
     "run_status": "running" }
 ```
 
+**顶层 `isError` 不只看顶层 `status`**：当 `executed[]` 里含 `failed` / `unknown` / `rejected`
+时，协议层的顶层 `isError` 也置真，并在回执里加一句 `note`（"执行结果在 `executed[]` 内"）。
+理由是这两种失败分属两层，都会发生：
+
+```
+→ tools/call  scale_pool {"service": "payment", "size": 9999}
+← { "status": "pending_approval", … }
+→ tools/call  approve {"tool_call_id": "tc_…", "decision": "approve"}
+← { "status": "approved", "decision": "approved", "edited": false,
+    "executed": [ { "status": "rejected", "error_class": "arg_policy_violation", … } ],
+    "note": "顶层 status=approved 只表示「决定被接受、调用已闭合」；执行结果在 executed[] 内…",
+    "run_status": "running" }        ← isError = true（账本 0 行）
+```
+
+顶层 `status=approved` 说的是**决定**（批准被接受、调用闭合），`executed[]` 说的是**执行**。
+只看顶层字段的客户端会把"没执行"读成"写成功了"——所以 `isError` 必须两处都反映。
+反过来说：真的执行成功时顶层 `isError` 保持假（有正对照用例钉着），
+否则这个字段会变成恒真、失去信息量。
+
 三条要留意的语义（都是既有承诺在 MCP 形态下的样子，不是新规则）：
 
 * **同一时刻至多一条 interrupt**（INV-004）。第二次写调用会**排队**而不是被丢弃：
@@ -126,18 +145,25 @@ outbox 意图行决定——重启不会产生新语义，也不会盲目重跑�
    客户端可断可续，服务被强杀也不产生新语义。
 2. **服务端不做第二套参数校验。** 执行前唯一的闸门是管线里的 ArgPolicy 与工具自身；
    在下发 schema 与执行之间再插一个校验器，必然与管线分叉（同一个参数在两处得到不同判决）。
-   schema 是**下发给客户端的自述**，不是第二道闸。
-3. **不实现 elicitation。** 审批的默认形态就是唯一形态，因此"客户端不支持时自动退回"
+   schema 是**下发给客户端的自述**，不是第二道闸。⇒ **参数不合 schema 不构成失败语义**：
+   `query_metrics(service=12345)` 会被原样执行并成功（`isError=false`），
+   执行前唯一的裁决者是 ArgPolicy 与工具自身。下发 schema 与模型侧同源，读法以本节为准。
+3. **大结果在 MCP 形态下不卸载、原样内联返回。** 卸载（digest + artifact 引用）发生在
+   `harness/context.py` 的**视图渲染层**，而 MCP 服务不走渲染层：`fetch_logs(lines=200)`
+   的 23 243 字符结果就是 `structuredContent` 里的原始条目。工具 schema 的文案与
+   下发给真实模型的那份**同源**，所以那里仍写着"大结果会被卸载为 artifact"——
+   那句话描述的是模型侧视图，不是 MCP 回执。**读法以本文件为准。**
+4. **不实现 elicitation。** 审批的默认形态就是唯一形态，因此"客户端不支持时自动退回"
    是恒等路径——没有可退的东西。有测试断言服务端从不向客户端发 elicitation 请求。
-4. **不下发 `read_artifact`。** 它要求 artifact root 语义（卸载产物的目录归属），
-   本包不引入该语义。未注册的工具本就不下发。
-5. **一个进程一个 run。** 治理工具不带 `run_dir` 参数是有意的：带上等于让客户端指向别的 run，
+5. **不下发 `read_artifact`。** 它要求 artifact root 语义（卸载产物的目录归属），
+   本包不引入该语义。未注册的工具本就不下发（因此 MCP 形态下不存在"拿到一个读不回来的引用"）。
+6. **一个进程一个 run。** 治理工具不带 `run_dir` 参数是有意的：带上等于让客户端指向别的 run，
    而本包不做鉴权——那就成了越权面。
-6. **租约没有被接进写路径。** 与 `docs/semantics.md` §3 一致：今天双进程写同一 run
+7. **租约没有被接进写路径。** 与 `docs/semantics.md` §3 一致：今天双进程写同一 run
    仍不被任何检查拦住，后果由外部账本裁决。MCP 服务不改变这一点。
-7. **`spent_usd` 恒为 0 是事实，不是记账缺失。** MCP 侧没有模型调用 ⇒ 不产生
+8. **`spent_usd` 恒为 0 是事实，不是记账缺失。** MCP 侧没有模型调用 ⇒ 不产生
    `budget_update` 事件。本包不发明"按会话分摊"或"工具成本"字段。
-8. **不承诺**并发、多用户、远程访问、断线重连的时序，也不承诺任何性能数字。
+9. **不承诺**并发、多用户、远程访问、断线重连的时序，也不承诺任何性能数字。
 
 ## 7. 测试分层
 

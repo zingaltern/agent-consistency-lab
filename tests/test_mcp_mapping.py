@@ -335,6 +335,47 @@ def test_arg_policy_violation_after_approval_leaves_no_intent_row(env) -> None:
     assert payload["executed"][0]["error_class"] == "arg_policy_violation"
     assert env.world.total_effects() == 0
     assert env.store._conn.execute("SELECT COUNT(*) FROM tool_calls").fetchone()[0] == 0
+    # 顶层 status 保留（决定确实被接受、调用确实闭合了），但这条回执必须被客户端读成"没成功"。
+    assert payload["status"] == "approved"
+    assert mcp_server.call_is_error(payload) is True
+    assert "executed[]" in payload["note"]
+
+
+def test_call_is_error_reflects_inner_execution_failures(env) -> None:
+    """顶层 isError 必须反映 `executed[]` 里的失败（独立验证报告 P2-3）。
+
+    修复前会怎样：`is_error` 只看顶层 `status`，于是"批准了一个越出安全域的写"这条回执
+    顶层是 `isError=false`，只看这个字段的客户端会以为写成功了（实际账本 0 行）。
+    """
+    # 内层三种结论 → 顶层都算错误
+    for status in ("failed", "unknown", "rejected"):
+        assert mcp_server.call_is_error({"status": "approved", "executed": [{"status": status}]})
+    # 内层成功 / 没有内层 → 不是错误
+    assert not mcp_server.call_is_error(
+        {"status": "approved", "executed": [{"status": "executed"}]}
+    )
+    assert not mcp_server.call_is_error({"status": "approved", "executed": []})
+    # 顶层错误语义不变（未注册工具 / 工具异常 / 被拒）
+    for status in ("failed", "unknown", "rejected"):
+        assert mcp_server.call_is_error({"status": status})
+    # pending_approval 是正常中间态，不是错误
+    assert not mcp_server.call_is_error({"status": "pending_approval"})
+    # 只读工具成功：既没有顶层错误也没有内层失败
+    assert not mcp_server.call_is_error(
+        handle_tools_call(env, "query_metrics", {"service": "payment"})
+    )
+
+
+def test_successful_approval_has_no_failure_note(env) -> None:
+    """正对照：内层执行成功时**不**加提示、isError 保持假——否则提示本身会变成噪声。"""
+    gated = handle_tools_call(env, "scale_pool", WRITE_ARGS)
+    payload = handle_tools_call(
+        env, APPROVE_TOOL, {"tool_call_id": gated["tool_call_id"], "decision": "approve"}
+    )
+    assert [item["status"] for item in payload["executed"]] == ["executed"]
+    assert "note" not in payload
+    assert mcp_server.call_is_error(payload) is False
+    assert env.world.total_effects() == 1
 
 
 def test_tool_exception_on_a_read_tool_becomes_failed(env) -> None:

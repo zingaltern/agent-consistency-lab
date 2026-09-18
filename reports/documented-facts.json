@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 396,
+      "value": 401,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -2009,6 +2009,99 @@
       "what": "目录与依赖边界用例数（内核不 import 集成层、import harness 不拉 MCP、依赖清单与打包/门禁配置）",
       "docs": [
         "docs/integrations.md#6. 边界与口径（读之前请先读这一节）"
+      ]
+    },
+    {
+      "id": "mcp-crash-exactly-once",
+      "value": 1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.mcp_crash_demo",
+        "--work-root",
+        "/tmp/facts-mcp-crash",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        "with_outbox",
+        "max_per_key"
+      ],
+      "what": "MCP 服务被真 SIGKILL、重启续跑后，外部账本里同一幂等键的最大效果行数（outbox on + 探针 ⇒ 恰好一次；结论来自探针对账而不是重跑）",
+      "docs": [
+        "docs/integrations.md#5. 崩溃与恢复",
+        "docs/design/2026-09-18-integrations.md#R-C3｜崩溃与恢复演示（对应 G3）"
+      ]
+    },
+    {
+      "id": "mcp-crash-control-duplicate",
+      "value": 2,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.mcp_crash_demo",
+        "--work-root",
+        "/tmp/facts-mcp-crash",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "cells",
+        "without_outbox",
+        "max_per_key"
+      ],
+      "what": "对照组（只把 outbox 关掉、下游仍非幂等）同一幂等键的最大效果行数 = 2：证明「1 次」是机制在起作用，而不是什么都没发生",
+      "docs": [
+        "docs/integrations.md#5. 崩溃与恢复"
+      ]
+    },
+    {
+      "id": "mcp-crash-real-kills",
+      "value": 2,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.mcp_crash_demo",
+        "--work-root",
+        "/tmp/facts-mcp-crash",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "summary",
+        "sigkill_exit_codes"
+      ],
+      "what": "崩溃演示里以退出码 137（128+9，被 SIGKILL 杀死）确认的注入次数：两格各一次，都留有 crash_marker.json 的窗口/序号/pid",
+      "docs": [
+        "docs/integrations.md#5. 崩溃与恢复"
+      ]
+    },
+    {
+      "id": "mcp-crash-test-count",
+      "value": 5,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_mcp_crash_demo.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "M2 崩溃演示的验收用例数（真 SIGKILL + 崩溃位置证据 + 对照组 + 单变量对照 + 账本快照读）",
+      "docs": [
+        "docs/integrations.md#5. 崩溃与恢复"
       ]
     }
   ]

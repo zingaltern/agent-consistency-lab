@@ -94,8 +94,13 @@ git push -u origin <branch>        # 推分支
 | 7 | 新增/修改的机制附回归用例 | 见 [`testing.md`](testing.md) §3 |
 
 * W9 起还多了两条**不属于合并门槛、但会红的**作业（都跑在 nightly，失败同样要处理）：
-  `mutation`（变异门禁：新增幸存变异 = 测试盲区扩大）与 `chaos-fuzz`（随机时刻注入 +
-  三档谱系探测器）。本地复现命令见 [`testing.md`](testing.md) §2。
+  `mutation`（变异门禁：**盲区扩大**就红——新增幸存变异、基线里有判定的变异体本轮变成
+  无结论/未覆盖、基线变异体整条缺失、新增 `no tests`、无结论集合增长、
+  以及 mutmut 出现了未归类的新状态）与 `chaos-fuzz`（随机时刻注入 + 三档谱系探测器）。
+  本地复现命令见 [`testing.md`](testing.md) §2；判据与退化注入记录见
+  [`design/2026-09-18-mutation-segfault-investigation.md`](design/2026-09-18-mutation-segfault-investigation.md)。
+  门禁**每次运行都打印不可见空间**（无结论类 + 未覆盖类）的规模：
+  `survivor_rate` 不是覆盖率，不得当质量分引用。
 * 门槛 6 的执行者是 **CI job `facts`**：`.venv/bin/python scripts/check_facts.py --run verify`
   逐条重跑 `reports/documented-facts.json` 里的轻 claim 并比对 JSON 路径；
   整量类（`crash_matrix --repeats 5`、1536 次评测、阈值扫描）在

@@ -40,9 +40,13 @@ jobs:
   mutation:
     # 变异测试常设化（R-A5）：幸存的变异 = 测试盲区。与 tests/test_audit_regressions.py
     # （防已知 P0 复活）互补——审计回归防已知，变异测试探盲区。
-    # 语义：**新增**幸存变异 ⇒ 退出 1（盲区扩大）；基线见 reports/mutation_baseline.json。
+    # 语义：**盲区扩大**就退出 1（新增幸存变异 / 判定类退化 / 整条缺失 / 新增 no tests /
+    # 无结论集合增长 / 未归类状态）；基线见 reports/mutation_baseline.json。
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 预算上调（2026-09-18）：修掉 segfault 误判后，原先"一进去就崩"的那 45% 变异体
+    # 现在会真的跑完测试子集 —— 本地实测墙钟从 3~6 分钟涨到 **8 分 35 秒**（--max-children 4）。
+    # 这是**预算**调整，不是判据放宽：超时仍然判失败。
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,11 +56,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,eval]"
-      - name: Mutation gate (survivor regression)
-        # 超时预算写在命令行参数里（--timeout 1320 = 22 分钟）：超时不是"跳过"而是"失败"——
-        # 跑不完就无法判定有没有新增盲区。本地实测（8 并行）约 3~5 分钟，CI 用 4 并行并留余量。
-        # 注意：**变异体总数为 0 也会判失败**（跑不起来 ≠ 没有盲区，评审 P0-1）。
-        run: python scripts/mutation_check.py --timeout 1320 --max-children 4 --json-out /tmp/mutation.json
+      - name: Mutation gate (blind-spot regression)
+        # 超时预算写在命令行参数里（--timeout 2400 = 40 分钟）：超时不是"跳过"而是"失败"——
+        # 跑不完就无法判定有没有新增盲区。本地（4 并行）约 8.5 分钟，CI 更慢，故留约 4 倍余量。
+        # 注意：**变异体总数为 0、或一条都没被判定，都会判失败**（跑不起来 ≠ 没有盲区）。
+        run: python scripts/mutation_check.py --timeout 2400 --max-children 4 --json-out /tmp/mutation.json
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v4

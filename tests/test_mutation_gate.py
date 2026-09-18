@@ -1,16 +1,15 @@
-"""变异门禁的"门禁自检"：基线与统计口径本身也要被钉住。
+"""变异门禁的"门禁自检"：基线与判定逻辑本身也要被钉住。
 
-变异测试跑一次要几分钟（1642 个变异体 × 一遍测试集），不可能进默认测试集。所以这里
+变异测试跑一次要几分钟（2000+ 个变异体 × 一遍测试集），不可能进默认测试集。所以这里
 只测**判定逻辑与入库基线**这两件便宜但关键的事：
 
-1. `mutation_summary` 的计数与幸存率算法（幸存率的分母只含"被判定的变异体"，
-   `no tests` 是另一类盲区，混进分母会让数字好看）；
-2. 入库基线 `reports/mutation_baseline.json` 的形状与自洽性（计数与列表长度一致、
-   幸存率与计数自洽）——基线一旦被手改坏，判定就会失效或假绿。
+1. `mutation_summary` 的**全状态记账**（三类划分、幸存率的分母只含"被判定的变异体"、
+   不可见空间的规模）；
+2. `gate_verdict` 的六条红灯条件——每条都要有一个"改坏必须变红"的用例
+   （AGENTS.md 红线 5；独立验证报告 P0-1 / P0-2 就是这条没做到）；
+3. 入库基线 `reports/mutation_baseline.json` 的形状与自洽性。
 
-真实的变异运行与"新增幸存变异 ⇒ 变红"由 nightly job `mutation` 执行，
-退化注入验证记录在 `reports/mutation_baseline.json` 的生成 PR 里
-（把基线里的一条删掉 → 退出 1 且打印 diff；还原 → 退出 0）。
+真实的变异运行由 nightly job `mutation` 执行。
 """
 
 from __future__ import annotations
@@ -35,6 +34,54 @@ def _load_script() -> Any:
     return module
 
 
+def _baseline_v2(status_by_mutant: dict[str, str]) -> dict[str, Any]:
+    """按"每个变异体的状态"造一份 v2 基线（gate 只依赖这一个字段）。"""
+    survivors = [name for name, status in status_by_mutant.items() if status == "survived"]
+    no_tests = [name for name, status in status_by_mutant.items() if status == "no tests"]
+    return {
+        "schema": "mutation-baseline/v2",
+        "status_by_mutant": status_by_mutant,
+        "survivors": survivors,
+        "no_tests": no_tests,
+        "counts": {"survived": len(survivors), "no_tests": len(no_tests)},
+        "survivor_rate": 0.0,
+    }
+
+
+def _buckets(status_to_names: dict[str, list[str]]) -> dict[str, list[str]]:
+    return {status: list(names) for status, names in status_to_names.items()}
+
+
+def _run_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    current: dict[str, list[str]],
+    baseline: dict[str, str] | None,
+    extra_args: tuple[str, ...] = (),
+    baseline_payload: dict[str, Any] | None = None,
+) -> int:
+    """跑一次门禁判定（不真的跑 mutmut）：返回退出码。
+
+    ``current`` 是 `{状态: [变异体名]}`（= `collect_status()` 的形状），
+    ``baseline`` 是 `{变异体名: 状态}`。
+    """
+    module = _load_script()
+    calls: dict[str, Any] = {}
+    monkeypatch.setattr(module, "run_mutmut", lambda **kwargs: calls.update(kwargs))
+    monkeypatch.setattr(module, "collect_status", lambda: _buckets(current))
+    monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+    baseline_path = tmp_path / "baseline.json"
+    payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
+    baseline_path.write_text(json.dumps(payload), encoding="utf-8")
+    code = module.main(["--baseline", str(baseline_path), "--timeout", "1", *extra_args])
+    _run_gate.calls = calls  # type: ignore[attr-defined]
+    return code
+
+
+# ------------------------------------------------------------------ 全状态记账
+
+
 def test_mutation_summary_counts_and_rate() -> None:
     module = _load_script()
     summary = module.mutation_summary(
@@ -50,6 +97,49 @@ def test_mutation_summary_counts_and_rate() -> None:
     assert summary["total"] == 6
     # 分母只含 killed + survived（no tests 不混进去）
     assert summary["survivor_rate"] == pytest.approx(1 / 4)
+    # 未覆盖类（no tests）算进不可见空间：它既不进 survivor_rate，也不等于"测试没问题"。
+    assert summary["invisible_count"] == 2
+    assert summary["invisible_share"] == pytest.approx(2 / 6)
+
+
+def test_every_mutmut_status_lands_in_exactly_one_class() -> None:
+    """全状态记账：**每一个** mutmut 状态都必须被归类（不得静默丢弃）。
+
+    修复前会怎样：`segfault` / `timeout` / `not checked` / `skipped` / `suspicious` /
+    `caught by type check` / `check was interrupted by user` 只出现在 `total` 的算式之外，
+    完全不可见——独立验证报告 P0-1/P1-3 就是这个洞。
+    """
+    module = _load_script()
+    statuses = [
+        "killed",
+        "survived",
+        "no tests",
+        "segfault",
+        "timeout",
+        "suspicious",
+        "skipped",
+        "not checked",
+        "caught by type check",
+        "check was interrupted by user",
+    ]
+    buckets = {status: [f"m__{status.replace(' ', '_')}"] for status in statuses}
+    summary = module.mutation_summary(buckets)
+    assert set(summary["status_counts"]) == set(statuses)
+    assert all(count == 1 for count in summary["status_counts"].values())
+    assert summary["total"] == len(statuses)
+    assert summary["decided"] == 2
+    assert summary["invisible_count"] == len(statuses) - 2
+    # 无结论类与未覆盖类都必须出现在"不可见空间"的名单里（有名字，不只是一个数）
+    invisible = set(summary["inconclusive"]) | set(summary["no_tests"])
+    assert len(invisible) == len(statuses) - 2
+
+
+def test_unknown_status_is_not_silently_accepted() -> None:
+    """mutmut 升版带来新状态名时**必须先归类**：不认识的状态算进不可见空间并判失败。"""
+    module = _load_script()
+    summary = module.mutation_summary({"killed": ["a"], "brand new status": ["b"]})
+    assert summary["unknown_statuses"] == ["brand new status"]
+    assert "b" in summary["inconclusive"]
 
 
 def test_mutation_summary_handles_empty_buckets() -> None:
@@ -57,48 +147,91 @@ def test_mutation_summary_handles_empty_buckets() -> None:
     summary = module.mutation_summary({})
     assert summary["survivor_rate"] == 0.0
     assert summary["total"] == 0
+    assert summary["invisible_share"] == 0.0
 
 
-@pytest.mark.skipif(not BASELINE.exists(), reason="基线尚未生成（跑 --update-baseline）")
-def test_baseline_is_internally_consistent() -> None:
-    payload = json.loads(BASELINE.read_text(encoding="utf-8"))
-    counts = payload["counts"]
-    assert counts["survived"] == len(payload["survivors"])
-    assert counts["no_tests"] == len(payload["no_tests"])
-    assert counts["total"] == counts["killed"] + counts["survived"] + counts["no_tests"]
-    decided = counts["killed"] + counts["survived"]
-    assert payload["survivor_rate"] == pytest.approx(
-        round(counts["survived"] / decided, 4), abs=1e-4
+# ------------------------------------------------------------------ 六条红灯条件
+
+
+def test_new_survivor_turns_the_gate_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """条件 1：新增幸存变异 ⇒ 退出 1（保留首版行为）。"""
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "c"]},
+        baseline={"a": "killed", "b": "survived"},
     )
-    assert payload["modules"] == [
-        "harness/execution.py",
-        "harness/loop.py",
-        "harness/store/checkpoints.py",
-        "harness/approval.py",
-    ]
-    assert len(set(payload["survivors"])) == len(payload["survivors"]), "幸存清单里有重复项"
+    assert code == 1
 
 
-@pytest.mark.skipif(not BASELINE.exists(), reason="基线尚未生成（跑 --update-baseline）")
-def test_baseline_records_the_boundary_of_what_it_can_see() -> None:
-    """基线必须写明它看不见什么——否则会有人把幸存率当绝对质量分。"""
-    note = json.loads(BASELINE.read_text(encoding="utf-8"))["note"]
-    assert "子进程" in note
-    assert "测试盲区" in note
+def test_baseline_killed_becoming_inconclusive_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 2：基线里**有判定**的变异体本轮变成无结论 ⇒ 退出 1（P0-1 的活体场景）。
+
+    修复前会怎样：`survived` 里没有它 ⇒ 判据看不见 ⇒ 打印"已被杀死（好事）"⇒ **退出 0**。
+    活体实例：`harness/store/checkpoints.py` 逐字未改，76 条基线幸存变异被判成 `segfault`。
+    """
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "segfault": ["b"]},
+        baseline={"a": "killed", "b": "killed"},
+    )
+    assert code == 1
 
 
-def test_script_reports_timeout_as_failure() -> None:
-    """超时必须判失败：跑不完 ≠ 没有回归（docs/testing.md §2 的退出码纪律）。"""
-    source = SCRIPT.read_text(encoding="utf-8")
-    assert "这是**失败**而不是跳过" in source
-    assert "TimeoutExpired" in source
+def test_baseline_survivor_becoming_segfault_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 2（幸存变异那一侧）：基线幸存者本轮变成 `segfault` ⇒ 退出 1。
+
+    `is_expired__mutmut_9` 那条真幸存变异被 mutmut 误判成 `segfault` 时，就是这一格在报警。
+    """
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "segfault": ["s1"]},
+        baseline={"a": "killed", "s1": "survived"},
+    )
+    assert code == 1
 
 
-# ------------------------------------------------------------------ P0-1 回归（假绿）
+def test_vanished_baseline_mutant_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 3：基线里的变异体本轮完全缺失 ⇒ 退出 1（独立验证报告 F24 的原始场景）。
+
+    修复前会怎样：180 条基线幸存变异全部缺失 → 输出"有 180 条…已被杀死（好事，不判失败）"
+    → **退出 0**。
+    """
+    baseline = {f"harness.approval.x__mutmut_{i}": "survived" for i in range(180)}
+    baseline["killed"] = "killed"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["harness.approval.x__mutmut_1"]},
+        baseline=baseline,
+    )
+    assert code == 1
+
+
+def test_new_no_tests_turns_the_gate_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """条件 4：新增 `no tests` ⇒ 退出 1（P0-2：新增的、完全没被测的代码）。
+
+    修复前会怎样：新增 12 条 `no tests`（killed 26→27）→ **退出 0**。
+    """
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "no tests": ["fresh1", "fresh2"]},
+        baseline={"a": "killed"},
+    )
+    assert code == 1
 
 
 def test_empty_result_set_is_a_failure_not_a_pass(tmp_path: Path, monkeypatch) -> None:
-    """**P0-1 回归**：`mutmut results` 在没有结果时退出 0 且无输出。
+    """条件 5：**P0-1 回归**：`mutmut results` 在没有结果时退出 0 且无输出。
 
     修复前会怎样：`survived=[]` ⇒ `new_survivors=[]` ⇒ 打印"没有新增幸存变异" ⇒ **退出 0**。
     于是"配置没生效 / 缓存被清 / collect error"都会让 nightly 静静地变绿，
@@ -115,6 +248,216 @@ def test_empty_result_set_is_a_failure_not_a_pass(tmp_path: Path, monkeypatch) -
     assert module.main(["--baseline", str(baseline), "--timeout", "1"]) == 1
 
 
+def test_nothing_decided_is_a_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """条件 5 的另一半：跑出变异体但**一条都没判定** ⇒ 退出 1（survivor_rate=0 毫无意义）。"""
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"no tests": ["a"], "segfault": ["b"]},
+        baseline={"a": "no tests", "b": "segfault"},
+    )
+    assert code == 1
+
+
+def test_inconclusive_set_growth_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 6：无结论集合较基线**增长** ⇒ 退出 1（有新名字进入不可见空间）。"""
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "timeout": ["t1", "t2"]},
+        baseline={"a": "killed", "t1": "timeout"},
+    )
+    assert code == 1
+    # 反向对照：无结论集合**缩小**（有名字离开不可见空间）不算红灯——那是好转。
+    ok = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a", "t2"], "timeout": ["t1"]},
+        baseline={"a": "killed", "t1": "timeout", "t2": "timeout"},
+    )
+    assert ok == 0
+
+
+def test_unknown_status_turns_the_gate_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """兜底条件：出现不认识的状态名 ⇒ 退出 1（先归类，再判定）。"""
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "new thing": ["b"]},
+        baseline={"a": "killed"},
+    )
+    assert code == 1
+
+
+def test_gate_is_green_when_nothing_changed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """正对照：状态与基线逐条一致 ⇒ 退出 0。没有这一格，上面七个"变红"证明不了什么。"""
+    same = {"killed": ["a", "b"], "survived": ["c"], "no tests": ["d"], "segfault": ["e"]}
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current=same,
+        baseline={
+            "a": "killed", "b": "killed", "c": "survived", "d": "no tests", "e": "segfault",
+        },
+    )
+    assert code == 0
+
+
+def test_baseline_v1_is_read_with_a_visible_limitation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """兼容读取 v1：只有 `survivors`/`no_tests` 两个列表，且把局限**打印出来**。
+
+    v1 里 `killed` 没有名字，所以条件 2/3 只能覆盖基线幸存者与 no tests——
+    这一点不能被读成"全覆盖"。
+    """
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["s1"]},
+        baseline=None,
+        baseline_payload={"schema": "mutation-baseline/v1", "survivors": ["s1"], "no_tests": []},
+    )
+    assert code == 0
+    assert "v1" in capsys.readouterr().out
+
+
+def test_baseline_v1_cannot_hide_a_vanished_survivor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """v1 兼容下 P0-1 仍然会红：基线幸存者消失 ⇒ 条件 3。"""
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"]},
+        baseline=None,
+        baseline_payload={
+            "schema": "mutation-baseline/v1",
+            "survivors": ["s1", "s2"],
+            "no_tests": [],
+        },
+    )
+    assert code == 1
+
+
+# ------------------------------------------------------------------ 不可见空间 / 选项语义
+
+
+def test_every_run_prints_the_invisible_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """每次运行都打印"不可见空间"的规模：防 survivor_rate 被读成覆盖率。"""
+    _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"], "segfault": ["c"], "no tests": ["d"]},
+        baseline={"a": "killed", "b": "survived", "c": "segfault", "d": "no tests"},
+    )
+    out = capsys.readouterr().out
+    assert "不可见空间" in out
+    assert "2/4" in out
+    assert "survivor_rate 不是覆盖率" in out
+
+
+def test_module_path_is_translated_to_a_mutant_name_glob(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--module` 传**文件路径**时必须翻译成变异体名 glob（独立验证报告 P1-1）。
+
+    修复前会怎样：路径直接传给 `mutmut run` 的位置参数，而它按**变异体名** fnmatch 过滤
+    ⇒ `AssertionError: Filtered for specific mutants, but nothing matches` ⇒ 恒失败。
+    """
+    module = _load_script()
+    assert module.normalize_module_filter("harness/approval.py") == "harness.approval.*"
+    assert (
+        module.normalize_module_filter("harness/store/checkpoints.py")
+        == "harness.store.checkpoints.*"
+    )
+    # 已经是 glob / 完整变异体名的原样透传
+    assert module.normalize_module_filter("harness.approval.*") == "harness.approval.*"
+    assert (
+        module.normalize_module_filter("harness.approval.xǁApprovalBindingǁis_expired__mutmut_9")
+        == "harness.approval.xǁApprovalBindingǁis_expired__mutmut_9"
+    )
+    _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"]},
+        baseline={"a": "killed"},
+        extra_args=("--module", "harness/approval.py"),
+    )
+    assert _run_gate.calls["module"] == "harness.approval.*"  # type: ignore[attr-defined]
+
+
+def test_json_out_is_written_on_the_verdict_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--json-out` 在主判定路径也要落盘（nightly 上传的就是它）。
+
+    修复前会怎样：只有 `--summary-only` 写这个文件，夜里跑的那条路根本不生成
+    `/tmp/mutation.json`，上传步骤拿到的是空产物。
+    """
+    out = tmp_path / "mutation.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--json-out", str(out)),
+    )
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["status_by_mutant"] == {"a": "killed", "b": "survived"}
+    assert payload["counts"]["invisible"] == 0
+    # 判失败也必须留下产物（nightly 的 upload 步骤是 if: always()）
+    failing = tmp_path / "failing.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "fresh"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--json-out", str(failing)),
+    )
+    assert code == 1
+    assert json.loads(failing.read_text(encoding="utf-8"))["survivors"] == ["b", "fresh"]
+
+
+def test_summary_only_reports_survivors_as_a_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--summary-only` 的 `survivors` 统一为**列表** + `survivor_count`。
+
+    修复前会怎样：`survivors` 在这里是**个数**，在主判定路径是**列表**——同一字段名两种类型，
+    claim 的 `source_path` 对账会踩空。
+    """
+    module = _load_script()
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            _baseline_v2({"a": "killed", "b": "survived", "c": "survived", "d": "segfault"})
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "summary.json"
+    assert module.main(["--summary-only", "--baseline", str(baseline), "--json-out", str(out)]) == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["survivors"] == ["b", "c"]
+    assert payload["survivor_count"] == 2
+    assert payload["inconclusive"] == ["d"]
+    assert json.loads(capsys.readouterr().out.splitlines()[0])["survivor_count"] == 2
+
+
+def test_script_reports_timeout_as_failure() -> None:
+    """超时必须判失败：跑不完 ≠ 没有回归（docs/testing.md §2 的退出码纪律）。"""
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "这是**失败**而不是跳过" in source
+    assert "TimeoutExpired" in source
+
+
 def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
     """`mutmut run` 非 0（配置错 / collect error / OOM）⇒ 判定作废，不许读缓存继续比。"""
     import subprocess as real_subprocess
@@ -129,8 +472,59 @@ def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
     try:
         module.run_mutmut(module=None, timeout=5, max_children=1)
     except SystemExit as exc:
-        assert "离开" not in str(exc)  # 可读失败即可
         assert "没有跑成功" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("非 0 退出码必须终止判定")
     assert real_subprocess is not None
+
+
+# ------------------------------------------------------------------ 入库基线
+
+
+@pytest.mark.skipif(not BASELINE.exists(), reason="基线尚未生成（跑 --update-baseline）")
+def test_baseline_is_internally_consistent() -> None:
+    payload = json.loads(BASELINE.read_text(encoding="utf-8"))
+    counts = payload["counts"]
+    assert payload["schema"] == "mutation-baseline/v2"
+    assert counts["survived"] == len(payload["survivors"])
+    assert counts["no_tests"] == len(payload["no_tests"])
+    assert counts["inconclusive"] == len(payload["inconclusive"])
+    assert counts["total"] == counts["decided"] + counts["invisible"]
+    assert counts["invisible"] == counts["no_tests"] + counts["inconclusive"]
+    decided = counts["decided"]
+    assert payload["survivor_rate"] == pytest.approx(
+        round(counts["survived"] / decided, 4), abs=1e-4
+    )
+    assert payload["modules"] == [
+        "harness/execution.py",
+        "harness/loop.py",
+        "harness/store/checkpoints.py",
+        "harness/approval.py",
+    ]
+    assert len(set(payload["survivors"])) == len(payload["survivors"]), "幸存清单里有重复项"
+
+
+@pytest.mark.skipif(not BASELINE.exists(), reason="基线尚未生成（跑 --update-baseline）")
+def test_baseline_records_every_mutant_status() -> None:
+    """v2 必须**逐条**记状态：条件 2/3 靠它才能看见"killed 变 segfault"与"整条改名"。"""
+    payload = json.loads(BASELINE.read_text(encoding="utf-8"))
+    status_by_mutant = payload["status_by_mutant"]
+    assert len(status_by_mutant) == payload["counts"]["total"]
+    module = _load_script()
+    known = set(module.KNOWN_STATUSES)
+    assert set(status_by_mutant.values()) <= known, "基线里出现了未归类的状态"
+    # `status_counts` 是"状态 → 条数"，必须与 `status_by_mutant` 逐条对得上
+    for status, count in payload["status_counts"].items():
+        assert count == sum(1 for s in status_by_mutant.values() if s == status), status
+
+
+@pytest.mark.skipif(not BASELINE.exists(), reason="基线尚未生成（跑 --update-baseline）")
+def test_baseline_records_the_boundary_of_what_it_can_see() -> None:
+    """基线必须写明它看不见什么——否则会有人把幸存率当绝对质量分。"""
+    note = json.loads(BASELINE.read_text(encoding="utf-8"))["note"]
+    assert "子进程" in note
+    assert "测试盲区" in note
+    assert "不可见空间" in note
+    assert "不是覆盖率" in note
+    # 已知无结论集合里混着真盲区，这条必须写在基线里（不得读成"不是盲区"）
+    assert "is_expired__mutmut_9" in note

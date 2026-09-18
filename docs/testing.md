@@ -36,9 +36,14 @@
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
-.venv/bin/python scripts/mutation_check.py              # 变异门禁（幸存变异防倒退；本地冷跑 3~6 分钟）
-                                                       # 超时预算由 --timeout 给出（nightly 用 1320s = 22 分钟）
-                                                       # ⚠️ 变异体总数为 0 也判失败（"跑不起来"≠"没有盲区"）
+.venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退；本地冷跑 8~9 分钟）
+                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟；
+                                                       # 2026-09-18 修掉 segfault 误判后幸存变异变多，
+                                                       # 一轮的实测墙钟已从 3~6 分钟涨到约 8.5 分钟）
+                                                       # ⚠️ 变异体总数为 0、或一条都没被判定，都判失败
+                                                       # （"跑不起来"≠"没有盲区"）
+                                                       # ⚠️ 每次运行都打印"不可见空间"的规模：
+                                                       # survivor_rate 不是覆盖率
 .venv/bin/python -m experiments.chaos_fuzz --repeats 30 --seed 20260917   # 随机时刻 fuzz
 .venv/bin/python scripts/probe_sigterm.py               # 谱系探测器（三档，各约 10–20 秒）
 .venv/bin/python scripts/replay_consistency.py          # scripted ↔ replay 白名单一致性
@@ -71,10 +76,18 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
    | 门禁 | 怎么把它弄红 | 期望 |
    |---|---|---|
    | `facts`（文档数字） | 把某条 claim 的 `value` 改掉 | 退出 1 并报出"期望 X±tol，实测 Y（偏离 Z）" |
-   | `mutation`（测试盲区） | 从基线里删掉一条幸存变异 | 退出 1 并打印该变异体的 `mutmut show` diff |
+   | `mutation`（新增盲区） | 在被变异模块里加一个**没有任何用例调用**的函数（含一条永不被执行的分支） | 退出 1 并列出 `[new-no-tests]` 的变异体名 |
+   | `mutation`（盲区从视野里消失） | 把基线里一条 `killed`/`survived` 的变异体改成不在结果表里（或让它被报成 `segfault`/`timeout`） | 退出 1 并分别报 `[vanished-from-results]` / `[decided-to-inconclusive]` + `[inconclusive-grew]` |
    | `mutation`（**没跑起来**） | 让 `mutmut run` 退出非 0，或让结果集为空 | 退出 1（"跑不出变异体"不是"没有盲区"；评审 P0-1） |
    | `facts`（引用位置） | 把某条 claim 的 `docs` 锚点改成文件里不存在的片段 | 退出 1 并指出哪个锚点找不到（评审 P1-4） |
    | `chaos-fuzz`（随机注入） | 把 oracle 的 `inv_effect_accounting` 判定注释掉 | 敏感性自检失败（"全绿"变成无意义），退出 1 |
+
+   `mutation` 门禁的完整判据（六条红灯条件 + 未知状态 fail-closed）与**实跑过的三格
+   退化注入记录**见 [`design/2026-09-18-mutation-segfault-investigation.md`](design/2026-09-18-mutation-segfault-investigation.md) §4.1；
+   `tests/test_mutation_gate.py` 里每条条件都有一个"改坏必须变红"的用例，
+   外加一格"状态与基线一致 ⇒ 退出 0"的正对照。
+   门禁按**全状态记账**分三类（判定类 / 未覆盖类 / 无结论类），每次运行打印不可见空间的规模——
+   修这条的背景是 2026-09-18 独立验证报告的 P0-1/P0-2（判据结构上不可能变红）。
 4. **修改任何影响 `reports/*` 的代码 ⇒ 重新生成产物并提交**，且确认差异只有计时噪声。
 5. **测试数量写进文档时**，同时写出口径（`pytest -o addopts= -p no:cacheprovider -q` 的输出）。
 

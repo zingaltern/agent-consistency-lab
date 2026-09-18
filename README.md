@@ -110,8 +110,9 @@
 [docs/noisy-reasoner.md](docs/noisy-reasoner.md)、[docs/model-modes.md](docs/model-modes.md)、
 [docs/governance-extras.md](docs/governance-extras.md)）：
 
-* **文档里的数字从此有门禁**：72 条 claim（值 + 容差 + 再生命令 + JSON 路径 + 引用位置），
-  `scripts/check_facts.py` 逐条重跑比对；verify 轻集 27/27 通过、CI job `facts`，
+* **文档里的数字从此有门禁**：claim 清单（值 + 容差 + 再生命令 + JSON 路径 + 引用位置；
+  条数以 `scripts/check_facts.py --list` 的输出为准，不手写），
+  `scripts/check_facts.py` 逐条重跑比对；verify 轻集（`--run verify`）全通过、CI job `facts`，
   整量集进 nightly。退化注入验证：把某条 claim 的值改掉 → 退出 1 并报出偏离；
 * **随机时刻 SIGKILL fuzz**：180 次注入（30 seed × 3 保护组合 × 2 注入阶段）全部真的落在
   标定窗口内、**命名窗口之外 0 条新类违例**；敏感性自检证明 oracle 在已知会重复的配置上会报红；
@@ -267,6 +268,21 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 .venv/bin/python -m experiments.worker --run-dir /tmp/demo --mode resume --tool-idem off
 ```
 
+## 外围集成（MCP 工具服务 + 可观测导出）
+
+集成层**不产生结论**：它只改变"谁能调用这些工具"和"别人用什么工具看这些数据"。
+`integrations/mcp_server.py` 是一个**本地、单用户、stdio** 的进程（一进程一 run 目录），
+把工具注册表暴露给外部 agent；每次调用都走 `harness/execution.py::ToolExecutor` 的七步管线
+（审批门、幂等键、outbox、ArgPolicy、TOCTOU 全部生效），写操作停在审批门并把"待审批"
+作为普通工具结果返回——**不依赖 elicitation**。要真 SIGKILL 它、重启、看外部账本
+"是不是恰好一次"，跑 `python -m integrations.mcp_crash_demo --work-root /tmp/mcp-crash`
+（含对照组：只把 outbox 关掉就会看到重复）。可观测那一条见
+[integrations/observability.md](integrations/observability.md)：本机一条命令
+（`python -m integrations.otlp_local_sink --selftest`）就能把 trace 导到本地接收器上，
+并写明"时长是推导值 / 事后导入 / trace 里没有账本"三条口径。
+边界（不做鉴权、不做多租户、不监听非本地地址、不新增权威状态）见
+[docs/integrations.md](docs/integrations.md) §6。
+
 ## 文档索引
 
 | 想了解什么 | 读哪份 |
@@ -284,6 +300,7 @@ CHAOS_WINDOWS="post_tool_effect_pre_record:1" \
 | 噪声人格口径（激活评分口径敏感性） | [docs/noisy-reasoner.md](docs/noisy-reasoner.md) |
 | 模型接入三模式（scripted / record / replay） | [docs/model-modes.md](docs/model-modes.md) |
 | OTLP 导出 / artifact GC / 单写者租约 | [docs/governance-extras.md](docs/governance-extras.md) |
+| **外围集成（MCP 工具服务 / 可观测导出落地）** | [docs/integrations.md](docs/integrations.md) · [integrations/observability.md](integrations/observability.md) |
 | 开放问题裁决（A §4 + B §6，含回写 B §7） | [docs/design/2026-09-17-open-questions-answered.md](docs/design/2026-09-17-open-questions-answered.md) |
 | 下一波设计文档（待评审） | [docs/design/](docs/design/) |
 | **开发规范（分支流程 / 合并门槛）** | [docs/development.md](docs/development.md) |

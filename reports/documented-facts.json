@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 401,
+      "value": 407,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -2102,6 +2102,96 @@
       "what": "M2 崩溃演示的验收用例数（真 SIGKILL + 崩溃位置证据 + 对照组 + 单变量对照 + 账本快照读）",
       "docs": [
         "docs/integrations.md#5. 崩溃与恢复"
+      ]
+    },
+    {
+      "id": "otlp-local-sink-spans",
+      "value": 7,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.otlp_local_sink",
+        "--selftest",
+        "--work-root",
+        "/tmp/facts-otel-demo",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "span_count"
+      ],
+      "what": "本地 OTLP 接收器路径上，一个最小模型驱动 run 导出的 span 数（根 + 3 个模型 span + 2 个工具 span + 1 个审批 span）；不需要 [otel] extra、不联网",
+      "docs": [
+        "integrations/observability.md#2. 路径 ①：本机一条命令跑通（已实测）"
+      ]
+    },
+    {
+      "id": "otlp-local-sink-derived-spans",
+      "value": 3,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.otlp_local_sink",
+        "--selftest",
+        "--work-root",
+        "/tmp/facts-otel-demo",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "derived_duration_span_count"
+      ],
+      "what": "带 harness.duration_is_derived 标记的 span 数（= 模型 span 数：它们的时长是事件间隔推导的，不得用来讲性能）",
+      "docs": [
+        "integrations/observability.md#0. 先读三条口径（其余都可以不看，这三条不行）"
+      ]
+    },
+    {
+      "id": "otlp-local-sink-ledger-attributes",
+      "value": false,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "integrations.otlp_local_sink",
+        "--selftest",
+        "--work-root",
+        "/tmp/facts-otel-demo",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "has_ledger_attributes"
+      ],
+      "what": "trace 里**没有**账本类属性（反向口径：审批与\"发生了几次\"都在事件日志与 world.db 里）",
+      "docs": [
+        "integrations/observability.md#5. 看什么 / 不要看什么"
+      ]
+    },
+    {
+      "id": "observability-sink-test-count",
+      "value": 6,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/count_tests.py",
+        "--path",
+        "tests/test_observability_sink.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "collected"
+      ],
+      "what": "可观测导出落地用例数（恰好一次 POST / 推导标记只落在模型 span / trace 里没有账本 / 接收器正对照）",
+      "docs": [
+        "integrations/observability.md#6. 这一层怎么被守住"
       ]
     }
   ]

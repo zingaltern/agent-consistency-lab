@@ -9,6 +9,7 @@
 [`docs/design/2026-09-18-integrations.md`](design/2026-09-18-integrations.md)（设计）、
 [`docs/design/2026-09-18-open-questions-answered.md`](design/2026-09-18-open-questions-answered.md)
 （裁决：为什么把七步管线抽成 `harness/execution.py::ToolExecutor`）、
+[`integrations/observability.md`](../integrations/observability.md)（可观测导出落地）。
 
 ---
 

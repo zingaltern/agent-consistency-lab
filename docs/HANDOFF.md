@@ -7,7 +7,8 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 更新时间：W9（设计文档 A+B 交付 + 评审修复）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
 
 > **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
-> `reports/documented-facts.json`（72 条 claim），由 `scripts/check_facts.py` 逐条重跑比对
+> `reports/documented-facts.json`（claim 清单，条数以 `check_facts.py --list` 为准），
+> 由 `scripts/check_facts.py` 逐条重跑比对
 > （CI job `facts` 跑轻集、`nightly.yml` 跑整量集）。改代码导致数字变化时，先跑这条命令。
 
 ---

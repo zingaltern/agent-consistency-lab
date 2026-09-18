@@ -55,7 +55,9 @@
 ### 每阶段共同门（逐条实跑）
 
 ```
-pytest -o addopts= -p no:cacheprovider -q            405 passed
+pytest -o addopts= -p no:cacheprovider -q            405 passed（装了 [otel] 时）
+                                                     404 passed, 1 skipped（缺 [otel] 时；
+                                                     那 1 skip 是 test_otel.py 的 importorskip）
 pytest -m mcp -o addopts= -p no:cacheprovider -q       14 passed（缺 extra 时是 skip，不是 collect error）
 ruff check .                                          All checks passed
 python -m experiments.crash_matrix --repeats 5         16 格 / 80 次运行 / 70 次真 SIGKILL / 80 as-predicted / 0 违例
@@ -63,6 +65,14 @@ python -m opsenv.suite --per-fault 8 --repeats 3 --gate  14/14
 scripts/check_facts.py --run verify                    38/38（M3；M1 33/33、M2 34/34，各自按分支内容）
 scripts/mutation_check.py --update-baseline            1110 个变异体 / 912 killed / 180 survived（率 0.1648）
 ```
+
+> **口径更正（2026-09-18，来源：独立验证报告 P2-4）**：本表原写 `405 passed` 而未写环境口径。
+> 同一个 commit（`1d4b3f3`）同一条命令，数字随**装了哪些 extra** 变：
+> 装了 `[otel]`（本机开发环境）→ `405 passed`（无 skip）；只装 `[dev,eval,mcp]`（独立验证的隔离副本）
+> → `404 passed, 1 skipped`。那 1 个 skip 是 `tests/test_otel.py` 里
+> `pytest.importorskip("opentelemetry.sdk")` 的那一例，与环境有关，与本次改动无关。
+> ⇒ 用例数一律以 claim `tests-collected`（`scripts/count_tests.py` 的 `--collect-only` 计数，
+> 与环境中的 extra 无关）为准，不在正文手写"passed"数。
 
 ---
 
@@ -86,13 +96,19 @@ scripts/mutation_check.py --update-baseline            1110 个变异体 / 912 k
 
 ## 遗留与建议
 
-1. **`mutmut` 的"列出数 ≠ 评估数"（需要所有者知道的一条）**：
-   `mutmut print-time-estimates` 列出 **2023** 个变异体，而三次 `mutmut run` 都只评估
-   **~1110** 个（1058 / 1114 / 1110，可复现）。这不是本次改动引入的：历史基线也只被核对过
-   "与本文件同数"，从未与本工具自己的清单对账过。影响面：基线**仍然有效**（它只做"新增幸存
-   变异"的回归判定，缺项会导致**误报**而不是漏报），但 `survivor_rate` **不能**被读成覆盖率。
-   建议下一步二选一：在 nightly 加一条"评估数 vs `print-time-estimates`"的对账并把它变成红灯，
-   或深挖 mutmut 3.8 的跳过逻辑（`mutants/mutmut-stats.json` 的增量状态）。
+1. **`mutmut` 的"列出数 ≠ 判决数"（已定位、已修，见下）**：
+   `mutmut print-time-estimates` 列出 **2023** 个变异体，而 `mutmut run` 只给出 **1110** 个
+   `killed/survived/no_tests` 判决（1058 / 1114 / 1110）。
+   **本条原文的判断是反的，此处更正**：原文说"这不是本次改动引入的"，
+   实测 `main` 上"列出 1670 = 计入 1670"**没有差距**；差距出现在 tip
+   （列出 ≈2022、计入 1110，差 912），构成是 **906 条 `-11`（`segfault`）+ 6 条 `-24`（`timeout`）**。
+   原文又说"缺项会导致**误报**而不是漏报"——也是反的：判据只看本轮 `survived`，
+   缺项在结构上**不可能**导致红灯（详见 `docs/independent-test-2026-09-18/report.md` P0-1）。
+   根因见 [`2026-09-18-mutation-segfault-investigation.md`](2026-09-18-mutation-segfault-investigation.md)：
+   是 macOS 上"父进程热过系统代理解析、fork 出的子进程再碰一次"会 SIGSEGV，
+   与变异体语义无关；已修（`tests/conftest.py`），全量重跑后 `segfault` 归零。
+   ⇒ 本文件里 `180 survived / 率 0.1648` 这两个数**已作废**，以
+   `reports/mutation_baseline.json`（schema v2）与 claim 为准。
 2. **可观测的路径②③未实测**（无 Docker、需凭据与外网）。文档逐条标注了"本机未实测"，
    没有把它们写成已验证。
 3. **`mcp` SDK 实测版本 2.2.0**（pin `>=1.2,<3`）。2.x 的 handler 注册方式与 1.x 不同

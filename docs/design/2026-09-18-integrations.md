@@ -70,8 +70,19 @@
 * `tools/call`：**必须**走既有执行管线。允许的实现路径见 §5 开放问题 1 的裁决；
   无论哪条，都必须保留：审批门、幂等键（含 branch 维度）、outbox 三态、ArgPolicy 复核、
   TOCTOU 参数复核、事件日志 append-only。
-* 失败语义可读：未注册工具、参数不合 schema、被策略拒绝、工具异常，各自给出可读错误
+* 失败语义可读：未注册工具、被策略拒绝、工具异常，各自给出可读错误
   （照 `_handle_tool_failure` 的分类：非幂等写异常 → `unknown` 等对账；只读/幂等 → `failed`）。
+* **参数不合 schema 不构成失败语义**（2026-09-18 口径更正，来源：独立验证报告 P2-2）：
+  执行前唯一的闸门是 ArgPolicy 与工具自身。下发 schema 与模型侧同源，是**自述**而不是第二道闸——
+  在它与执行之间再插一个校验器必然与管线分叉（同一参数在两处得到不同判决）。
+  ⇒ `query_metrics(service=12345)` 这类"不合 schema"的入参会被原样执行；
+  它的结论由工具自身决定，不由 schema 决定。本条更正上面那句列举里的"参数不合 schema"。
+  实现口径写在 `docs/integrations.md` §6.2。
+* **顶层 `isError` 反映内层执行失败**（2026-09-18 行为更正，来源：独立验证报告 P2-3）：
+  `approve` 的顶层 `status=approved` 说的是**决定**，`executed[]` 说的是**执行**。
+  当 `executed[]` 含 `failed`/`unknown`/`rejected` 时顶层 `isError` 也置真，并附一句可读
+  `note`。被堵死的只有"顶层 `isError` 恒假地宣称成功"这一种读法；
+  `status` 的取值与其余语义不变（正对照：执行成功时 `isError` 仍为假）。
 
 ### R-C2｜审批（对应 G2）
 

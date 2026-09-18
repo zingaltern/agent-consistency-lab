@@ -296,7 +296,11 @@ def test_unregistered_tool_is_recorded_and_reported(tmp_path: Path) -> None:
 
 
 def test_arg_policy_violation_is_rejected_before_the_handler(tmp_path: Path) -> None:
-    """参数越出工具自述的安全域：执行前被拒，且不留意图行、不产生副作用。"""
+    """参数越出工具自述的安全域：执行前被拒，且不留意图行、不产生副作用。
+
+    另断言**协议层的顶层 `isError` 反映了内层失败**（独立验证报告 P2-3）：
+    只看 `result.isError` 的客户端也必须能看出"这次写没发生"。
+    """
     _require_sdk()
     run_dir = tmp_path / "run"
 
@@ -306,16 +310,40 @@ def test_arg_policy_violation_is_rejected_before_the_handler(tmp_path: Path) -> 
         gated = _structured(
             await session.call_tool("scale_pool", {"service": "payment", "size": 9999})
         )
-        return _structured(
-            await session.call_tool(
-                "approve", {"tool_call_id": gated["tool_call_id"], "decision": "approve"}
-            )
+        return await session.call_tool(
+            "approve", {"tool_call_id": gated["tool_call_id"], "decision": "approve"}
         )
 
-    payload, _ = _run(run_dir, scenario)
+    result, _ = _run(run_dir, scenario)
+    payload = _structured(result)
     assert [item["status"] for item in payload["executed"]] == ["rejected"]
     assert payload["executed"][0]["error_class"] == "arg_policy_violation"
     assert read_effects(run_dir)["ledger_rows"] == 0
+    # 顶层 status 不变（"决定"确实被接受了），但 isError 必须置真。
+    assert payload["status"] == "approved"
+    assert result.is_error is True
+    assert "executed[]" in payload["note"]
+
+
+def test_successful_approval_stays_is_error_false(tmp_path: Path) -> None:
+    """正对照：真的执行成功时顶层 `isError` 必须保持假——否则它就成了恒真，等于没有信息。"""
+    _require_sdk()
+    run_dir = tmp_path / "run"
+
+    async def scenario(session: Any) -> Any:
+        gated = _structured(
+            await session.call_tool("scale_pool", {"service": "payment", "size": 64})
+        )
+        return await session.call_tool(
+            "approve", {"tool_call_id": gated["tool_call_id"], "decision": "approve"}
+        )
+
+    result, _ = _run(run_dir, scenario)
+    payload = _structured(result)
+    assert [item["status"] for item in payload["executed"]] == ["executed"]
+    assert result.is_error is False
+    assert "note" not in payload
+    assert read_effects(run_dir)["ledger_rows"] == 1
 
 
 def test_approve_without_pending_call_is_readable(tmp_path: Path) -> None:

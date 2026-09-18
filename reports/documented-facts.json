@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 425,
+      "value": 428,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1926,7 +1926,7 @@
     },
     {
       "id": "mcp-mapping-test-count",
-      "value": 25,
+      "value": 27,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1947,7 +1947,7 @@
     },
     {
       "id": "mcp-sdk-test-count",
-      "value": 9,
+      "value": 10,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [

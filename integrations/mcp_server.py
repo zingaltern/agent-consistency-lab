@@ -307,6 +307,32 @@ def is_error_status(status: str) -> bool:
     return status in ERROR_STATUSES
 
 
+def executed_has_failure(executed: Any) -> bool:
+    """``executed[]`` 里有没有 failed / unknown / rejected。"""
+    if not isinstance(executed, list):
+        return False
+    return any(is_error_status(str(item.get("status", ""))) for item in executed)
+
+
+def call_is_error(payload: dict[str, Any]) -> bool:
+    """整条 ``tools/call`` 回执是否该置顶层 ``isError``。
+
+    除顶层结论之外，**``approve`` 的内层执行失败也要反映上来**：批准一个越出参数安全域的写
+    （被 ArgPolicy 拒）时，顶层 `status` 仍是 `approved`（决定确实被接受、调用确实闭合了），
+    但 `executed[0].status` 是 `rejected`。只看顶层 `isError` 的客户端会把"没执行"读成
+    "写成功了"——独立验证报告 P2-3。
+    """
+    if is_error_status(str(payload.get("status", ""))):
+        return True
+    return executed_has_failure(payload.get("executed"))
+
+
+EXECUTED_FAILURE_NOTE = (
+    "顶层 status=approved 只表示「决定被接受、调用已闭合」；执行结果在 executed[] 内"
+    "（含 failed / unknown / rejected），不要只看顶层 status。"
+)
+
+
 # --------------------------------------------------------------------- 调用
 
 
@@ -450,6 +476,9 @@ def _handle_approve(env: RunEnvironment, args: dict[str, Any]) -> dict[str, Any]
     }
     if interrupted is not None:
         payload["next_pending"] = interrupted
+    if executed_has_failure(executed):
+        # 内层失败必须可读：顶层 status 是"决定"的结论，不是"执行"的结论。
+        payload["note"] = EXECUTED_FAILURE_NOTE
     return payload
 
 
@@ -523,7 +552,7 @@ async def _serve_stdio(run_dir: str | Path, **options: Any) -> None:  # pragma: 
         payload = handle_tools_call(env, params.name, params.arguments or {})
         return _result_payload(
             payload,
-            is_error=is_error_status(str(payload.get("status", ""))),
+            is_error=call_is_error(payload),
             mcp_types=mcp_types,
         )
 

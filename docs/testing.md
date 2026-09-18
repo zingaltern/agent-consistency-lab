@@ -24,9 +24,12 @@
 ```bash
 # 快速档（每次提交前）
 .venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 用例数不手写：claim `tests-collected`
-                                                       # （`scripts/count_tests.py` 再生；约 3–6 秒）
+                                                       # （`scripts/count_tests.py` 再生）
+                                                       # 时长按本机 3.14.6 实测：**约 9 秒**
+                                                       # （含 mcp/live 的全量收集档约 14 秒）
 .venv/bin/ruff check .
-.venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集，约 5 秒）
+.venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集）
+                                                       # 时长实测 **约 9 秒**（不是 5 秒）
 
 # 完整档（合并涉及语义/评测的改动前）
 .venv/bin/python -m experiments.crash_matrix --repeats 5         # 16 格全 as-predicted
@@ -36,14 +39,27 @@
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
-.venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退；本地冷跑 8~9 分钟）
-                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟；
-                                                       # 2026-09-18 修掉 segfault 误判后幸存变异变多，
-                                                       # 一轮的实测墙钟已从 3~6 分钟涨到约 8.5 分钟）
+.venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退）
+                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟）
+                                                       # 2026-09-18 修掉 segfault 误判后，原先"一进去就崩"的
+                                                       # 那部分变异体会真的跑完测试：本机**空闲**冷跑实测
+                                                       # **631.5 秒 ≈ 10.5 分钟**（带负载时读数会更高）
                                                        # ⚠️ 变异体总数为 0、或一条都没被判定，都判失败
-                                                       # （"跑不起来"≠"没有盲区"）
+                                                       # （"跑不起来"≠"没有盲区"）；超时/中止路径
+                                                       # **也会写 `--json-out`**（nightly 要能上传它）
                                                        # ⚠️ 每次运行都打印"不可见空间"的规模：
                                                        # survivor_rate 不是覆盖率
+                                                       # ⚠️ 判据的适用边界（三条，别读过头）：
+                                                       # ① 变异范围由 pyproject.toml [tool.mutmut].only_mutate
+                                                       #    决定：注入到**未变异**模块的代码不参与变异，
+                                                       #    门禁不会因此变红（那是范围外，不是漏检）；
+                                                       # ② `mutmut print-time-estimates` 输出里的
+                                                       #    `<no tests>` 是**耗时估计占位**，不是状态标签，
+                                                       #    别读成"这么多条没有测试"；
+                                                       # ③ 单条变异体的判决**不承诺稳定性**：
+                                                       #    实测 `_replay_outcome__mutmut_37` 会随机器负载
+                                                       #    在 survived ↔ killed 之间翻转（这次方向无害，
+                                                       #    但反向翻转就是夜里误报红灯）。
 .venv/bin/python -m experiments.chaos_fuzz --repeats 30 --seed 20260917   # 随机时刻 fuzz
 .venv/bin/python scripts/probe_sigterm.py               # 谱系探测器（三档，各约 10–20 秒）
 .venv/bin/python scripts/replay_consistency.py          # scripted ↔ replay 白名单一致性

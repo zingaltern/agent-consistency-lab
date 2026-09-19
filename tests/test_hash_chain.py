@@ -382,20 +382,33 @@ def test_appending_on_a_broken_tail_is_refused(tmp_path: Path) -> None:
 
     修复前会怎样：链在一个无人察觉的位置被"延长"，而这件事只有下一次离线校验才会发现；
     报错放在写入时，至少"谁在写、写什么"是清楚的。
+
+    篡改走**独立的裸连接**（独立验证 2026-09-19：store 的连接现在装着 DDL 防线，
+    `DROP TRIGGER` 会被 authorizer 拒——而真实的对手本来也不会用我们的连接），
+    触发器用规范文本原样重建，于是防线核查通过，只有链是断的。
     """
+    from harness.store.schema import TRIGGER_STATEMENTS
     from harness.store.sqlite_store import StoreError
 
-    store = SqliteStore(tmp_path / "runtime.db")
+    db_path = tmp_path / "runtime.db"
+    store = SqliteStore(db_path)
     store.setup()
     try:
         run_id, branch_id = _seed(store, events=2)
-        # 把尾行的哈希清空（模拟"库被外部改过"或"迁移没跑完"）
-        store._conn.execute("DROP TRIGGER events_no_update")
-        store._conn.execute("UPDATE events SET event_hash='' WHERE seq=1")
-        store._conn.execute(
-            "CREATE TRIGGER events_no_update BEFORE UPDATE ON events "
-            "BEGIN SELECT RAISE(ABORT, 'events is append-only: UPDATE is forbidden'); END"
-        )
+    finally:
+        store.close()
+
+    # 把尾行的哈希清空（模拟"库被外部改过"或"迁移没跑完"），触发器原样放回
+    con = sqlite3.connect(db_path)
+    con.execute("DROP TRIGGER events_no_update")
+    con.execute("UPDATE events SET event_hash='' WHERE seq=1")
+    con.execute(TRIGGER_STATEMENTS[0])
+    con.commit()
+    con.close()
+
+    store = SqliteStore(db_path)
+    store.setup()  # 防线核查：触发器都在、表结构没变 ⇒ 通过
+    try:
         with pytest.raises(StoreError) as excinfo:
             store.append(
                 NewEvent.tree(

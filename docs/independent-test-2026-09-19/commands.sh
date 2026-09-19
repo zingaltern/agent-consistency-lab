@@ -30,15 +30,18 @@ echo "== 4. 门禁本身（18 条，基线全绿、退出码 0） =="
 echo "== 5. P1-2：W7 产物 vs 当前代码 =="
 sh docs/independent-test-2026-09-19/repro/p1_3_w7_artifact_drift.sh
 
+echo "== 5b. P2-5：DDL 防线三层（防 / 写前核查 / 离线核查） =="
+.venv/bin/python docs/independent-test-2026-09-19/repro/p2_5_ddl_bypass_guarded.py
+
 echo "== 6. 文档数字对账（W7 的 9 条 claim 已升到 verify，这一步会多跑约 38s） =="
 .venv/bin/python scripts/check_facts.py --run verify
 
-echo "== 7. 变异门禁：先移开陈旧的 mutants/ 缓存再全量重跑（否则是增量结果，不是基线） =="
+echo "== 7. 变异门禁：刷新基线（脚本自己会先把陈旧的 mutants/ 移开） =="
 # ⚠️ 关键：mutants/ 缓存还在时 `mutmut run` 只重跑"函数哈希变了"的变异体。
 # 本轮踩过这个坑：改过 harness/execution.py 后直接 --update-baseline，
 # 14.7 秒"跑完"、no_tests 从 18 虚增到 241 —— 那是混合了旧判决的增量结果。
-# 刷新基线必须先整体移开缓存。
-mv mutants /tmp/mutants-previous
+# 现在这条纪律是**代码**：--update-baseline 会先整体移开缓存（mutants.stale-<UTC>/）
+# 再跑全量；要沿用旧缓存必须显式 --allow-incremental-refresh（会大声警告）。
 .venv/bin/python scripts/mutation_check.py --update-baseline --timeout 2400 \
     --json-out /tmp/mutation-w11-run1.json
 

@@ -9,6 +9,11 @@
 2. 审计原库 → 期望 ``ok=true``；
 3. 复制一份，绕过触发器改掉一行历史（模拟"库被换过/被改过"），审计副本
    → 期望 ``ok=false`` 且 ``first_break.code == INV-008``，并报出断点位置。
+
+顺带回答第二个问题（独立验证 2026-09-19 · P2-5）：**append-only 防线还在不在**。
+第 3 步的篡改本身就是"把触发器拆掉"，所以干净副本的 ``verify_append_only_guard``
+必须是 ok，而篡改副本必须不是——链完整与"历史物理只读"是两件事，claim 门禁
+对这两件事各有一条绑定。
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from harness.audit_chain import audit  # noqa: E402
+from harness.store.guard import verify_append_only_guard  # noqa: E402
 
 
 def _worker(run_dir: Path, mode: str) -> int:
@@ -71,21 +77,27 @@ def run_check(*, workroot: Path, tamper_seq: int = 4) -> dict:
             )
 
     clean = audit(run_dir / "runtime.db")
+    clean_guard = verify_append_only_guard(run_dir / "runtime.db")
 
     mirror_dir = workroot / "mirror"
     shutil.copytree(run_dir, mirror_dir)
     _tamper(mirror_dir / "runtime.db", seq=tamper_seq)
     tampered = audit(mirror_dir / "runtime.db")
+    tampered_guard = verify_append_only_guard(mirror_dir / "runtime.db")
 
     return {
         "clean_ok": clean["ok"],
         "clean_events": clean["events_checked"],
+        "clean_guard_ok": clean_guard["ok"],
         "tampered_ok": tampered["ok"],
+        "tampered_guard_ok": tampered_guard["ok"],
+        "tampered_guard_missing": (tampered_guard["guard"] or {}).get("missing_triggers"),
         "detection_code": (tampered["first_break"] or {}).get("code"),
         "first_break_seq": (tampered["first_break"] or {}).get("seq"),
         "first_break_detail": (tampered["first_break"] or {}).get("detail"),
         "note": (
-            "干净库通过、被篡改的副本必须被指出第一个断点——链不阻止篡改，只让篡改无法静默"
+            "干净库通过、被篡改的副本必须被指出第一个断点——链不阻止篡改，只让篡改无法静默；"
+            "篡改会先把 append-only 触发器拆掉，所以同一次篡改在防线核查上也要留下痕迹"
         ),
     }
 
@@ -101,7 +113,13 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.json_out).write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-    ok = result["clean_ok"] and not result["tampered_ok"] and result["detection_code"] == "INV-008"
+    ok = (
+        result["clean_ok"]
+        and not result["tampered_ok"]
+        and result["detection_code"] == "INV-008"
+        and result["clean_guard_ok"]
+        and not result["tampered_guard_ok"]
+    )
     return 0 if ok else 1
 
 

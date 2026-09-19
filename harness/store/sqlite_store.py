@@ -7,6 +7,10 @@
   （W3 的 lease 事件），存储层不假装能解决。
 * 每一次 append 都在 ``BEGIN IMMEDIATE`` 事务内完成"读 next_seq → 插入"，
   因此 seq 连续性不依赖调用方。
+* 历史只读有三层：三条 SQLite 触发器（DML 层，``schema.py``）、本连接的 DDL 防线
+  （``guard.py``：authorizer + DEFENSIVE），以及**写前的逐字核查**
+  （``append_many`` 在事务里跑 ``assert_guard_intact``）——防线被拆掉之后，
+  下一次追加拿不到"照常写"的通行证。
 
 分叉（fork）不复制历史：子分支只记录 ``parent_branch_id + fork_event_id``，
 有效日志 = 父分支有效日志截断到 fork 点 + 子分支自身事件。这样"共享前缀"
@@ -26,6 +30,13 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from ..events import GENESIS_HASH, Event, EventKind, NewEvent, Source, compute_event_hash
+from .guard import (
+    AppendOnlyGuardError,
+    GuardStatus,
+    assert_guard_intact,
+    guard_report,
+    install_connection_guard,
+)
 from .schema import DDL, MIGRATIONS, SCHEMA_VERSION
 
 
@@ -53,6 +64,7 @@ class SqliteStore:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
         self._lock = threading.Lock()
+        self._guard: GuardStatus | None = None
         self._conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -62,8 +74,18 @@ class SqliteStore:
 
     # ------------------------------------------------------------------ setup
 
-    def setup(self) -> None:
+    def setup(self, *, allow_repair: bool = False) -> None:
+        """建库/迁移/装防线。
+
+        ``allow_repair``（默认 False）只影响一种情况：库记录的版本**已经是最新**、
+        却已经没有完整的 append-only 防线。那不是「待跑的迁移」能解释的差异——默认
+        拒绝并报错，因为顺手修好会把「这个库曾经不只读」变回静默；调用方要修就得
+        显式写 ``setup(allow_repair=True)``，把「我知道它被动过」留在代码里。
+        """
         with self._lock:
+            recorded = self._recorded_schema_version_locked()
+            if recorded == SCHEMA_VERSION and not allow_repair:
+                self._refuse_undeclared_drift_locked(recorded)
             self._conn.executescript(DDL)
             row = self._conn.execute(
                 "SELECT value FROM schema_meta WHERE key='schema_version'"
@@ -79,27 +101,69 @@ class SqliteStore:
                         "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                         (version, time.time()),
                     )
-                return
-            current = int(row["value"])
-            if current > SCHEMA_VERSION:
-                raise StoreError(f"database schema v{current} is newer than code v{SCHEMA_VERSION}")
-            for version in sorted(MIGRATIONS):
-                if current < version <= SCHEMA_VERSION:
-                    migration = MIGRATIONS[version]
-                    if callable(migration):
-                        # 事务内执行：补链失败就整体回滚，绝不留下"触发器没了"的半成品
-                        with self._tx():
-                            migration(self._conn)
-                    else:
-                        self._conn.executescript(migration)
-                    self._conn.execute(
-                        "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
-                        (version, time.time()),
+            else:
+                current = int(row["value"])
+                if current > SCHEMA_VERSION:
+                    raise StoreError(
+                        f"database schema v{current} is newer than code v{SCHEMA_VERSION}"
                     )
-                    self._conn.execute(
-                        "UPDATE schema_meta SET value=? WHERE key='schema_version'",
-                        (str(version),),
-                    )
+                for version in sorted(MIGRATIONS):
+                    if current < version <= SCHEMA_VERSION:
+                        migration = MIGRATIONS[version]
+                        if callable(migration):
+                            # 事务内执行：补链失败就整体回滚，绝不留下"触发器没了"的半成品
+                            with self._tx():
+                                migration(self._conn)
+                        else:
+                            self._conn.executescript(migration)
+                        self._conn.execute(
+                            "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                            (version, time.time()),
+                        )
+                        self._conn.execute(
+                            "UPDATE schema_meta SET value=? WHERE key='schema_version'",
+                            (str(version),),
+                        )
+            self._install_guard_locked()
+
+    def _recorded_schema_version_locked(self) -> int | None:
+        """库自己登记的 schema 版本；返 None 表示"没有登记"（全新库，或 DDL 只建了一半）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return None
+        return int(row["value"]) if row is not None else None
+
+    def _refuse_undeclared_drift_locked(self, recorded: int) -> None:
+        """版本已是最新却防线不全：这不是"待跑的迁移"，是"库被改过"，默认拒绝。"""
+        report = guard_report(self._conn)
+        if report["ok"]:
+            return
+        raise AppendOnlyGuardError(
+            f"库记录为 schema v{recorded}（当前代码 v{SCHEMA_VERSION}），没有任何迁移待跑，"
+            "但 append-only 防线已经不完整：" + "；".join(report["problems"])
+            + "。默认**不顺手修**——一修就把「这个库曾经不只读」变回静默，"
+            "而挪走触发器的人正是要这个。若你确认这是有意为之（例如本地手工调过 schema），"
+            "写 `SqliteStore(path).setup(allow_repair=True)` 显式重建，"
+            "并对这段时间里写过的内容当作可能已被改写处理。"
+        )
+
+    def _install_guard_locked(self) -> GuardStatus:
+        """DDL/迁移之后装防线：先核查（挡住"预先放一个同名空触发器"的库），再装连接层。
+
+        顺序有讲究——v3 迁移要临时 ``DROP TRIGGER`` 再重建，authorizer 装上之后
+        那一步会被拒；所以这里必须是 ``setup()`` 的最后一步。
+        """
+        assert_guard_intact(self._conn)
+        self._guard = install_connection_guard(self._conn)
+        return self._guard
+
+    @property
+    def guard_status(self) -> GuardStatus | None:
+        """连接层防线的实际状态；``setup()`` 之前为 None。"""
+        return self._guard
 
     @property
     def schema_version(self) -> int:
@@ -212,6 +276,12 @@ class SqliteStore:
             return []
         stored: list[Event] = []
         with self._lock, self._tx():
+            # 写前核查（P2-5）：触发器或表结构被外部改过 ⇒ 这个库的"历史只读"已经不成立，
+            # 此时继续追加等于往一个不再可信的日志里写。fail-closed 比"写进去再说"诚实。
+            assert_guard_intact(self._conn)
+            if self._guard is None:
+                # 没跑过 setup()（或 setup() 之前就被写过）：连接层防线此刻补装
+                self._guard = install_connection_guard(self._conn)
             for new in news:
                 seq = self._next_seq_locked(new.branch_id, new.run_id)
                 if new.parent_id is not None:

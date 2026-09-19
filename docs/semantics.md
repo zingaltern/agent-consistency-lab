@@ -69,10 +69,24 @@
 schema 升 v4，存量库由 `MIGRATIONS[4]` 幂等补触发器；
 回归用例在 `tests/test_event_log.py`（两条路径各一例，docstring 写明"修复前会怎样"）。
 
-**边界（不要读过头）**：这条承诺只覆盖**普通 DML**。能拿连接的一方仍可用 DDL 绕过——
-`DROP TRIGGER`、`ALTER TABLE ... RENAME`、`PRAGMA writable_schema=ON` 直改 `sqlite_master`
-都不在守卫范围内（未处置清单见 `docs/independent-test-2026-09-19/report.md`）。
-守卫防的是**应用代码走错路**，不是"能连上数据库的攻击者"。
+**边界（不要读过头）**：触发器只覆盖**普通 DML**。改历史还有一条 DDL 路——
+`DROP TRIGGER`、`ALTER TABLE ... RENAME`、`PRAGMA writable_schema=ON` 直改 `sqlite_master`，
+独立验证 2026-09-19（P2-5）在默认连接上实测过：一句 `DROP TRIGGER events_no_update`
+就能让随后的 `UPDATE events` 畅通。W11 因此把守卫做成四层，边界如实写在这里：
+
+| 层 | 做什么 | 落点 |
+|---|---|---|
+| 触发器（DML） | 三条 `BEFORE` 触发器 `RAISE(ABORT)` | `harness/store/schema.py` |
+| 连接层（防） | 本连接装 `set_authorizer`：拒 `DROP TRIGGER` / `DROP TABLE\|VIEW\|INDEX` / `ALTER TABLE` / 写 `sqlite_master` / `PRAGMA writable_schema`；Python 3.12+ 另开 `SQLITE_DBCONFIG_DEFENSIVE`（让 `writable_schema=ON` 静默失效） | `harness/store/guard.py::install_connection_guard` |
+| 写前核查（检测） | 追加前比对 `sqlite_master` 里的触发器定义与 `events` 表结构：对不上 ⇒ `AppendOnlyGuardError`，**fail-closed**（不写）；`setup()` 在版本已是最新却防线不全时同样默认拒绝，要修必须显式 `setup(allow_repair=True)` | `guard.py::assert_guard_intact`、`harness/store/sqlite_store.py` |
+| 离线核查 | `audit_chain` 的结果多一个 `guard` 字段并计入退出码；`verify_append_only_guard(db)` 单独回答"防线还在不在"（连 `-wal`/`-shm` 快照） | `guard.py`、`harness/audit_chain.py` |
+
+**残余边界（仍然不要读过头）**：连接层只保护**本进程这一条连接**。拿到数据库文件的人
+可以另开一条没有防线、也没有触发器的连接——他能改文件，也能在改完之后把触发器文本与
+`PRAGMA schema_version` 一起凑成"看起来没被动过"的样子。链没有密钥，所以这不是
+密码学意义上的防篡改：**防线把"静默改写"的窗口从"任意时刻的一行 SQL"压缩成
+"能写这个文件的人刻意伪造 schema"，并让后者在离线审计里留下痕迹。**
+守卫防的是**应用代码走错路**与**顺手拆防线**，不是"能写数据库文件的人"。
 
 要修正历史，只能追加新事件并由视图层重新解释。
 

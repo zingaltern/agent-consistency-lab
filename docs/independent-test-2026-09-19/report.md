@@ -29,13 +29,12 @@ claim 对账这套"别人可以自己验证我"的机制是**真的**，不是�
 
 **已修**：3 条 P0 全部修复并各自附了"修复前会怎样"的回归用例 + 退化注入验证；
 4 条 P1 全部修复（其中两条是"数字/产物不再是当前代码的产物"）；
-8 条 P2 里 6 条修文档措辞、2 条（DDL 绕过路径、门禁量 pooling）明确登记为未处置边界。
+8 条 P2 里 6 条修文档措辞、1 条（DDL 绕过路径）**后续已补实现**（三层防线，见 §3 的 P2-5 与 §5 第 1 条）、
+1 条（门禁量 pooling）明确登记为未处置边界。
 另外**按新代码重刷了变异基线**（`2050 / killed 1332 / survived 700 / no_tests 18`，
 不可见空间 0.9%），并顺手量了一次它的判决稳定性（同代码两遍全量：2050 条**零翻转**）。
 
-**未做**：见 §5。最重要的两条是 —— (1) `DROP TRIGGER` / `writable_schema` 这类 **DDL 绕过
-不在 append-only 守卫范围内**（守卫防的是应用代码走错路，不是能拿连接的攻击者），
-这属于**承诺边界的收窄**而不是缺陷修复；(2) README 里仍有一批**没有 claim 覆盖**的数字
+**未做**：见 §5。最重要的一条是 README 里仍有一批**没有 claim 覆盖**的数字
 （14 格 / 1536 / 50% / κ=1.0 等），它们**没有**机器对账。
 
 ---
@@ -217,7 +216,7 @@ README 的 W3 括注当时写的是"**14 格 × 5 次 = 70 次运行，其中 65
 | P2-2 | 配对 MDE 的 discordant 计数错用"两臂阳性数之和"（当前恰好相等，换了竞争假设会算大） | 已修 + 单元用例 |
 | P2-3 | 三个 MDE 数字（配对 9.2% / 独立 p=0.5 的 10.0% / p≈0.9 的 CI 半宽 6.0%）只有 6.0% 被物化，而文档拿它当"最小可检测效应"引用（漏功效项 + 用错公式） | 三个全部物化、各自一条 claim、口径写进 `HANDOFF` §三与 `w6-report` §二 |
 | P2-4 | 门禁量 pooling dev+holdout（口径不自洽） | **未处置**（登记在 §5） |
-| P2-5 | `ALTER TABLE ... RENAME`、`PRAGMA writable_schema` 等 DDL 绕过路径未登记 | 已写进 §2.1 的边界声明；**实现未防**（登记在 §5） |
+| P2-5 | `ALTER TABLE ... RENAME`、`PRAGMA writable_schema` 等 DDL 绕过路径未登记 | 先写进 §2.1 的边界声明；**后续已补实现**（三层防线：authorizer + `DBCONFIG_DEFENSIVE`、写前逐字核查与 `setup()` 默认拒绝、离线核查；残余边界仍在 §2.1） |
 | P2-6 | 4 条 W4 claim 的 `what` 散文与 `value` 不一致（+104.6 vs +105.1 等） | 已对齐 |
 | P2-7 | README 的末位数字（`$0.01078+$0.00357` 与 `$0.01436` 差一个末位）、`-66%/-61%` 缺"截断期均值"口径 | 已补口径 |
 | P2-8 | `docs/w5-report.md` §三 是 CRN 修正前的数字（且它引用的 `reports/w5_eval.json` 不存在）、`docs/w6-report.md` §二/§三/§四/§五 是 CRN 修正前的数字 | §三 加历史快照横幅、改指 `reports/w6_eval.json`；w6 各节数字对齐当前产物 |
@@ -239,10 +238,18 @@ README 的 W3 括注当时写的是"**14 格 × 5 次 = 70 次运行，其中 65
 
 ## 5. 未处置 / 未覆盖的风险
 
-1. **append-only 的边界止于普通 DML**：`DROP TRIGGER`、`ALTER TABLE ... RENAME`、
-   `PRAGMA writable_schema=ON` 都能绕过守卫。已在 `semantics.md` §2.1 写明这是**范围外**。
-   要不要防（例如把 schema 放进只读连接、或在启动时校验 `sqlite_master` 与期望 DDL 逐字一致）
-   是仓库所有者的决定，不是我在这一轮里单方面改的。
+1. **append-only 的边界**：`DROP TRIGGER`、`ALTER TABLE ... RENAME`、`PRAGMA writable_schema=ON`
+   原先都能绕过守卫，本文写作时只在 `semantics.md` §2.1 写成**范围外**。
+   这块**已在本轮之后补上实现**：`harness/store/guard.py` 给连接装 authorizer
+   （拒 `DROP TRIGGER` / `DROP TABLE|VIEW|INDEX` / `ALTER TABLE` / 写 `sqlite_master` /
+   `PRAGMA writable_schema`；Python 3.12+ 另开 `SQLITE_DBCONFIG_DEFENSIVE`），
+   `append_many()` 与 `setup()` 在动手之前先把 `sqlite_master` 里的触发器文本与
+   `events` 结构逐字对回 DDL（版本已是最新却防线不全 ⇒ 默认拒绝，要修必须显式
+   `setup(allow_repair=True)`），`audit_chain` 的结果多一个 `guard` 字段并计入退出码。
+   **残余（仍然不能读过头）**：防线只保护**本进程这一条连接**。拿到库文件的人可以另开
+   一条没有防线的连接，改完之后把触发器文本与 `PRAGMA schema_version` 一起凑回
+   "看起来没被动过"的样子。链没有密钥，所以这不是防篡改——它保证的是**改写无法静默**。
+   退化注入验证（把 authorizer 摘掉 / 把写前核查摘掉 ⇒ 用例必须变红）见 `docs/testing.md` §3。
 2. **门禁量把 dev 与 holdout pooling**（P2-d）：报告里分开报了，门禁的判据里没有。
    改它要动判据阈值，属于"改门禁语义"，按仓库纪律应当单独一轮做。
 3. **README 里没有 claim 覆盖的数字**：14 格 / 1536 次 / workflow 50% / κ=1.0 等
@@ -257,8 +264,11 @@ README 的 W3 括注当时写的是"**14 格 × 5 次 = 70 次运行，其中 65
    它只重跑"函数哈希变了"的变异体。我在改过 `harness/execution.py` 之后直接
    `--update-baseline`，14.7 秒"跑完"并写出了一份 `no tests` 从 18 虚增到 241 的基线——
    那是**混合了 W10 旧判决**的增量结果，不是基线。判据本身没错（`--update-baseline` 只在
-   `mutmut run` 退出 0 时才写），但**"退出 0"骗不过增量**：把 `mutants/` 整体移开再全量跑
-   才是刷新基线的正确姿势。这条已写进 `docs/HANDOFF.md` §十。
+   `mutmut run` 退出 0 时才写），但**"退出 0"骗不过增量**。
+   **后续已把这条纪律变成代码**：`scripts/mutation_check.py --update-baseline` 现在会先把
+   `mutants/` 整体移开（`mutants.stale-<UTC 时间戳>/`，已 gitignore）再跑全量，并把条件写进
+   基线与 `--json-out` 的 `refresh` 字段；要沿用旧缓存必须显式 `--allow-incremental-refresh`
+   （会大声警告）。`docs/HANDOFF.md` §十第 4 条同步改写。
 6. **`docs/resume.md` 的"LangGraph 95 行 vs 自研 340 行"**：这两个行数没有 claim 覆盖，
    本轮没有独立复核，仍按作者原文保留。
 
@@ -269,6 +279,7 @@ README 的 W3 括注当时写的是"**14 格 × 5 次 = 70 次运行，其中 65
 | 证据 | 位置 |
 |---|---|
 | P0-1 最小复现 | `repro/p0_1_append_only_bypass.py` |
+| P2-5 最小复现（DDL 防线三层：防 / 写前核查 / 离线核查） | `repro/p2_5_ddl_bypass_guarded.py` |
 | P0-2 回归用例（真 SIGKILL + 项目自己的 oracle 判） | `tests/test_audit_regressions.py::test_event_lands_before_the_dedup_row_is_closed` |
 | P0-1 的四条触发器件数用例 | `tests/test_event_log.py`（`test_trigger_blocks_*`）、`tests/test_hash_chain.py`（迁移） |
 | P0-3 / P1-1 的四条新门禁 | `opsenv/suite.py`（`check_gates` 两处新段） |

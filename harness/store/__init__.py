@@ -10,14 +10,24 @@ from .checkpoints import (
     WriteIdx,
     classify_writes,
 )
+from .guard import (
+    AppendOnlyGuardError,
+    GuardStatus,
+    assert_guard_intact,
+    guard_report,
+    install_connection_guard,
+    verify_append_only_guard,
+)
 from .sqlite_store import BranchRow, RunRow, SqliteStore, StoreError
 from .tool_calls import ToolCallRecord, ToolCallStore
 
 __all__ = [
     "CHECKPOINT_PAYLOAD_VERSION",
+    "AppendOnlyGuardError",
     "BranchRow",
     "Checkpoint",
     "CheckpointTuple",
+    "GuardStatus",
     "RecoveryPlan",
     "RunRow",
     "SqliteCheckpointSaver",
@@ -27,5 +37,9 @@ __all__ = [
     "ToolCallStore",
     "Write",
     "WriteIdx",
+    "assert_guard_intact",
     "classify_writes",
+    "guard_report",
+    "install_connection_guard",
+    "verify_append_only_guard",
 ]

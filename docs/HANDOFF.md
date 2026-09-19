@@ -4,7 +4,7 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W11（独立验证 2026-09-19：append-only 的 INSERT 旁路 + 落盘顺序 + 门禁指标定义覆盖面）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
+更新时间：W11（独立验证 2026-09-19：append-only 的 INSERT 旁路 + DDL 防线 + 落盘顺序 + 门禁指标定义覆盖面）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
 
 > **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
 > `reports/documented-facts.json`（claim 清单，条数以 `check_facts.py --list` 为准），
@@ -22,9 +22,15 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 > 而隐式 DELETE 不触发 `BEFORE DELETE` 触发器（`recursive_triggers` 默认 OFF），
 > 于是普通 DML 就能把已提交事件换掉。修法是第三条触发器（`BEFORE INSERT` 守卫），schema 升 v4；
 > (2) **门禁只断言"比率等于多少常数"**，把指标定义改掉可以让它们全绿——新增四条**关系**门禁
-> （指标定义 / 新破坏性动作的对称自检 / CRN）。
-> 改 `harness/store/schema.py`、`harness/execution.py` 或 `opsenv/suite.py::check_gates` 之前，
-> 先读 **§十**。另外：`docs/semantics.md` §2.1 与 §2.4 的措辞已按实测收窄。
+> （指标定义 / 新破坏性动作的对称自检 / CRN）；
+> (3) **append-only 原先没防 DDL 路**——一句 `DROP TRIGGER` 就能让后续 `UPDATE` 畅通。
+> 现在有四层：触发器（DML）、连接层 authorizer + `DBCONFIG_DEFENSIVE`（防）、
+> 追加前的逐字核查与 `setup()` 默认拒绝（检测）、`audit_chain` 的 `guard` 字段与
+> `verify_append_only_guard`（离线）。**残余边界写在 `docs/semantics.md` §2.1**：
+> 拿到库文件的人仍可另开无防线连接，链没有密钥。
+> 改 `harness/store/schema.py`、`harness/store/guard.py`、`harness/store/sqlite_store.py`、
+> `harness/execution.py` 或 `opsenv/suite.py::check_gates` 之前，先读 **§十**。
+> 另外：`docs/semantics.md` §2.1 与 §2.4 的措辞已按实测收窄。
 
 ---
 
@@ -294,15 +300,19 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
 | P1-3 W7 成本数字不再再生 | 入库产物是旧代码的产物；9 条 claim 只在 nightly 对账 ⇒ push 上没人看得见 | 重生产物 + 回灌文档；9 条 claim 的 `run` 从 `nightly` **升到 `verify`**（facts 作业因此多约 38 秒） |
 | P1-4 README 的 W3 括注过期 | "14 格 × 5 次 = 70 次运行、65 次 SIGKILL" ⇒ 实际 16 格 / 80 次 / 70 次 | README / `pitch` / `resume` 三处对齐 |
 | P1-5 mutation claim 不是再生 | `--summary-only` 只读回入库基线，永远抓不到漂移 | `what` 里如实标注性质 + 带上基线计数（不假装是再生） |
+| P2-5 DDL 绕过路径未登记（**本轮补做**） | `DROP TRIGGER` / `ALTER TABLE ... RENAME` / `PRAGMA writable_schema` 都不在守卫范围内，§2.1 的"物理上禁止改写历史"只覆盖普通 DML | `harness/store/guard.py`（authorizer 拒 DDL + `DBCONFIG_DEFENSIVE` + `guard_report`）、`sqlite_store.setup/append_many` 的写前核查与 `allow_repair`、`audit_chain` 的 `guard` 字段、`verify_append_only_guard`、`tests/test_append_only_guard.py` 17 例、新增两条 `chain-mirror-*-guard-*` claim |
 
-P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling、DDL 绕过路径、
+P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling、DDL 绕过路径（**已补**）、
 W4 claim 散文、README 末位与口径、w5/w6 的 CRN 修正前数字、`artifacts --help` 告警、
 venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 
 ### 本轮之后仍需注意的（**改这几处前先读报告**）
 
-1. **append-only 的守卫只覆盖普通 DML**：`DROP TRIGGER`、`ALTER TABLE ... RENAME`、
-   `PRAGMA writable_schema=ON` 都不在范围内（§2.1 已写明）。是否防、怎么防，是**所有者决定**。
+1. **append-only 的 DDL 防线只保护本进程的连接**（P2-5 已补三层：authorizer + DEFENSIVE、
+   写前逐字核查、离线核查）。**残余边界不变**：拿到数据库文件的人可以另开一条没有防线、
+   没有触发器的连接，改完还能把触发器文本与 `PRAGMA schema_version` 一起凑成"看起来没被动过"
+   的样子；链没有密钥，所以这不是密码学意义上的防篡改（§2.1 已写明）。
+   真正不可越过的那条线是**"改写无法静默"**：链与离线核查会把痕迹留在审计里。
 2. **门禁量仍 pooling dev+holdout**：报告分开报，判据没分。改它 = 改门禁语义，应单独一轮。
 3. **README 里仍有一批没有 claim 覆盖的数字**（14 格 / 1536 / workflow 50% / κ=1.0 等）。
 4. **变异基线已按 W11 的代码重刷**：`harness/execution.py` 改过 ⇒ mutmut 按**函数内序号**
@@ -314,3 +324,8 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    顺带补了 §九第 3 条"判决不承诺稳定"的**实测**：同一份代码连跑两遍全量，
    **2050 条逐条判决零翻转**、门禁退出 0——所以那条是"不承诺"，不是"已知会红"。
    （改动前后基线的差异因为命名位移而**不可比**，不要拿旧基线的名字去对。）
+   **这条纪律现在是代码而不是提醒**：`scripts/mutation_check.py --update-baseline` 会自动
+   把 `mutants/` 整体移开（改名成 `mutants.stale-<UTC 时间戳>/`，已 gitignore）再跑全量，
+   并把这次的条件写进基线与 `--json-out` 的 `refresh` 字段；要沿用旧缓存必须显式
+   `--allow-incremental-refresh`（会大声警告）。判据是"缓存干不干净"，不是 mtime——
+   同模块里没改过的函数本来就该保留旧判决，只有"整体重跑"才谈得上基线。

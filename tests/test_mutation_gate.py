@@ -570,3 +570,142 @@ def test_baseline_records_the_boundary_of_what_it_can_see() -> None:
     assert "不是覆盖率" in note
     # 已知无结论集合里混着真盲区，这条必须写在基线里（不得读成"不是盲区"）
     assert "is_expired__mutmut_9" in note
+
+
+# ------------------------------------------- 刷新基线必须先有干净缓存（增量陷阱）
+
+
+def test_refresh_plan_moves_a_stale_cache_aside(tmp_path: Path) -> None:
+    """**修复前会怎样**：`--update-baseline` 直接在旧缓存上跑，`mutmut run` 走增量路径，
+    写出的"基线"是旧判决与新判决的混合物（2026-09-19 实测：14.7 秒"跑完"、
+    `no tests` 从 18 虚增到 241）。现在默认把 `mutants/` 整体移开再跑全量。"""
+    module = _load_script()
+    mutants = tmp_path / "mutants"
+    mutants.mkdir()
+    (mutants / "state").write_text("旧判决", encoding="utf-8")
+
+    plan = module.baseline_refresh_plan(
+        update_baseline=True,
+        allow_incremental=False,
+        mutants_dir=mutants,
+        stamp="20260919T101010Z",
+    )
+    assert plan["action"] == "move-aside"
+    assert plan["moved_to"].endswith("mutants.stale-20260919T101010Z")
+
+    module.apply_baseline_refresh_plan(plan)
+    assert not mutants.exists(), "旧缓存必须整体让开，否则本轮仍是增量"
+    moved = Path(plan["moved_to"])
+    assert (moved / "state").read_text(encoding="utf-8") == "旧判决", "移开而不是删掉"
+
+
+def test_refresh_plan_is_a_noop_when_not_refreshing(tmp_path: Path) -> None:
+    """判定轮**不该**动缓存：增量是 mutmut 的正常工作方式（判定读的是全量结果表）。"""
+    module = _load_script()
+    mutants = tmp_path / "mutants"
+    mutants.mkdir()
+    plan = module.baseline_refresh_plan(
+        update_baseline=False,
+        allow_incremental=False,
+        mutants_dir=mutants,
+        stamp="20260919T101010Z",
+    )
+    assert plan["action"] == "none"
+    module.apply_baseline_refresh_plan(plan)
+    assert mutants.exists()
+
+
+def test_refresh_plan_runs_full_when_there_is_no_cache(tmp_path: Path) -> None:
+    """没有缓存 ⇒ 本来就是全量，什么都不用搬。"""
+    module = _load_script()
+    plan = module.baseline_refresh_plan(
+        update_baseline=True,
+        allow_incremental=False,
+        mutants_dir=tmp_path / "mutants",
+        stamp="20260919T101010Z",
+    )
+    assert plan["action"] == "full-run"
+    assert plan["moved_to"] is None
+
+
+def test_incremental_refresh_needs_the_explicit_escape_hatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """沿用旧缓存必须**显式**要求，而且要有警告——默认行为不允许写出混合基线。"""
+    module = _load_script()
+    mutants = tmp_path / "mutants"
+    mutants.mkdir()
+    plan = module.baseline_refresh_plan(
+        update_baseline=True,
+        allow_incremental=True,
+        mutants_dir=mutants,
+        stamp="20260919T101010Z",
+    )
+    assert plan["action"] == "incremental"
+    module.apply_baseline_refresh_plan(plan)
+    assert mutants.exists(), "显式要求沿用 ⇒ 不该动缓存"
+    out = capsys.readouterr().out
+    assert "警告" in out
+    assert "混合" in out
+
+
+def test_stale_cache_target_does_not_overwrite_an_existing_one(tmp_path: Path) -> None:
+    """同一秒里连刷两次也要有去处：不许覆盖前一次移开的缓存。"""
+    module = _load_script()
+    mutants = tmp_path / "mutants"
+    mutants.mkdir()
+    first = tmp_path / "mutants.stale-20260919T101010Z"
+    first.mkdir()
+    (first / "state").write_text("第一次", encoding="utf-8")
+
+    plan = module.baseline_refresh_plan(
+        update_baseline=True,
+        allow_incremental=False,
+        mutants_dir=mutants,
+        stamp="20260919T101010Z",
+    )
+    module.apply_baseline_refresh_plan(plan)
+    assert plan["moved_to"].endswith("-2")
+    assert (first / "state").read_text(encoding="utf-8") == "第一次"
+
+
+def test_update_baseline_moves_the_cache_before_running_mutmut(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """端到端：`main(--update-baseline)` 在**调用 mutmut 之前**就把缓存搬走了，
+    并把这次的条件写进基线与 `--json-out`（混合与否不能靠人记）。"""
+    module = _load_script()
+    mutants = tmp_path / "mutants"
+    mutants.mkdir()
+    (mutants / "state").write_text("旧判决", encoding="utf-8")
+    seen: dict[str, Any] = {}
+
+    def fake_run(**kwargs: Any) -> None:
+        seen["cache_present_at_run"] = mutants.exists()
+
+    monkeypatch.setattr(module, "MUTANTS_DIR", mutants)
+    monkeypatch.setattr(module, "run_mutmut", fake_run)
+    monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets({"killed": ["m1"]}))
+    monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(json.dumps(_baseline_v2({"m1": "killed"})), encoding="utf-8")
+    json_out = tmp_path / "run.json"
+    code = module.main(
+        [
+            "--baseline",
+            str(baseline_path),
+            "--json-out",
+            str(json_out),
+            "--timeout",
+            "1",
+            "--update-baseline",
+        ]
+    )
+
+    assert code == 0
+    assert seen["cache_present_at_run"] is False, "缓存必须在跑之前就让开"
+    assert list(tmp_path.glob("mutants.stale-*")), "旧缓存要有个去处（不是删掉）"
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["refresh"]["action"] == "move-aside"
+    assert json.loads(json_out.read_text(encoding="utf-8"))["refresh"]["action"] == "move-aside"

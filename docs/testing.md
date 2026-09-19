@@ -50,6 +50,12 @@
                                                        # ⚠️ 变异体总数为 0、或一条都没被判定，都判失败
                                                        # （"跑不起来"≠"没有盲区"）；超时/中止路径
                                                        # **也会写 `--json-out`**（nightly 要能上传它）
+                                                       # ⚠️ 刷新基线（`--update-baseline`）时 `mutants/`
+                                                       # 会被**自动整体移开**再跑全量：`mutmut run` 是增量的，
+                                                       # 缓存还在就只重跑"函数哈希变了"的变异体，写出的基线
+                                                       # 会混合旧判决（2026-09-19 实测过一次：14.7 秒"跑完"、
+                                                       # `no tests` 从 18 虚增到 241）。要沿用旧缓存必须显式
+                                                       # `--allow-incremental-refresh`（会大声警告）
                                                        # ⚠️ 每次运行都打印"不可见空间"的规模：
                                                        # survivor_rate 不是覆盖率
                                                        # ⚠️ 判据的适用边界（三条，别读过头）：
@@ -113,6 +119,20 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 
    还原后基线是全绿。（四条各自的单元用例在 `tests/test_stats_and_gates.py`
    的"指标**定义**门禁与 CRN 门禁"一节，每条都带"改坏什么会让它红"。）
+
+   **W11 补的三层 append-only 防线**（独立验证 2026-09-19 · P2-5；`harness/store/guard.py`）
+   不是"门禁"，但同样是"改坏了必须有人报警"的机制，因此按同一条纪律做了退化注入
+   （本机实测，注入后只跑 `tests/test_append_only_guard.py`，注入文件已还原）：
+
+   | 层 | 怎么把它弄坏 | 期望 | 实测 |
+   |---|---|---|---|
+   | 连接层（authorizer） | 注释掉 `install_connection_guard` 里的 `conn.set_authorizer(...)` | 只有"连接层"两条用例变红，其余不变 | 2 failed / 15 passed；红的是 `test_dropping_a_guard_trigger_is_refused_on_the_store_connection`、`test_alter_table_rename_and_schema_writes_are_refused` |
+   | 写前核查 | 删掉 `append_many()` 里的 `assert_guard_intact(self._conn)` | "别人拆了防线 ⇒ 下次追加 fail-closed"那条必红 | 1 failed / 16 passed；红的是 `test_appending_after_an_external_drop_fails_closed` |
+   | 离线核查计入结论 | 把 `audit()` 的 `ok` 改回 `not violations`（防线不计入退出码） | 只有"防线被拆 ⇒ 退出码 1"的两条变红 | 2 failed / 15 passed；红的是 `test_verify_append_only_guard_detects_a_missing_trigger`、`test_audit_chain_reports_the_guard_and_its_exit_code` |
+
+   三格都确认了"坏的正是那一条、别的还绿"——不然红的原因可能只是被无关用例带出来的。
+   连线上的正对照见 claim `chain-mirror-clean-guard-ok` /
+   `chain-mirror-tamper-breaks-the-guard`（真跑一遍 run → 干净副本防线 OK、被篡改的副本不 OK）。
 
    `mutation` 门禁的完整判据（六条红灯条件 + 未知状态 fail-closed）与**实跑过的三格
    退化注入记录**见 [`design/2026-09-18-mutation-segfault-investigation.md`](design/2026-09-18-mutation-segfault-investigation.md) §4.1；

@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 440,
+      "value": 463,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1733,6 +1733,51 @@
       "docs": [
         "docs/semantics.md#2.4.1 事件哈希链（R-B3）",
         "tests/test_hash_chain.py"
+      ]
+    },
+    {
+      "id": "chain-mirror-clean-guard-ok",
+      "value": true,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/chain_mirror_check.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "clean_guard_ok"
+      ],
+      "what": "真实写入路径产生的库防线完整（三条触发器文本 + events 表结构逐字对回 DDL）；即「历史物理只读」在干净库上成立",
+      "docs": [
+        "docs/semantics.md#2.1 扁平 append-only 日志",
+        "harness/store/guard.py",
+        "tests/test_append_only_guard.py"
+      ],
+      "doc_literals": [
+        "docs/semantics.md#W11 因此把守卫做成四层"
+      ]
+    },
+    {
+      "id": "chain-mirror-tamper-breaks-the-guard",
+      "value": false,
+      "tolerance": 0,
+      "run": "verify",
+      "source_cmd": [
+        "{python}",
+        "scripts/chain_mirror_check.py",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "tampered_guard_ok"
+      ],
+      "what": "篡改副本的防线必须不再是 ok（值 False = 检出）；篡改要先拆触发器，所以「防线被拆」与「链断了」是同一次篡改留下的两个独立痕迹（missing_triggers 见 tampered_guard_missing）",
+      "docs": [
+        "docs/semantics.md#2.1 扁平 append-only 日志",
+        "harness/store/guard.py",
+        "tests/test_append_only_guard.py"
       ]
     },
     {

@@ -10,7 +10,14 @@
 1. **读库连 `-wal`/`-shm` 一起快照**（外部审计实测的坑：SIGKILL 之后已提交的事件可能
    还在 WAL 里，只拷主库会读到旧状态，把"链是好的"或"链断了"判反）；
 2. **报第一个断点**并给出定位信息（分支 / seq / 事件 id），不打印一堆无用的"全部正常"；
-3. **退出码即结论**：0 = 链完整；1 = 发现断链或内容与哈希不符；2 = 库读不出来。
+3. **退出码即结论**：0 = 链完整且防线在；1 = 断链／内容与哈希不符／append-only 防线被拆；
+   2 = 库读不出来。
+
+第 4 条（独立验证 2026-09-19 · P2-5）**不是**第 1..3 条的改写而是并列的一项：
+链完整与"历史物理只读"是两件事——触发器被 `DROP` 掉之后，链可能仍然完整
+（改写历史的人若同时重算了哈希），但"不可静默改写"的承诺已经没了。
+所以结果里多一个 `guard` 字段（`harness/store/guard.py::guard_report`），
+它也计入 `ok`，`first_break` 仍然只指链上的断点。
 
 链的挂接规则（`harness/store/sqlite_store.py::_prev_hash_locked` 与 semantics.md 一致）：
 同分支上一条的 `event_hash`；分支首条指向 genesis（无父分支）或 **fork 点事件**的
@@ -29,6 +36,7 @@ from typing import Any
 
 from .events import GENESIS_HASH, Event, EventKind, Source
 from .state import verify_chain
+from .store.guard import guard_report
 from .store.snapshot import snapshot_db
 
 # 快照纪律的唯一实现在 harness/store/snapshot.py（P2-17：三份实现会漂移）
@@ -74,6 +82,8 @@ def audit(db_path: Path) -> dict[str, Any]:
                 "SELECT branch_id, parent_branch_id, fork_event_id FROM branches"
             ).fetchall()
         }
+        # 防线核查与链校验并列：链断没断是一回事，"历史还只读吗"是另一回事
+        guard = guard_report(conn)
     except sqlite3.DatabaseError as exc:
         message = f"库无法读取：{type(exc).__name__}: {exc}"
         if "no such column: prev_hash" in str(exc) or "no such column: event_hash" in str(exc):
@@ -145,10 +155,11 @@ def audit(db_path: Path) -> dict[str, Any]:
                 }
             )
     return {
-        "ok": not violations,
+        "ok": not violations and bool(guard["ok"]),
         "db": str(db_path),
         "events_checked": checked,
         "branches_checked": len(by_branch),
+        "guard": guard,
         "violations": violations[:20],
         "violations_total": len(violations),
         "first_break": violations[0] if violations else None,
@@ -178,6 +189,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     if "error" in result:
         return 2
+    if not result["ok"] and not result["violations_total"]:
+        # 链本身没断，是防线没了：退出码 1 需要一个说得出理由的一句话
+        print(
+            "退出码 1：链是完整的，但 append-only 防线不完整——"
+            + "；".join((result["guard"] or {}).get("problems", [])),
+            file=sys.stderr,
+        )
     return 0 if result["ok"] else 1
 
 

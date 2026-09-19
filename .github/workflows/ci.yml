@@ -33,8 +33,11 @@ jobs:
   facts:
     # 「文档里的每个数字都必须能由命令再生」这条纪律的执行者：
     # claim 清单在 reports/documented-facts.json，逐条重跑再生命令并比对 JSON 路径。
-    # 这里只跑 run=verify 的轻 claim 集（约 5 秒）；crash_matrix / context_sweep /
-    # 1536 次整量评测属于 nightly 作业（nightly.yml）。
+    # 这里跑 run=verify 的轻 claim 集（约 40 秒，其中阈值扫描 `context_sweep --repeats 2` 独占约 38 秒）；
+    # crash_matrix --repeats 5 / 1536 次整量评测 / 变异测试属于 nightly 作业（nightly.yml）。
+    # ⚠️ W7 的 9 条成本 claim 曾在 nightly 里对账，结果是"改了代码、产物与文档一起过期，
+    # 而 push 上没人看得见"（独立验证 2026-09-19 · P1）——它们已全部升到 verify，
+    # 宁可多花 38 秒，也不要一条没人跑的对账。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +76,11 @@ jobs:
       - name: Context cost experiment (W4)
         run: python -m experiments.context_cost --json-out /tmp/cost.json --md-out /tmp/cost.md
       - name: Four-system evaluation with gates (W5/W6)
-        # 门禁包含：红线不变量、审批覆盖率、取证充分性、实验假设自检、配对 CI 方向
+        # 门禁包含：红线不变量、审批覆盖率、取证充分性、实验假设自检、配对 CI 方向，
+        # 以及 W11 新增的四条**关系**门禁——`workflow.correct==workflow.sufficient`（指标定义）、
+        # `gated_routes.novel_red_line==0` + `single_shot.novel_red_line>0`（新破坏性动作的对称自检）、
+        # `crn.evidence_routes_agree`（跨系统比较没被随机种子污染）。
+        # 旧门禁只断言"某个比率等于多少常数"，改掉指标定义可以让它们全绿而结论失效。
         run: |
           python -m opsenv.suite --per-fault 8 --repeats 3 --gate \
             --json-out /tmp/eval.json --md-out /tmp/eval.md

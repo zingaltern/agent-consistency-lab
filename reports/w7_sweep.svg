@@ -10,19 +10,19 @@
 <circle cx="422.4" cy="48.0" r="2.5" fill="#1f77b4"/>
 <circle cx="547.2" cy="48.0" r="2.5" fill="#1f77b4"/>
 <circle cx="672.0" cy="48.0" r="2.5" fill="#1f77b4"/>
-<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="48.0,100.6 172.8,125.4 297.6,125.4 422.4,127.0 547.2,156.6 672.0,200.6"/>
-<circle cx="48.0" cy="100.6" r="2.5" fill="#2ca02c"/>
-<circle cx="172.8" cy="125.4" r="2.5" fill="#2ca02c"/>
-<circle cx="297.6" cy="125.4" r="2.5" fill="#2ca02c"/>
+<polyline fill="none" stroke="#2ca02c" stroke-width="2" points="48.0,100.5 172.8,127.0 297.6,127.0 422.4,127.0 547.2,159.3 672.0,200.5"/>
+<circle cx="48.0" cy="100.5" r="2.5" fill="#2ca02c"/>
+<circle cx="172.8" cy="127.0" r="2.5" fill="#2ca02c"/>
+<circle cx="297.6" cy="127.0" r="2.5" fill="#2ca02c"/>
 <circle cx="422.4" cy="127.0" r="2.5" fill="#2ca02c"/>
-<circle cx="547.2" cy="156.6" r="2.5" fill="#2ca02c"/>
-<circle cx="672.0" cy="200.6" r="2.5" fill="#2ca02c"/>
-<polyline fill="none" stroke="#d62728" stroke-width="2" points="48.0,137.9 172.8,79.3 297.6,79.3 422.4,79.4 547.2,69.1 672.0,48.0"/>
-<circle cx="48.0" cy="137.9" r="2.5" fill="#d62728"/>
-<circle cx="172.8" cy="79.3" r="2.5" fill="#d62728"/>
-<circle cx="297.6" cy="79.3" r="2.5" fill="#d62728"/>
-<circle cx="422.4" cy="79.4" r="2.5" fill="#d62728"/>
-<circle cx="547.2" cy="69.1" r="2.5" fill="#d62728"/>
+<circle cx="547.2" cy="159.3" r="2.5" fill="#2ca02c"/>
+<circle cx="672.0" cy="200.5" r="2.5" fill="#2ca02c"/>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="48.0,138.0 172.8,79.6 297.6,79.6 422.4,79.6 547.2,67.8 672.0,48.0"/>
+<circle cx="48.0" cy="138.0" r="2.5" fill="#d62728"/>
+<circle cx="172.8" cy="79.6" r="2.5" fill="#d62728"/>
+<circle cx="297.6" cy="79.6" r="2.5" fill="#d62728"/>
+<circle cx="422.4" cy="79.6" r="2.5" fill="#d62728"/>
+<circle cx="547.2" cy="67.8" r="2.5" fill="#d62728"/>
 <circle cx="672.0" cy="48.0" r="2.5" fill="#d62728"/>
 <text x="48.0" y="228" text-anchor="middle">off</text>
 <text x="172.8" y="228" text-anchor="middle">0.95</text>

@@ -58,7 +58,7 @@ W5–W7 的评分口径敏感性检验**从来没有被激活**：默认推理�
 
 ## 4. 门禁档位：哪些永远强制、哪些允许变红
 
-`opsenv/suite.py::check_gates(..., noisy=True)` 在噪声口径下**不改条数**（仍 14 条）、
+`opsenv/suite.py::check_gates(..., noisy=True)` 在噪声口径下**不改条数**（条数以 claim `suite-gate-count` 为准）、
 不改任何判定逻辑，只把四条"模型有多准/基线有没有区分力"的门禁标记为
 `enforced=False`（如实汇报、不决定退出码）：
 

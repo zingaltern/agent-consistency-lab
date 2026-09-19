@@ -32,6 +32,11 @@
 | 恢复语义 | 未闭合调用按 at-least-once 重跑；**有 pending 意图行时先探针对账，绝不盲目重跑** | 事件日志折叠 + outbox 意图行 + 探针 |
 | checkpoint 语义 | checkpoint 是**边界快照与交叉校验**，不是恢复权威：恢复时校验它引用的事件确实存在，不一致就报 `checkpoint_log_mismatch` | `harness/loop.py::_checkpoint_cross_check` |
 
+⚠️ 上一条的**实际范围比一句话读起来小**（独立验证 2026-09-19 · P2-1）：交叉校验只看
+**最新一个 checkpoint**，且只校验"它引用的事件 id 在日志里存在"——不校验引用内容是否被
+替换过、不回溯更早的 checkpoint。它是**廉价的完整性抽查**，不是全量审计。
+要全量校验历史，用 `scripts/chain_mirror_check.py` 的哈希链校验（§2.4.1）。
+
 **明确不承诺**：不承诺 exactly-once 效果（任何声称此承诺的系统都在某处依赖下游幂等），
 不承诺掉电不丢最后一个事务（见 §3），不承诺跨进程并发写（见 §2）。
 
@@ -48,8 +53,42 @@
 事件以 `(branch_id, seq)` 为主键，`seq` 在分支内从 0 连续递增。
 `parent_id` 只是对话 lineage 的可选标注：**恢复与重放不得依赖递归查询**。
 
-物理上禁止改写历史：`events` 表上的 `BEFORE UPDATE` / `BEFORE DELETE` 触发器
-直接 `RAISE(ABORT)`。要修正历史，只能追加新事件并由视图层重新解释。
+**普通 DML 无法改写历史**：`events` 表上三条 `BEFORE` 触发器直接 `RAISE(ABORT)`——
+
+| 触发器 | 时机 | 挡的是什么 |
+|---|---|---|
+| `events_no_update` | `BEFORE UPDATE` | 改动已提交事件的任何一列 |
+| `events_no_delete` | `BEFORE DELETE` | 删除事件 |
+| `events_no_insert_over_existing` | `BEFORE INSERT` | 用 `INSERT OR REPLACE`（或任何撞 `event_id` / `UNIQUE(branch_id, seq)` 的插入）**换掉**已提交事件 |
+
+第三条是 W11 补的（独立验证 2026-09-19 · P0-1）：SQLite 把 `INSERT OR REPLACE` 实现为
+"删掉冲突行、再插新行"，而这次**隐式 DELETE 不触发 `BEFORE DELETE` 触发器**
+（`PRAGMA recursive_triggers` 默认 OFF）——于是仅用普通 DML 就能把已提交事件换掉，
+"物理上禁止改写历史"这句话在 schema v3 及之前**不成立**。修法是把守卫也放到 `INSERT` 侧：
+`BEFORE INSERT ... WHEN EXISTS(同 event_id 或同 (branch_id, seq))` ⇒ `ABORT`。
+schema 升 v4，存量库由 `MIGRATIONS[4]` 幂等补触发器；
+回归用例在 `tests/test_event_log.py`（两条路径各一例，docstring 写明"修复前会怎样"）。
+
+**边界（不要读过头）**：触发器只覆盖**普通 DML**。改历史还有一条 DDL 路——
+`DROP TRIGGER`、`ALTER TABLE ... RENAME`、`PRAGMA writable_schema=ON` 直改 `sqlite_master`，
+独立验证 2026-09-19（P2-5）在默认连接上实测过：一句 `DROP TRIGGER events_no_update`
+就能让随后的 `UPDATE events` 畅通。W11 因此把守卫做成四层，边界如实写在这里：
+
+| 层 | 做什么 | 落点 |
+|---|---|---|
+| 触发器（DML） | 三条 `BEFORE` 触发器 `RAISE(ABORT)` | `harness/store/schema.py` |
+| 连接层（防） | 本连接装 `set_authorizer`：拒 `DROP TRIGGER` / `DROP TABLE\|VIEW\|INDEX` / `ALTER TABLE` / 写 `sqlite_master` / `PRAGMA writable_schema`；Python 3.12+ 另开 `SQLITE_DBCONFIG_DEFENSIVE`（让 `writable_schema=ON` 静默失效） | `harness/store/guard.py::install_connection_guard` |
+| 写前核查（检测） | 追加前比对 `sqlite_master` 里的触发器定义与 `events` 表结构：对不上 ⇒ `AppendOnlyGuardError`，**fail-closed**（不写）；`setup()` 在版本已是最新却防线不全时同样默认拒绝，要修必须显式 `setup(allow_repair=True)` | `guard.py::assert_guard_intact`、`harness/store/sqlite_store.py` |
+| 离线核查 | `audit_chain` 的结果多一个 `guard` 字段并计入退出码；`verify_append_only_guard(db)` 单独回答"防线还在不在"（连 `-wal`/`-shm` 快照） | `guard.py`、`harness/audit_chain.py` |
+
+**残余边界（仍然不要读过头）**：连接层只保护**本进程这一条连接**。拿到数据库文件的人
+可以另开一条没有防线、也没有触发器的连接——他能改文件，也能在改完之后把触发器文本与
+`PRAGMA schema_version` 一起凑成"看起来没被动过"的样子。链没有密钥，所以这不是
+密码学意义上的防篡改：**防线把"静默改写"的窗口从"任意时刻的一行 SQL"压缩成
+"能写这个文件的人刻意伪造 schema"，并让后者在离线审计里留下痕迹。**
+守卫防的是**应用代码走错路**与**顺手拆防线**，不是"能写数据库文件的人"。
+
+要修正历史，只能追加新事件并由视图层重新解释。
 
 ### 2.2 TREE_NODE 与 ARTIFACT
 

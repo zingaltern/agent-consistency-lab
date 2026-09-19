@@ -24,3 +24,5 @@ packaging/
 # 变异测试（R-A5）：工作副本与结果缓存都不入库（可一条命令再生）
 mutants/
 .mutmut-cache/
+# 刷新基线时被移开的陈旧缓存（`--update-baseline` 的防增量保险，见 scripts/mutation_check.py）
+mutants.stale-*/

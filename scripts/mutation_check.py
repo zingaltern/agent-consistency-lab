@@ -60,7 +60,11 @@
 
 * **超时即失败**：跑不完不许当成功（"没跑完"和"没发现回归"是两件事）；
 * 新增幸存变异 → 退出 1，并逐条打印 `mutmut show` 的 diff（失败必须可读）；
-* 基线只能由 `--update-baseline` 改写，且必须在 PR 描述里写明为什么放宽。
+* 基线只能由 `--update-baseline` 改写，且必须在 PR 描述里写明为什么放宽；
+* **`--update-baseline` 必须从干净缓存开始**：`mutants/` 还在就整体移开
+  （见 `baseline_refresh_plan`）。要沿用旧缓存得显式写 `--allow-incremental-refresh`，
+  并且它会大声警告——2026-09-19 实测过一次"混合了旧判决的假基线"：
+  14.7 秒"跑完"、`no tests` 从 18 虚增到 241。
 """
 
 from __future__ import annotations
@@ -75,6 +79,9 @@ from typing import Any, NoReturn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
+# mutmut 的**增量缓存**：`mutmut run` 只在函数哈希变化时重跑变异体，其余沿用旧判决。
+# 刷新基线时它必须整体移开（`baseline_refresh_plan`），否则写出的基线是混合物。
+MUTANTS_DIR = PROJECT_ROOT / "mutants"
 # 顺序与 pyproject.toml [tool.mutmut].only_mutate 一致（harness/execution.py 是七步管线的
 # 实现所在：设计文档 C 抽取后必须一并纳入，否则管线失去变异覆盖而门禁不会变红）。
 DEFAULT_MODULES = (
@@ -126,6 +133,74 @@ def _mutmut_argv(module: str | None) -> list[str]:
     if module:
         argv.append(module)
     return argv
+
+
+def baseline_refresh_plan(
+    *, update_baseline: bool, allow_incremental: bool, mutants_dir: Path, stamp: str
+) -> dict[str, Any]:
+    """``--update-baseline`` 之前该做什么。**纯函数**：只看入参，不碰文件系统。
+
+    为什么需要它（2026-09-19 实测）：``mutmut run`` 是**增量**的——``mutants/`` 缓存还在时
+    它只重跑"函数哈希变了"的变异体，其余直接沿用旧判决。于是改过代码之后直接
+    ``--update-baseline``，写出的是一份**混合了旧判决**的基线：本轮实测过一次，
+    14.7 秒"跑完"、``no tests`` 从 18 虚增到 241——那不是基线，是混合结果。
+
+    "模块 mtime 变了"之类的信号不可靠：同一个模块里**没改**的函数，它的变异体本来
+    就应当保留旧判决。唯一可靠的判据是**缓存干不干净**，所以刷新基线时把缓存整体移开，
+    而不是去猜哪些条目还有效。
+    """
+    target = f"{mutants_dir}.stale-{stamp}"
+    if not update_baseline:
+        return {
+            "action": "none",
+            "mutants_dir": str(mutants_dir),
+            "moved_to": None,
+            "reason": "不是刷新基线的一轮：增量是 mutmut 的正常工作方式（判定读的是全量结果表）",
+        }
+    if not mutants_dir.exists():
+        return {
+            "action": "full-run",
+            "mutants_dir": str(mutants_dir),
+            "moved_to": None,
+            "reason": "没有 mutants/ 缓存：本轮本来就是全量",
+        }
+    if allow_incremental:
+        return {
+            "action": "incremental",
+            "mutants_dir": str(mutants_dir),
+            "moved_to": None,
+            "reason": "显式给了 --allow-incremental-refresh",
+            "warning": (
+                f"{mutants_dir} 还在，本轮沿用其中的旧判决 ⇒ 写出的基线可能混合"
+                "（旧判决 + 这次重跑的判决）。只在确认缓存与当前代码一致时这么做，"
+                "并在 PR 里写明；否则去掉 --allow-incremental-refresh 重跑。"
+            ),
+        }
+    return {
+        "action": "move-aside",
+        "mutants_dir": str(mutants_dir),
+        "moved_to": target,
+        "reason": (
+            f"刷新基线要先有干净缓存：把 {mutants_dir} 整体移开，本轮因而是全量重跑"
+        ),
+    }
+
+
+def apply_baseline_refresh_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """执行 :func:`baseline_refresh_plan` 的决定（唯一的副作用点），返回更新后的 plan。"""
+    if plan["action"] == "move-aside":
+        source = Path(plan["mutants_dir"])
+        target = Path(str(plan["moved_to"]))
+        suffix = 2
+        while target.exists():  # 同一秒里刷新两次也要有个去处，不许覆盖
+            target = Path(f"{plan['moved_to']}-{suffix}")
+            suffix += 1
+        source.rename(target)
+        plan["moved_to"] = str(target)
+        print(f"[mutation] {plan['reason']}\n  移到了 {target}（可删；已 gitignore）")
+    elif plan["action"] == "incremental":
+        print(f"[mutation] **警告** {plan['warning']}")
+    return plan
 
 
 def run_mutmut(
@@ -478,6 +553,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=780.0, help="整体墙钟上限（秒）")
     parser.add_argument("--max-children", type=int, default=4)
     parser.add_argument("--update-baseline", action="store_true")
+    parser.add_argument(
+        "--allow-incremental-refresh",
+        action="store_true",
+        help="与 --update-baseline 连用：明知 mutants/ 缓存不干净仍然沿用旧判决"
+        "（会打出警告，且写出的基线可能是新旧混合）。默认不允许——刷新基线必须全量重跑。",
+    )
     parser.add_argument("--max-report", type=int, default=10, help="最多展示几条新增幸存变异")
     parser.add_argument(
         "--summary-only",
@@ -500,6 +581,16 @@ def main(argv: list[str] | None = None) -> int:
     module_filter = normalize_module_filter(args.module)
     if args.module and module_filter != args.module:
         print(f"[mutation] `--module {args.module}` → 变异体名 glob `{module_filter}`")
+    # 刷新基线之前先处理增量缓存：这一步**必须**在 run_mutmut 之前（缓存干不干净
+    # 决定了这一轮是全量还是增量）。计划是纯函数算的，副作用只在这里发生。
+    refresh = apply_baseline_refresh_plan(
+        baseline_refresh_plan(
+            update_baseline=args.update_baseline,
+            allow_incremental=args.allow_incremental_refresh,
+            mutants_dir=MUTANTS_DIR,
+            stamp=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        )
+    )
     run_mutmut(
         module=module_filter or None,
         timeout=args.timeout,
@@ -538,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
         "no_tests": summary["no_tests"],
         "inconclusive": summary["inconclusive"],
         "unknown_statuses": summary["unknown_statuses"],
+        # 这一轮是"全量重跑"还是"沿用了旧缓存"：基线混合与否只能从这里读出来
+        "refresh": refresh,
     }
     # **主判定路径也要写 --json-out**：nightly 上传的就是这个文件，先前只有
     # `--summary-only` 写，于是夜里跑的那条路根本不会生成 `/tmp/mutation.json`
@@ -564,6 +657,10 @@ def main(argv: list[str] | None = None) -> int:
                     "tool": "mutmut 3.x（见 pyproject.toml [tool.mutmut]）",
                     "modules": list(DEFAULT_MODULES),
                     "command": "mutmut run --max-children 4（nightly job `mutation`）",
+                    # 这份基线是什么条件下冻的：全量重跑（`action=full-run`/`move-aside`）
+                    # 还是"沿用了旧缓存的增量结果"（`action=incremental`）。后者是
+                    # 混合基线，写在这里而不是靠人记。
+                    "refresh": refresh,
                     "counts": {
                         "killed": summary["killed"],
                         "survived": len(summary["survived"]),

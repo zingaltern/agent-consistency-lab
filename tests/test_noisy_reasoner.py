@@ -276,9 +276,14 @@ def test_noise_downgrades_only_the_sensitivity_gates() -> None:
         operator=Operator(),
     )
     cells = aggregate(results)
-    gates = check_gates(cells, results, catalog_summary={"by_split": {"dev": 1, "holdout": 1}},
-                        noisy=True)
-    assert len(gates) == 14, "门禁条数不随口径变化（验收要求 14 条不变）"
+    summary = {"by_split": {"dev": 1, "holdout": 1}}
+    gates = check_gates(cells, results, catalog_summary=summary, noisy=True)
+    # 条数**不随口径变化**才是被验收的性质；绝对数写在正文里会随门禁增删而过期
+    # （独立验证 2026-09-19 新增四条定义/CRN 门禁后，旧用例的 `== 14` 就是这么过期的）。
+    # 条数本身由 claim `suite-gate-count` 守住。
+    assert len(gates) == len(check_gates(cells, results, catalog_summary=summary, noisy=False)), (
+        "门禁条数不随口径变化"
+    )
     downgraded = {gate.name for gate in gates if not gate.enforced}
     assert downgraded == set(NOISE_ALLOWED_RED)
     for name in NOISE_ALLOWED_RED:

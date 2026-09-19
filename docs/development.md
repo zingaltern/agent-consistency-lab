@@ -23,8 +23,13 @@
 1. **禁止直接向 `main` 推送。** 一切改动走分支；合并前必须通过 §3 的全部门槛。
 2. **事件日志是唯一权威。** 状态永远是日志的折叠物；不得引入任何"第二权威"持久状态
    （checkpoint 已明确降级为边界快照 + 交叉校验，不要再把它升级回去）。
-3. **`events` 表 append-only 由 SQLite 触发器物理保证**；不得移除、绕过或"临时关掉"触发器。
+3. **`events` 表 append-only 有防线**：触发器（DML）+ 连接层 authorizer / `DBCONFIG_DEFENSIVE`
+   （挡 DDL）+ 追加前的逐字核查（`harness/store/guard.py`，见 `docs/semantics.md` §2.1）。
+   不得移除、绕过或"临时关掉"触发器，也不得为了绕开防线另开一条无防线连接去改库。
    发现触发器挡路，说明设计走错了方向，改设计而不是改触发器。
+   迁移里确实需要临时 `DROP TRIGGER` 的（v3 补链），只走"一个事务内 DROP → 改 → 原样重建"
+   那条既有路径：防线装在 `setup()` 的**最后一步**，迁移期间不会被自己挡住；
+   版本已是最新却防线不全时 `setup()` 默认拒绝（要修得显式 `setup(allow_repair=True)`）。
 4. **runtime 运行时依赖只允许 `pydantic`**（见 `pyproject.toml`）。需要新依赖时放进
    `[extra]` 并在提交信息里说明理由；核心内核保持"零编排框架依赖"。
 5. **文档里的每个数字都必须有对应的可再生命令。** 改代码导致数字变化时，必须同步更新
@@ -88,7 +93,7 @@ git push -u origin <branch>        # 推分支
 | 1 | 测试全绿（用例数见 claim `tests-collected`，**不手写**） | `.venv/bin/pytest -o addopts= -p no:cacheprovider -q` |
 | 2 | lint 全绿 | `.venv/bin/ruff check .` |
 | 3 | 崩溃矩阵逐格 `as-predicted` | `.venv/bin/python -m experiments.crash_matrix --repeats 5` |
-| 4 | 评测门禁全过（14 条） | `.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate` |
+| 4 | 评测门禁全过（**条数以 claim `suite-gate-count` 为准，正文不写绝对数**） | `.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate` |
 | 5 | 改动涉及的实验重跑并与产物对账 | `experiments.context_cost` / `experiments.context_sweep --repeats 2` |
 | 6 | 文档数字与 `reports/*.json` 一致 | 见 §4 |
 | 7 | 新增/修改的机制附回归用例 | 见 [`testing.md`](testing.md) §3 |

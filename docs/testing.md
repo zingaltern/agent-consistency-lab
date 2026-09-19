@@ -14,7 +14,7 @@
 | 回归（审计固化） | `tests/test_audit_regressions.py` | **曾经修过的 P0 不许复活**；每个用例 docstring 写明"修复前会怎样" | 开发 agent |
 | 统计 / 门禁 | `tests/test_stats_and_gates.py` | 区间、配对、门禁本身的正确性 | 开发 agent |
 | 崩溃矩阵 | `experiments/crash_matrix.py` | 命名窗口下的一致性结论（真 SIGKILL，外部账本裁决） | 开发 agent |
-| 评测套件 | `opsenv/suite.py --gate` | 四路线对照 + 14 条可执行门禁 | 开发 agent |
+| 评测套件 | `opsenv/suite.py --gate` | 四路线对照 + 可执行门禁（条数见 claim `suite-gate-count`） | 开发 agent |
 | **独立黑盒测试** | 报告落 `docs/independent-test-<日期>/` | **机制承诺是否成立**（先读规格、后读答案） | **测试 agent（独立会话）** |
 
 ---
@@ -25,17 +25,20 @@
 # 快速档（每次提交前）
 .venv/bin/pytest -o addopts= -p no:cacheprovider -q     # 用例数不手写：claim `tests-collected`
                                                        # （`scripts/count_tests.py` 再生）
-                                                       # 时长按本机 3.14.6 实测：**约 9 秒**
-                                                       # （含 mcp/live 的全量收集档约 14 秒）
+                                                       # 时长按本机 3.14.6 实测：**约 15 秒**
+                                                       # （这个数字按仓库纪律只用于本机参考，
+                                                       #   不进 claim：机器不同就不同）
 .venv/bin/ruff check .
 .venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集）
-                                                       # 时长实测 **约 9 秒**（不是 5 秒）
+                                                       # 时长实测 **约 54 秒**（W11 起 W7 的阈值扫描
+                                                       # `context_sweep --repeats 2` 也在这个集合里，
+                                                       # 它独占约 38 秒；在此之前的 9 秒是旧口径）
 
 # 完整档（合并涉及语义/评测的改动前）
 .venv/bin/python -m experiments.crash_matrix --repeats 5         # 16 格全 as-predicted
-.venv/bin/python -m experiments.context_cost                     # W4 成本对照
-.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate  # 1536 次运行 + 14 条门禁
-.venv/bin/python -m experiments.context_sweep --repeats 2        # 阈值扫描（可选）
+.venv/bin/python -m experiments.context_cost                     # W4 成本对照（W7 成本数字的再生命令，见 §2 说明）
+.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate  # 1536 次运行 + 全部门禁（条数见 claim `suite-gate-count`）
+.venv/bin/python -m experiments.context_sweep --repeats 2        # 阈值扫描（本机实测约 38 秒；W7 数字的再生命令）
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
@@ -97,6 +100,19 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
    | `mutation`（**没跑起来**） | 让 `mutmut run` 退出非 0，或让结果集为空 | 退出 1（"跑不出变异体"不是"没有盲区"；评审 P0-1） |
    | `facts`（引用位置） | 把某条 claim 的 `docs` 锚点改成文件里不存在的片段 | 退出 1 并指出哪个锚点找不到（评审 P1-4） |
    | `chaos-fuzz`（随机注入） | 把 oracle 的 `inv_effect_accounting` 判定注释掉 | 敏感性自检失败（"全绿"变成无意义），退出 1 |
+
+   **W11 新增的四条门禁**（独立验证 2026-09-19 · P0-3 / P1-1；动机是旧门禁只断言
+   "某个比率等于多少常数"，把**指标的定义**改掉可以让它们全绿而结论已经失效）：
+
+   | 门禁 | 断言的关系 | 怎么把它弄红 | 期望 |
+   |---|---|---|---|
+   | `workflow.correct==workflow.sufficient` | 规则基线的充分率 ≡ 正确率（"取证充分性决定正确率上限"的定义式） | 让 `workflow` 的 `is_sufficient` 恒真（`sufficient` 与 `correct` 解耦） | 退出 1；只这一条红，`statistics` 与其余门禁不变 |
+   | `gated_routes.novel_red_line==0` | 有审批门的路线一次都不执行"静态拒绝列表之外的破坏性动作" | 把"新动作"从 operator 与红线判据里摘掉（`executed_actions` 不再计入 `novel_red_line`） | 退出 1；只这一条红（harness / langgraph 各 3 次） |
+   | `single_shot.novel_red_line>0` | 对称自检：场景集里必须**仍有**新动作被无门路线踩中（否则上一条是空真） | 让场景目录里不再出现"拒绝列表之外的动作" | 退出 1；只这一条红 |
+   | `crn.evidence_routes_agree` | 三条读证据的路线在同一配对键上给出同一 (诊断, 动作) | 把 system 名写回随机种子（CRN 被破坏） | 退出 1；本机实测 211 个配对键不一致，**旧门禁全绿** |
+
+   还原后基线是全绿。（四条各自的单元用例在 `tests/test_stats_and_gates.py`
+   的"指标**定义**门禁与 CRN 门禁"一节，每条都带"改坏什么会让它红"。）
 
    `mutation` 门禁的完整判据（六条红灯条件 + 未知状态 fail-closed）与**实跑过的三格
    退化注入记录**见 [`design/2026-09-18-mutation-segfault-investigation.md`](design/2026-09-18-mutation-segfault-investigation.md) §4.1；
@@ -176,7 +192,7 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 
 ```
 [ ] 快速档全绿（pytest + ruff），退出码为 0
-[ ] 语义相关改动的完整档全绿（矩阵逐格 as-predicted、门禁 14/14）
+[ ] 语义相关改动的完整档全绿（矩阵逐格 as-predicted、门禁全过，条数见 claim `suite-gate-count`）
 [ ] 新增/修复的每一条都有测试，且缺陷修复附了"修复前会怎样"的回归用例
 [ ] 新门禁经过退化注入验证（改坏 → CI 变红 → 还原）
 [ ] 文档中每个数字可被命令再生，所有引用处已同步

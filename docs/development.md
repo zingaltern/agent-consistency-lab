@@ -88,7 +88,7 @@ git push -u origin <branch>        # 推分支
 | 1 | 测试全绿（用例数见 claim `tests-collected`，**不手写**） | `.venv/bin/pytest -o addopts= -p no:cacheprovider -q` |
 | 2 | lint 全绿 | `.venv/bin/ruff check .` |
 | 3 | 崩溃矩阵逐格 `as-predicted` | `.venv/bin/python -m experiments.crash_matrix --repeats 5` |
-| 4 | 评测门禁全过（14 条） | `.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate` |
+| 4 | 评测门禁全过（**条数以 claim `suite-gate-count` 为准，正文不写绝对数**） | `.venv/bin/python -m opsenv.suite --per-fault 8 --repeats 3 --gate` |
 | 5 | 改动涉及的实验重跑并与产物对账 | `experiments.context_cost` / `experiments.context_sweep --repeats 2` |
 | 6 | 文档数字与 `reports/*.json` 一致 | 见 §4 |
 | 7 | 新增/修改的机制附回归用例 | 见 [`testing.md`](testing.md) §3 |

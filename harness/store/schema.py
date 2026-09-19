@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 触发器语句：DDL 与迁移共用同一份文本（迁移里手抄一份迟早漂移）。
 # 拆成**逐条语句**而不是 executescript：sqlite3 的 executescript 会先隐式 COMMIT，
@@ -38,11 +38,30 @@ BEGIN
   SELECT RAISE(ABORT, 'events is append-only: DELETE is forbidden');
 END;
 """,
+    # v4：堵 `INSERT OR REPLACE`。SQLite 把 REPLACE 实现成"删冲突行再插入"，而那个**隐式
+    # DELETE 只在 `PRAGMA recursive_triggers=ON` 时才触发 BEFORE DELETE**
+    # （默认 OFF，本项目不设该 pragma）——于是"改写一行已提交历史"可以只用普通 DML 完成，
+    # 不需要任何 DDL 权限（独立验证 2026-09-19 · P0-1 实测）。
+    # 守卫必须在 INSERT 侧：REPLACE 的冲突判定发生在插入之前，只有不变量式的
+    # "不许往已存在的 (event_id) / (branch_id, seq) 上插"能一次覆盖 PK 与 UNIQUE 两条冲突路径。
+    """
+CREATE TRIGGER IF NOT EXISTS events_no_insert_over_existing
+BEFORE INSERT ON events
+WHEN EXISTS (
+  SELECT 1 FROM events
+  WHERE event_id = NEW.event_id
+     OR (branch_id = NEW.branch_id AND seq = NEW.seq)
+)
+BEGIN
+  SELECT RAISE(ABORT,
+    'events is append-only: INSERT over an existing event is forbidden');
+END;
+""",
 )
 
 DDL_TRIGGERS = "\n".join(TRIGGER_STATEMENTS)
 
-DDL: str = """
+DDL_TABLES: str = """
 CREATE TABLE IF NOT EXISTS schema_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -92,21 +111,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_branch_seq ON events(branch_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_parent ON events(parent_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(run_id, type);
-
--- append-only 由数据库强制，而非靠约定。
--- 这段与上面的 DDL 是同一份文本；v3 迁移回填哈希时必须先 DROP 再**原样重建**，
--- 因此单独提成常量，避免"迁移里的副本和 DDL 漂移"。
-CREATE TRIGGER IF NOT EXISTS events_no_update
-BEFORE UPDATE ON events
-BEGIN
-  SELECT RAISE(ABORT, 'events is append-only: UPDATE is forbidden');
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_no_delete
-BEFORE DELETE ON events
-BEGIN
-  SELECT RAISE(ABORT, 'events is append-only: DELETE is forbidden');
-END;
 
 CREATE TABLE IF NOT EXISTS checkpoints (
   thread_id            TEXT NOT NULL,
@@ -162,6 +166,11 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id, started_at);
 """
+
+# 触发器文本只在 TRIGGER_STATEMENTS 里存一份：新建库（DDL）与迁移都引用它，
+# 两条路径因此不可能漂移。放在末尾而不是 events 表定义中途——executescript 顺序执行，
+# 触发器只引用 events，位置不影响语义。
+DDL: str = DDL_TABLES + "\n" + DDL_TRIGGERS
 
 # 迁移按版本号顺序执行；v1 为初始版本，后续新增写 ALTER/CREATE 语句。
 # 新建库由 DDL 直接建到最新版；老库走 MIGRATIONS 补齐（两条路径必须收敛到同一 schema）。
@@ -275,3 +284,20 @@ def _migrate_v3_add_hash_chain(conn: sqlite3.Connection) -> None:
 
 # 注册在函数定义之后：dict 字面量在 def 之前，提前引用会 NameError
 MIGRATIONS[3] = _migrate_v3_add_hash_chain
+
+
+def _migrate_v4_append_only_insert_guard(conn: sqlite3.Connection) -> None:
+    """v3 → v4：补上 ``BEFORE INSERT`` 守卫（堵 `INSERT OR REPLACE` 改写已提交历史）。
+
+    为什么这是**扩大**而不是重新定义 §2.1：v3 及以前只有 UPDATE / DELETE 两条触发器，
+    而 SQLite 的 REPLACE 在默认 pragma 下绕过 BEFORE DELETE（见 ``TRIGGER_STATEMENTS``
+    里第三条的注释与 ``tests/test_event_log.py`` 的回归用例）。存量库缺的正是这条，
+    因此迁移只做"补齐触发器"这一件事——payload、排序、哈希链一字未动，
+    也不需要像 v3 那样临时 DROP 触发器（没有 UPDATE 回填）。幂等：
+    全部语句都是 ``CREATE TRIGGER IF NOT EXISTS``，重复执行不会失败。
+    """
+    for statement in TRIGGER_STATEMENTS:
+        conn.execute(statement)
+
+
+MIGRATIONS[4] = _migrate_v4_append_only_insert_guard

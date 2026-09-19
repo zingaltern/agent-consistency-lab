@@ -97,6 +97,79 @@ class TestAppendOnly:
             events = reopened.effective_events(branch_id)
             assert [e.payload["text"] for e in events] == ["persisted"]
 
+    def test_trigger_blocks_insert_or_replace_on_primary_key(
+        self, store: SqliteStore, run_ctx: tuple[str, str]
+    ) -> None:
+        """**修复前会怎样**：`INSERT OR REPLACE` 能整行替换一条已提交事件。
+
+        独立验证 2026-09-19（P0-1）实测：SQLite 把 REPLACE 实现成"删冲突行再插入"，
+        而那个**隐式 DELETE 只在 `PRAGMA recursive_triggers=ON` 时**才触发
+        `events_no_delete`（默认 OFF，本仓库不设这个 pragma）。于是只用普通 DML——
+        连 DROP TRIGGER 这种 DDL 权限都不需要——就能把历史改掉，
+        而 §2.1 声称"物理上禁止改写历史"。修复即第 3 条触发器：BEFORE INSERT 守卫。
+        """
+        run_id, branch_id = run_ctx
+        event = store.append(_user_msg(run_id, branch_id, "committed truth"))
+        assert store._conn.execute("PRAGMA recursive_triggers").fetchone()[0] == 0
+
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._conn.execute(
+                "INSERT OR REPLACE INTO events(event_id, run_id, branch_id, seq, kind, type,"
+                " source, parent_id, payload_json, created_at)"
+                " VALUES(?, ?, ?, 0, 'tree_node', 'user_message', 'user', NULL,"
+                " '{\"text\": \"tampered in place\"}', 0.0)",
+                (event.event_id, run_id, branch_id),
+            )
+        # 原文一字未动（不是"挡住了但已经写进去了"）
+        assert [e.payload["text"] for e in store.effective_events(branch_id)] == [
+            "committed truth"
+        ]
+
+    def test_trigger_blocks_insert_or_replace_on_branch_seq(
+        self, store: SqliteStore, run_ctx: tuple[str, str]
+    ) -> None:
+        """同一漏洞的第二条路径：换一个 `event_id`、撞 `UNIQUE(branch_id, seq)`。
+
+        **修复前会怎样**：这条会把原行整个删掉（`effective_events` 里少一条），
+        比改 payload 更彻底，而且同样只需要普通 DML 权限。
+        """
+        run_id, branch_id = run_ctx
+        event = store.append(_user_msg(run_id, branch_id, "committed truth"))
+
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._conn.execute(
+                "INSERT OR REPLACE INTO events(event_id, run_id, branch_id, seq, kind, type,"
+                " source, parent_id, payload_json, created_at)"
+                " VALUES('evt_forged', ?, ?, 0, 'tree_node', 'user_message', 'user', NULL,"
+                " '{\"text\": \"forged\"}', 0.0)",
+                (run_id, branch_id),
+            )
+        events = store.effective_events(branch_id)
+        assert [e.event_id for e in events] == [event.event_id]
+
+    def test_trigger_blocks_plain_duplicate_seq(
+        self, store: SqliteStore, run_ctx: tuple[str, str]
+    ) -> None:
+        """普通 INSERT 撞 `(branch_id, seq)` 同样被守卫拦住（不是只拦 REPLACE 关键字）。"""
+        run_id, branch_id = run_ctx
+        store.append(_user_msg(run_id, branch_id))
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._conn.execute(
+                "INSERT INTO events(event_id, run_id, branch_id, seq, kind, type, source,"
+                " parent_id, payload_json, created_at)"
+                " VALUES('evt_dup', ?, ?, 0, 'tree_node', 'user_message', 'user', NULL,"
+                " '{}', 0.0)",
+                (run_id, branch_id),
+            )
+
+    def test_trigger_allows_normal_append(self, store: SqliteStore, run_ctx) -> None:
+        """守卫不能让正常写入变慢或变坏：连续 append 仍然全部落盘、seq 连续。"""
+        run_id, branch_id = run_ctx
+        for index in range(5):
+            store.append(_user_msg(run_id, branch_id, f"m{index}"))
+        events = store.effective_events(branch_id)
+        assert [e.seq for e in events] == [0, 1, 2, 3, 4]
+
 
 class TestKindTypeValidation:
     def test_tree_type_requires_tree_kind(self) -> None:

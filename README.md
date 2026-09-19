@@ -95,7 +95,7 @@ sqlite3 /tmp/demo/world.db "select count(*) from effects;"
 "效果已发生、记录未落盘"是唯一会产生重复副作用的窗口——下游不幂等时 5/5 复现，
 且 runtime 侧的去重开关在该窗口**完全无效**。
 
-**W3**（[w3-report.md](docs/w3-report.md)，14 格 × 5 次 = 70 次运行，其中 **65 次真实 SIGKILL**）：
+**W3**（[w3-report.md](docs/w3-report.md)，16 格 × 5 次 = 80 次运行，其中 **70 次真实 SIGKILL**）：
 加上 outbox（副作用前预写意图）+ 按键读回后，同一窗口的重复副作用 5/5 → **0/5**；
 没有读回能力时收敛为**恰好 1 行 unknown** 交人工对账；批准后、执行前改写参数
 5/5 被拒绝执行（TOCTOU 护栏）；改参批准会生成新调用与新幂等键。
@@ -103,9 +103,11 @@ sqlite3 /tmp/demo/world.db "select count(*) from effects;"
 **W4**（[w4-report.md](docs/w4-report.md)，同一条长任务 10 次调用）：
 
 * **缓存纪律值 2 倍成本**：运行时信息进前缀 ⇒ 命中率 57.4% → 0%、成本/调用 +105.1%；
-* **卸载是唯一"纯赚"的杠杆**：token/调用 -66%、成本/调用 -61%，且不依赖模型调用；
+* **卸载是唯一"纯赚"的杠杆**：token/调用 -66%、成本/调用 -61%，且不依赖模型调用
+  （内联侧是**没跑完那次的截断期均值**，口径见 [w4-report.md](docs/w4-report.md)，不能读成"更贵"）；
 * **压缩是拿钱买可用性**：能跑完（3 次压缩、0 溢出），但总成本/调用 $0.01436
-  （主桶 $0.01078 + 压缩桶 $0.00357）反而最高，命中率只有 35.0%——每次压缩都从替换点击穿前缀缓存。
+  （主桶 $0.01078431 + 压缩桶 $0.00357420；两个分量各自取整后相加会比总额少 $0.00001，
+  这是四舍五入的末位差，不是两个数对不上）反而最高，命中率只有 35.0%——每次压缩都从替换点击穿前缀缓存。
 
 **W5**（[w5-report.md](docs/w5-report.md)，64 场景 × 4 系统 × 2 推理器 × 3 次 = 1536 次运行）：
 
@@ -126,15 +128,15 @@ sqlite3 /tmp/demo/world.db "select count(*) from effects;"
 
 **W7**（[w7-report.md](docs/w7-report.md)，压缩阈值 6 档 × 8 变体）：
 压缩买的是完成率、不是省钱——不压缩只有 33% 变体能跑完，压缩后 100% 完成但净成本 +79%
-（$0.11834；主桶增量 +41%，压缩动作本身占 +38%）；阈值 0.70 / 0.85 / 0.95 成本不可区分，
-真正要避免的是不压缩——"早点压更安全"被数据否定。
+（选定档 $0.118732；主桶增量 +41%，压缩动作本身占 +38%）；阈值 0.70 / 0.85 / 0.95 成本不可区分
+（三档实测完全相同：$0.118732），真正要避免的是不压缩——"早点压更安全"被数据否定。
 
 **W9**（[fault-spectrum.md](docs/fault-spectrum.md) · [noisy-reasoner.md](docs/noisy-reasoner.md) · [model-modes.md](docs/model-modes.md) · [governance-extras.md](docs/governance-extras.md)）：
 
 * **随机时刻 SIGKILL fuzz**：180 次注入全部落在标定窗口内，命名窗口之外 **0 条新类违例**；
 * **故障谱系从 1 档扩到 4 档**：SIGTERM、torn write、SIGSTOP 悬挂、账本外注入；
 * **评分口径敏感性被激活**：噪声人格下 `strict` 66.7% < `cause_only` 77.6%（此前两者恒等）；
-* **变异测试常设化**：2049 个变异体 / 1331 killed / 700 survived，基线入库防"盲区扩大"；
+* **变异测试常设化**：2050 个变异体 / 1332 killed / 700 survived，基线入库防"盲区扩大"；
   门禁按**全状态记账**分三类，每次运行都打印"不可见空间"的规模——**存活率不是覆盖率**；
 * **模型接入三模式**：scripted / record / replay 走同一条 loop；真实模型可选接入，
   且 live 调用永不进 CI；
@@ -144,6 +146,12 @@ sqlite3 /tmp/demo/world.db "select count(*) from effects;"
 **W10**（[docs/integrations.md](docs/integrations.md)）：把治理层接成 **MCP 工具服务**
 （本地 stdio、一进程一 run，调用走同一条七步执行管线），并提供一条可复现的崩溃演示
 （真强杀服务进程 → 重启 → 续跑 → 外部账本恰好一次，含对照组）。
+
+**W11**（[docs/independent-test-2026-09-19/report.md](docs/independent-test-2026-09-19/report.md)）：
+一轮外部独立验证**证伪了自己的一条语义承诺**——`INSERT OR REPLACE` 能绕过 append-only
+（SQLite 的隐式 DELETE 不触发 `BEFORE DELETE`，只需普通 DML），补第三条触发器升 schema v4；
+并修掉 `harness/execution.py` 里与文档相反的落盘顺序（真 SIGKILL 会留下被自家 oracle 判违规的状态），
+以及门禁只断言"比率是多少"、不断言**指标定义**这个结构性盲区（新增四条**关系**门禁）。
 
 ## 里程碑
 
@@ -181,7 +189,7 @@ reports/        自动生成的报告表格与汇总 JSON（逐次明细由 --ru
 | 故障注入谱系与随机注入 | [docs/fault-spectrum.md](docs/fault-spectrum.md) |
 | 模型接入三模式 | [docs/model-modes.md](docs/model-modes.md) |
 | 外围集成（MCP / 可观测） | [docs/integrations.md](docs/integrations.md) |
-| 独立验证报告（外部黑盒测试） | [docs/independent-test-2026-09-16/](docs/independent-test-2026-09-16/) · [docs/independent-test-2026-09-18/](docs/independent-test-2026-09-18/) |
+| 独立验证报告（外部黑盒测试） | [docs/independent-test-2026-09-16/](docs/independent-test-2026-09-16/) · [docs/independent-test-2026-09-18/](docs/independent-test-2026-09-18/) · [docs/independent-test-2026-09-19/](docs/independent-test-2026-09-19/)（本轮：append-only 的 INSERT 旁路 + 落盘顺序 + 门禁指标定义覆盖面） |
 | 开发规范 / 测试规范 | [docs/development.md](docs/development.md) · [docs/testing.md](docs/testing.md) |
 | 给 AI agent 的入口约束 | [AGENTS.md](AGENTS.md) |
 

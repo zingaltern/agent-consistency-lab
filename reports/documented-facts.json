@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 429,
+      "value": 440,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -29,7 +29,7 @@
     },
     {
       "id": "suite-gate-count",
-      "value": 14,
+      "value": 18,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -47,7 +47,7 @@
         "gate_summary",
         "total"
       ],
-      "what": "评测门禁条数（结构性事实，不随样本量变化）：本包要求「14 条不变」",
+      "what": "评测门禁条数（结构性事实，不随样本量变化）：本包要求「条数不变」——条数以本 claim 为准，正文不写绝对数",
       "docs": [
         "docs/development.md#2.3 合并门槛（Definition of Done）",
         "docs/testing.md#7. 完成判定（绿灯标准）"
@@ -118,7 +118,7 @@
         "e1_cache_discipline",
         "cost_per_call_delta_ratio"
       ],
-      "what": "E1 动态进前缀导致的成本/调用相对增量（+104.6%）",
+      "what": "E1 动态进前缀导致的成本/调用相对增量（+105.1%）",
       "docs": [
         "README.md#**W4**",
         "docs/posts/03-cache-accounting.md"
@@ -169,7 +169,7 @@
         "e2_offload",
         "cost_per_call_delta_ratio"
       ],
-      "what": "E2 卸载相对内联的成本/调用增量（-62%）",
+      "what": "E2 卸载相对内联的成本/调用增量（-61%；内联侧是截断期均值）",
       "docs": [
         "README.md#**W4**"
       ],
@@ -216,7 +216,7 @@
         "e3_compaction",
         "total_cost_per_call_usd"
       ],
-      "what": "E3 压缩路径的账本口径总成本/调用（$0.01431 = 主桶 + 压缩桶）",
+      "what": "E3 压缩路径的账本口径总成本/调用（$0.01436 = 主桶 $0.01078431 + 压缩桶 $0.00357420，两个分量先各自取整再相加会比总额少 $0.00001）",
       "docs": [
         "README.md#**W4**",
         "docs/w4-report.md"
@@ -242,7 +242,7 @@
         "e3_compaction",
         "main_cost_per_call_usd"
       ],
-      "what": "E3 主桶成本/调用（$0.01073）",
+      "what": "E3 主桶成本/调用（$0.01078431）",
       "docs": [
         "README.md#**W4**"
       ],
@@ -1014,11 +1014,11 @@
       ],
       "source_path": [
         "statistics",
-        "min_detectable_effect"
+        "min_detectable_effect_independent_p90"
       ],
-      "what": "独立两样本口径的最小可检测效应（小于它的差距必须写「不可区分」）",
+      "what": "最小可检测效应之一：**独立两样本**公式在 p≈0.9 时的 95% CI 半宽（无常规功效项）",
       "docs": [
-        "README.md#**W6**",
+        "docs/w6-report.md#n=192、p≈0.9 时约 **6.0%**",
         "docs/testing.md#4. 禁止事项（自证 / 作弊清单）"
       ]
     },
@@ -1026,7 +1026,7 @@
       "id": "w7-off-success-rate",
       "value": 0.3333,
       "tolerance": 0.0001,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1052,9 +1052,9 @@
     },
     {
       "id": "w7-off-avg-cost-usd",
-      "value": 0.066083,
+      "value": 0.066307,
       "tolerance": 1e-06,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1069,16 +1069,16 @@
         "off",
         "avg_cost_usd"
       ],
-      "what": "不压缩的平均成本（$0.066——失败运行的截断成本，不能读成「更便宜」）",
+      "what": "不压缩的平均成本（$0.066307——失败运行的截断成本，不能读成「更便宜」）",
       "docs": [
         "README.md#**W7**"
       ]
     },
     {
       "id": "w7-selected-threshold",
-      "value": "0.70",
+      "value": "0.95",
       "tolerance": 0,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1091,7 +1091,7 @@
       "source_path": [
         "selected_threshold"
       ],
-      "what": "程序按规则选出的压缩阈值（先满足完成率、再比成本）",
+      "what": "程序按规则选出的压缩阈值（先满足完成率、再比成本；0.70/0.85/0.95 三档成本完全相同，因此这里的三选一是并列内的确定性取序，不是「更优」）",
       "docs": [
         "README.md#**W7**",
         "docs/w7-report.md"
@@ -1101,7 +1101,7 @@
       "id": "w7-selected-success-rate",
       "value": 1.0,
       "tolerance": 0,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1123,9 +1123,9 @@
     },
     {
       "id": "w7-selected-avg-cost-usd",
-      "value": 0.118337,
+      "value": 0.118732,
       "tolerance": 1e-06,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1140,19 +1140,19 @@
         "selected",
         "avg_cost_usd"
       ],
-      "what": "选定阈值的平均净成本（$0.1183，主桶 + 压缩桶）",
+      "what": "选定阈值的平均净成本（$0.118732，主桶 + 压缩桶）",
       "docs": [
         "README.md#**W7**"
       ],
       "doc_literals": [
-        "README.md#$0.11834；主桶增量 +41%，压缩动作本身占 +38%"
+        "README.md#选定档 $0.118732；主桶增量 +41%，压缩动作本身占 +38%"
       ]
     },
     {
       "id": "w7-row-085-avg-cost-usd",
-      "value": 0.118443,
+      "value": 0.118732,
       "tolerance": 1e-06,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1167,17 +1167,20 @@
         2,
         "avg_cost_usd"
       ],
-      "what": "0.85 档（与 0.95 同值）的净成本 $0.11844——w7 报告结论句引用的就是这一行的值",
+      "what": "0.85 档（与 0.95 / 0.70 三档同值）的净成本 $0.118732——w7 报告结论句引用的就是这一行的值",
       "docs": [
         "docs/w7-report.md#结论",
         "README.md#**W7**"
+      ],
+      "doc_literals": [
+        "README.md#阈值 0.70 / 0.85 / 0.95 成本不可区分"
       ]
     },
     {
       "id": "w7-net-cost-delta-ratio",
-      "value": 0.790733,
+      "value": 0.790641,
       "tolerance": 1e-05,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1202,9 +1205,9 @@
     },
     {
       "id": "w7-main-cost-delta-ratio",
-      "value": 0.411634,
+      "value": 0.412702,
       "tolerance": 1e-05,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1225,9 +1228,9 @@
     },
     {
       "id": "w7-compaction-share-of-off-cost",
-      "value": 0.379099,
+      "value": 0.377939,
       "tolerance": 1e-05,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
@@ -1453,7 +1456,7 @@
       "source_path": [
         "survivor_count"
       ],
-      "what": "变异测试基线：语义核心模块（4 个）的幸存变异数（= 当前测试盲区，防倒退用；基线是回归守卫，不是覆盖率分数）",
+      "what": "变异测试基线：语义核心模块（4 个）的幸存变异数（= 当前测试盲区，防倒退用；基线是回归守卫，不是覆盖率分数）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -1461,12 +1464,12 @@
         "reports/mutation_baseline.json"
       ],
       "doc_literals": [
-        "README.md#2049 个变异体 / 1331 killed / 700 survived"
+        "README.md#2050 个变异体 / 1332 killed / 700 survived"
       ]
     },
     {
       "id": "mutation-survivor-rate",
-      "value": 0.3447,
+      "value": 0.3445,
       "tolerance": 0.0001,
       "run": "verify",
       "source_cmd": [
@@ -1479,7 +1482,7 @@
       "source_path": [
         "survivor_rate"
       ],
-      "what": "幸存率（分母只含被判定的变异体；`no tests` 与无结论类是另一类盲区，不混入分母。**不是覆盖率**）",
+      "what": "幸存率（分母只含被判定的变异体；`no tests` 与无结论类是另一类盲区，不混入分母。**不是覆盖率**）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2193,7 +2196,7 @@
     },
     {
       "id": "mutation-total",
-      "value": 2049,
+      "value": 2050,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -2207,7 +2210,7 @@
         "counts",
         "total"
       ],
-      "what": "变异测试基线：本轮**实际产出**的变异体总数（四个模块，pyproject [tool.mutmut].only_mutate）",
+      "what": "变异测试基线：本轮**实际产出**的变异体总数（四个模块，pyproject [tool.mutmut].only_mutate）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2217,7 +2220,7 @@
     },
     {
       "id": "mutation-killed",
-      "value": 1331,
+      "value": 1332,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -2231,7 +2234,7 @@
         "counts",
         "killed"
       ],
-      "what": "变异测试基线：被判死的变异体数（判定类的一半）",
+      "what": "变异测试基线：被判死的变异体数（判定类的一半）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2254,7 +2257,7 @@
       "source_path": [
         "no_tests_count"
       ],
-      "what": "未覆盖类：`no tests` 变异体数（连覆盖都没有，另一类盲区；新增即判失败）",
+      "what": "未覆盖类：`no tests` 变异体数（连覆盖都没有，另一类盲区；新增即判失败）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2277,7 +2280,7 @@
       "source_path": [
         "inconclusive_count"
       ],
-      "what": "无结论类变异体数（`segfault`/`timeout`/`suspicious`/`skipped`/`not checked`/`caught by type check`/`check was interrupted by user`）。2026-09-18 之前是 906 条 `segfault` + 6 条 `timeout` = 912 条，全部不计入门禁任何计数；根因（macOS fork 子进程碰系统代理解析 → SIGSEGV）修掉后归零",
+      "what": "无结论类变异体数（`segfault`/`timeout`/`suspicious`/`skipped`/`not checked`/`caught by type check`/`check was interrupted by user`）。2026-09-18 之前是 906 条 `segfault` + 6 条 `timeout` = 912 条，全部不计入门禁任何计数；根因（macOS fork 子进程碰系统代理解析 → SIGSEGV）修掉后归零｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2300,7 +2303,7 @@
       "source_path": [
         "invisible_share"
       ],
-      "what": "不可见空间占比 =（无结论类 + 未覆盖类）/ 总数。门禁每次运行都打印它，防止 `survivor_rate` 被读成覆盖率",
+      "what": "不可见空间占比 =（无结论类 + 未覆盖类）/ 总数。门禁每次运行都打印它，防止 `survivor_rate` 被读成覆盖率｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
@@ -2324,12 +2327,70 @@
         "status_counts",
         "segfault"
       ],
-      "what": "`segfault` 判决的变异体数（修好之后为 0；修复前 906，见 docs/design/2026-09-18-mutation-segfault-investigation.md §1）",
+      "what": "`segfault` 判决的变异体数（修好之后为 0；修复前 906，见 docs/design/2026-09-18-mutation-segfault-investigation.md §1）｜口径：本 claim 对账的是**文档 ↔ 入库基线文件**（reports/mutation_baseline.json，由 `--summary-only` 读回），**不是**重新跑一遍变异测试；真正的再生要跑 mutmut 全量，见 nightly job `mutation`。基线里的 total=2050、killed=1332、survived=700。",
       "docs": [
         "README.md#**变异测试常设化**",
         "docs/design/2026-09-18-mutation-segfault-investigation.md#4. 修复验证（全量重跑，修复前 vs 修复后）",
         "docs/testing.md#3. 改动 → 测试义务（硬性）",
         "reports/mutation_baseline.json"
+      ]
+    },
+    {
+      "id": "w6-mde-independent-p05",
+      "value": 0.1,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "min_detectable_effect_independent_p05"
+      ],
+      "what": "最小可检测效应之二：独立两样本公式在 p=0.5 时的 MDE（10%）",
+      "docs": [
+        "docs/HANDOFF.md#最小可检测效应约"
+      ],
+      "doc_literals": [
+        "docs/HANDOFF.md#独立两样本口径（p=0.5）约 10.0%"
+      ]
+    },
+    {
+      "id": "w6-mde-paired",
+      "value": 0.0922,
+      "tolerance": 0,
+      "run": "nightly",
+      "source_cmd": [
+        "{python}",
+        "-m",
+        "opsenv.suite",
+        "--per-fault",
+        "8",
+        "--repeats",
+        "3",
+        "--gate",
+        "--json-out",
+        "{out}"
+      ],
+      "source_path": [
+        "statistics",
+        "min_detectable_effect_paired"
+      ],
+      "what": "最小可检测效应之三：**配对口径**（McNemar 型，80% 功效，不一致对估计）——解释配对结论只能用这一个",
+      "docs": [
+        "docs/w6-report.md#配对口径（80% 功效）约"
+      ],
+      "doc_literals": [
+        "docs/pitch-4min.md#配对 MDE（80% 功效约 9%）"
       ]
     }
   ]

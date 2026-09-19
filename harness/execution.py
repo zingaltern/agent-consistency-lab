@@ -13,6 +13,12 @@
 * 崩溃窗口（``pre_tool_exec`` 等四个）的命中点属于管线，必须留在这里；
   ``after_resume`` 属于 loop 的恢复流程，留在 ``Loop.resume``。
 * 状态一律从事件日志折叠；本模块不缓存任何跨调用的结论。
+* **落盘顺序（独立验证 2026-09-19 固化为纪律）**：**闭合**一条去重行（``complete`` /
+  ``mark_unknown`` / ``record(status=…)``）必须**晚于**它对应的事件。理由不是"日志权威"
+  这句话本身，而是 a) 事件是唯一权威——先写事件则任何崩溃点的残留都能被折叠出来；
+  b) 反过来会留下"行已闭合、事件缺失"的形态，``opsenv.oracle.check_closed_calls``
+  明文判它违规（"行在事件必在"），恢复也没法把这次调用断定为 completed。
+  唯一的例外是 outbox **意图**行（``begin``）：它按设计必须早于副作用，且它不是闭合。
 """
 
 from __future__ import annotations
@@ -573,12 +579,13 @@ class ToolExecutor:
     ) -> ToolOutcome | None:
         """处置 pending 意图。返回 ``None`` 表示"确认未生效、可安全执行"。"""
         if tool.probe is None:
-            self._tool_calls.mark_unknown(existing.idempotency_key, "no_probe_available")
-            counters.unknown += 1
             append_error_artifact(
                 self._store, ctx, "unknown_effect", "pending 意图无法对账：下游不支持按键读回"
             )
             self._append_tool_result(ctx, request.tool_call_id, "unknown", None, "unknown_effect")
+            # 顺序纪律：先落权威事件，再动去重行（见模块顶部注释与 semantics.md §2.5 第 8 步）
+            self._tool_calls.mark_unknown(existing.idempotency_key, "no_probe_available")
+            counters.unknown += 1
             return ToolOutcome(
                 request.tool_call_id, "unknown", None, "unknown_effect", replayed=False
             )
@@ -596,16 +603,19 @@ class ToolExecutor:
                 "reconstructed_from_probe": True,
                 **probe.detail,
             }
-            self._tool_calls.complete(existing.idempotency_key, result)
+            # 事件在前、行在后：反过来的话，"行已 executed、事件还没写"这个窗口一旦被
+            # SIGKILL 命中，就留下 opsenv/oracle 明文禁止的形态（已闭合的行没有 tool_result
+            # 事件）——独立验证 2026-09-19（P1-2）用真 SIGKILL 复现过。
             self._append_tool_result(ctx, request.tool_call_id, "executed", result)
+            self._tool_calls.complete(existing.idempotency_key, result)
             counters.reconciled += 1
             return ToolOutcome(request.tool_call_id, "executed", result, None, replayed=True)
         if probe.outcome is ProbeOutcome.NOT_APPLIED:
             return None
-        self._tool_calls.mark_unknown(existing.idempotency_key, "probe_inconclusive")
-        counters.unknown += 1
         append_error_artifact(self._store, ctx, "unknown_effect", "探针结论不确定，转人工对账")
         self._append_tool_result(ctx, request.tool_call_id, "unknown", None, "unknown_effect")
+        self._tool_calls.mark_unknown(existing.idempotency_key, "probe_inconclusive")
+        counters.unknown += 1
         return ToolOutcome(request.tool_call_id, "unknown", None, "unknown_effect", replayed=False)
 
     def _handle_tool_failure(
@@ -628,9 +638,15 @@ class ToolExecutor:
         """
         error_class = f"tool_error:{type(exc).__name__}"
         key = idempotency_key(ctx.run_id, ctx.branch_id, request.tool_call_id)
+        status = "unknown" if outbox_path else "failed"
+        counters.tool_failures += 1
+        # 顺序纪律同上：权威事件（含 error artifact）先落，去重行后闭合。
+        # 反过来时，"行=failed、事件缺失"会被 opsenv.oracle 的 inv_closed_calls 判违规
+        # （它查的方向正是"已闭合的行必须有 tool_result 事件"）。
+        append_error_artifact(self._store, ctx, error_class, f"{request.tool}: {exc}")
+        self._append_tool_result(ctx, request.tool_call_id, status, None, error_class)
         if outbox_path:
             self._tool_calls.mark_unknown(key, error_class)
-            status = "unknown"
         else:
             self._tool_calls.record(
                 tool_call_id=request.tool_call_id,
@@ -645,10 +661,6 @@ class ToolExecutor:
                 result=None,
                 error_class=error_class,
             )
-            status = "failed"
-        counters.tool_failures += 1
-        append_error_artifact(self._store, ctx, error_class, f"{request.tool}: {exc}")
-        self._append_tool_result(ctx, request.tool_call_id, status, None, error_class)
         return ToolOutcome(request.tool_call_id, status, None, error_class, replayed=False)
 
     def _raise_interrupt(

@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,9 +29,11 @@ from harness.loop import DEFAULT_SYSTEM_PROMPT, Loop, LoopError
 from harness.state import RunStatus, reduce_events
 from harness.store import SqliteCheckpointSaver, SqliteStore, ToolCallStore
 from harness.tools import Effect, Tool, ToolRegistry, canonical_args_sha256, idempotency_key
+from opsenv.oracle import check_closed_calls
 
 from .conftest import RunCtx
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TASK = "支付服务 P99 告警，请定位并处置。"
 WRITE_CALL = "tc_write_1"
 WRITE_ARGS = {"service": "payment", "size": 64}
@@ -530,3 +536,96 @@ def test_context_overflow_is_raised_by_client(store: SqliteStore, ctx: RunCtx) -
     )
     with pytest.raises(ContextOverflow):
         client.complete(step=0, view=view)
+
+
+# -------------------------------------------- 落盘顺序：事件先落、去重行后闭合
+# 独立验证 2026-09-19（P1-2）：真实 SIGKILL 命中"对账路径把行标成 executed、
+# 但 tool_result 事件还没写"的那个瞬间，会留下 opsenv.oracle 明文判违规的形态。
+# 这一格是**真子进程**：进程内 mock 崩溃不足以证明"恢复只能依赖持久化事实"。
+
+_KILL_AFTER_COMPLETE = '''
+"""让 ToolCallStore.complete 返回后立刻真 SIGKILL 自己（复现"行已闭合、事件未落"的窗口）。"""
+
+import os
+import signal
+import sys
+
+from harness.store.tool_calls import ToolCallStore
+
+_original_complete = ToolCallStore.complete
+
+
+def complete_then_die(self, idempotency_key, result):
+    outcome = _original_complete(self, idempotency_key, result)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.kill(os.getpid(), signal.SIGKILL)
+    return outcome
+
+
+ToolCallStore.complete = complete_then_die
+
+from experiments.worker import main  # noqa: E402  必须在打补丁之后 import
+
+sys.exit(main(sys.argv[1:]))
+'''
+
+
+def _run_worker(
+    run_dir: Path, mode: str, *, chaos: str = "", script: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """真子进程跑一次 worker（与 README 的复现序列同一条命令行）。"""
+    command = [
+        sys.executable,
+        str(script) if script else "-m",
+        *([] if script else ["experiments.worker"]),
+        "--run-dir",
+        str(run_dir),
+        "--mode",
+        mode,
+        "--tool-idem",
+        "off",
+    ]
+    env = {
+        **os.environ,
+        "CHAOS_WINDOWS": chaos,
+        "PYTHONHASHSEED": "0",
+        "PYTHONPATH": str(PROJECT_ROOT),
+    }
+    return subprocess.run(
+        command, cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, timeout=120
+    )
+
+
+def test_event_lands_before_the_dedup_row_is_closed(tmp_path: Path) -> None:
+    """**修复前会怎样**：对账路径先 `complete()` 行、后写 `tool_result` 事件。
+
+    用真 SIGKILL 打在这个瞬间（本用例的第四次调用），库里会停在
+    "tool_calls.status='executed' 而日志里没有对应 tool_result"——
+    `opsenv.oracle.check_closed_calls` 的判据正是这条（"行在事件必在"），
+    与 docs/semantics.md §2.5 第 8 步"事件先于去重行"的承诺直接矛盾。
+    修复即把闭合动作移到事件之后（`harness/execution.py`）。
+    """
+    run_dir = tmp_path / "reconcile"
+    run_dir.mkdir()
+
+    assert _run_worker(run_dir, "run").returncode == 0
+    assert _run_worker(run_dir, "approve").returncode == 0
+    # 窗口 ②：效果已发生、记录未落盘 ⇒ 留下 pending 意图行，恢复时必须先对账
+    crashed = _run_worker(run_dir, "resume", chaos="post_tool_effect_pre_record:1")
+    assert crashed.returncode == -signal.SIGKILL
+
+    script = tmp_path / "kill_after_complete.py"
+    script.write_text(_KILL_AFTER_COMPLETE, encoding="utf-8")
+    killed = _run_worker(run_dir, "resume", script=script)
+    # 退出码就是"这一步真的走到了"的证明：complete() 没被调用的话这里是 0，用例会失败
+    assert killed.returncode == -signal.SIGKILL
+
+    findings, facts = check_closed_calls(run_dir / "runtime.db")
+    assert findings == [], findings
+    assert facts["closed_rows"] == facts["tool_results"] >= 1
+
+    # 再恢复一次：结论从日志折叠出来（不重跑副作用），外部账本仍然恰好 1 行
+    assert _run_worker(run_dir, "resume").returncode == 0
+    with World(run_dir / "world.db") as world:
+        assert world.total_effects() == 1

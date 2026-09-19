@@ -330,9 +330,9 @@ def test_migration_backfills_the_chain_and_recreates_triggers(tmp_path: Path) ->
     con.close()
 
     store = SqliteStore(db_path)
-    store.setup()  # 触发 v3 迁移
+    store.setup()  # 触发 v3 迁移（并继续到 v4：补 INSERT 守卫）
     try:
-        assert store.schema_version == SCHEMA_VERSION == 3
+        assert store.schema_version == SCHEMA_VERSION == 4
         events = store.effective_events("br-1")
         # 补链的结果必须与"从头写一遍"一致：逐条可校验
         assert verify_chain(events) == []
@@ -342,6 +342,14 @@ def test_migration_backfills_the_chain_and_recreates_triggers(tmp_path: Path) ->
             store._conn.execute("UPDATE events SET payload_json='{}' WHERE event_id='e0'")
         with pytest.raises(sqlite3.DatabaseError):
             store._conn.execute("DELETE FROM events WHERE event_id='e0'")
+        # v3 及以前的库没有 INSERT 守卫：迁移必须把它一起补上（独立验证 2026-09-19 P0-1）
+        with pytest.raises(sqlite3.DatabaseError):
+            store._conn.execute(
+                "INSERT OR REPLACE INTO events(event_id, run_id, branch_id, seq, kind,"
+                " type, source, parent_id, payload_json, created_at)"
+                " VALUES('e0', 'run-1', 'br-1', 0, 'tree_node', 'user_message', 'agent',"
+                " NULL, '{\"text\":\"tampered\"}', 0.0)"
+            )
     finally:
         store.close()
     assert audit(db_path)["ok"] is True

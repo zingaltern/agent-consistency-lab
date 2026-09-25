@@ -7,10 +7,12 @@
 审计里最难发现的一种（与 `docs/HANDOFF.md` §六 第 7 条"没有坏事发生 ≠ 机制在工作"同源）。
 
 **扫描面**：`git ls-files` 登记的 `opsenv/` 与 `harness/` 下的 `.py` 文件，并上目录里
-实际存在的 `.py`。为什么要并集：变异测试的沙箱（`mutants/`，被 `.gitignore` 排除）
-不是工作树的一部分，在该沙箱里 `git ls-files opsenv harness` 返回**空表**——只信 git，
-这个用例在沙箱里就会空真通过（门禁恰恰在最需要它的那一半时间里是瞎的）。
-并集在两种环境下都覆盖真实存在的文件；`checked` 下限断言挡住"扫错目录 ⇒ 空真通过"。
+实际存在的 `.py`（只扫存在的文件：工作区已删、索引还没跟上的路径属于 `git status`
+的事，不是这里要判的重复定义——文件搬移的中途态不该让本用例报一个看不懂的错）。
+为什么要并集：变异测试的沙箱（`mutants/`，被 `.gitignore` 排除）不是工作树的一部分，
+在该沙箱里 `git ls-files opsenv harness` 返回**空表**——只信 git，这个用例在沙箱里就会
+空真通过（门禁恰恰在最需要它的那一半时间里是瞎的）。并集在两种环境下都覆盖真实文件；
+`checked` 下限断言挡住"扫错目录 ⇒ 空真通过"。
 """
 
 from __future__ import annotations
@@ -58,6 +60,8 @@ def _scanned_files() -> list[Path]:
         for path in candidates:
             if path.name.startswith("test_"):
                 continue  # 只扫非测试文件
+            if not path.exists():
+                continue  # 索引里还在、工作区已删（搬移中途态）
             seen[path] = None
     return sorted(seen, key=str)
 

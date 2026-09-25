@@ -397,3 +397,28 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    的 claim 锚点）已全部回灌，`scripts/check_facts.py --run verify` 是它的门禁。
 3. `opsenv/` 仍**不在**变异范围内（`only_mutate` 只有 harness 的 4 个文件）。也就是说拆包本身
    没有变异覆盖，覆盖它的是 `tests/test_no_duplicate_defs.py` 这类结构断言与上面那批逐字对照。
+
+### 补记：cross-job claim 漂移（2026-09-26，形态与规矩）
+
+**形态**：同一条**结构性事实**在两处 claim 里各存一份，改代码时只更新了一份。
+实例：W11 把门禁从 14 条加到 18 条，`suite-gate-count`（`run=verify`）改了，
+`noisy-gate-total`（噪声口径的同一事实，当时 `run=nightly`）漏改 ⇒ nightly 连续 5 天
+`facts-nightly` 失败（`期望 14±0.0，实测 18`），而 PR 门槛上的 verify 集**看不见它**
+（nightly 的 claim 不在 verify 里跑），所以 push/PR 全绿、只有夜里红。
+这正是"门禁抓不到自己"的又一种形态：**不是判据写错，而是判据的可见面比事实的分布窄**。
+
+**规矩**（三条，按优先级）：
+
+1. **结构性事实只登记一条 claim**，其余位置写"条数以 claim `X` 为准"，不在正文再写绝对数；
+2. 确实需要两份时（如本例：噪声口径的条数要能被独立对账），另一份也必须放在
+   **PR 门槛看得见的 `run`**（`verify`）——用**廉价命令**换可见性：本例的命令从
+   `--per-fault 8 --repeats 3` 换成 `--per-fault 2 --repeats 1 --reasoner noisy`（本机约 1 秒），
+   条数是结构性事实、不随样本量变化，换命令不损失判据强度；
+3. 两份之间加**关系断言**钉死（`tests/test_facts_gate.py::
+   test_noisy_gate_total_is_a_structural_sibling_of_suite_gate_count`），
+   断"值相等 + 取同一 JSON 路径"，而不是各写一个常数——两个常数可以一起错。
+
+**已修**：`noisy-gate-total` 的值 14 → 18、命令换廉价档、`run` 从 `nightly` 升到 `verify`
+（先例：W11 把 9 条 claim 升 verify，理由是"push 上没人看得见"）；
+`noisy-gate-failed-count` **保持 `nightly` 不动**——它读 `gate_summary.failed`，
+与样本量相关（条数随 `--per-fault/--repeats` 变），廉价档下不成立。

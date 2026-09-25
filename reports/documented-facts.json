@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 464,
+      "value": 465,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1319,21 +1319,19 @@
     },
     {
       "id": "noisy-gate-total",
-      "value": 14,
+      "value": 18,
       "tolerance": 0,
-      "run": "nightly",
+      "run": "verify",
       "source_cmd": [
         "{python}",
         "-m",
         "opsenv.suite",
         "--per-fault",
-        "8",
+        "2",
         "--repeats",
-        "3",
+        "1",
         "--reasoner",
         "noisy",
-        "--error-rate",
-        "0.3",
         "--json-out",
         "{out}"
       ],
@@ -1341,7 +1339,7 @@
         "gate_summary",
         "total"
       ],
-      "what": "噪声口径下门禁条数不变（14 条；只把 4 条敏感性门禁降级为如实汇报）",
+      "what": "噪声口径下门禁条数与默认口径一致（只把 4 条敏感性门禁降级为如实汇报）：这是**结构性事实**（不随样本量与误差率变化），条数以 claim suite-gate-count 为准，正文不写绝对数",
       "docs": [
         "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"

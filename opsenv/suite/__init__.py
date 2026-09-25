@@ -29,6 +29,7 @@
 即改口径"这一既有行为（``docs/independent-test-2026-09-17/commands.sh`` 依赖它换
 ``noise_seed``）。
 """
+
 from __future__ import annotations
 
 from harness.tokens import PriceTable

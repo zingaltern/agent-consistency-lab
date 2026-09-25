@@ -427,6 +427,13 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    的 claim 锚点）已全部回灌，`scripts/check_facts.py --run verify` 是它的门禁。
 3. `opsenv/` 仍**不在**变异范围内（`only_mutate` 只有 harness 的 4 个文件）。也就是说拆包本身
    没有变异覆盖，覆盖它的是 `tests/test_no_duplicate_defs.py` 这类结构断言与上面那批逐字对照。
+4. **下一轮候选：把租约接进写路径**（2026-09-26 出设计，未实现）——
+   [design/2026-09-26-lease-in-write-path.md](design/2026-09-26-lease-in-write-path.md)：
+   接入点推荐"`execution.py` 第 5 步（TOCTOU 复核点）旁 + `loop._drive` 入口"，
+   失败语义默认**拒绝**（不是降级、更不是仅告警），默认关闭 ⇒ 单进程行为逐位不变；
+   要改 `semantics.md` §3 与 §2.5（**先改语义再改代码**）；代价是 `execution.py`/`loop.py`
+   都在 `only_mutate` 里 ⇒ 变异基线整份不可比（刷新实测 563.0 秒）——文档 §5 给了
+   "先放新模块"的折中方案与它的代价。
 
 ### 补记：cross-job claim 漂移（2026-09-26，形态与规矩）
 

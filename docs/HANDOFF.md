@@ -277,14 +277,34 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
 5. `mutmut print-time-estimates` 输出里的 `<no tests>` 是**耗时估计占位**、不是状态标签。
 6. **判据的强度只到"已覆盖代码的盲区倒退"**：`no tests` 只在**新增**时红灯；
    基线里既有的 18 条 `no tests` 是已知的未覆盖面，不是门禁的承诺面。
+7. **"等量改写"这条残余边界已被内容指纹堵上**（2026-09-26，见 §十二）：基线现在为
+   **每条**变异体存 `sha256(规范化 diff)`（v3 schema），同名不同指纹报
+   `[mutant-content-changed]`。残余边界变成：指纹只覆盖 `only_mutate` 里的四个模块
+   （与第 4 条同界），且**换指纹口径必须换算法标识名**（
+   `fingerprint_algorithm`，否则新旧基线会被集体当成"内容变了"而误报）。
+8. **`--update-baseline` 现在有两道默认拒绝**（同见 §十二）：一条指纹都取不到 ⇒ 拒绝写基线；
+   候选比旧基线**更宽** ⇒ 拒绝写入（`--allow-wider-baseline` 显式放行，条件记进基线的
+   `refresh.widening_override`）。**改代码导致变异体重编号时也属于"更宽"**（旧条目整条不见）
+   ⇒ 那种刷新必须显式放行，这是有意的：刷新基线应当是个有意识动作。
+   顺带一条实测教训：**测试不许碰仓库的 `mutants/`**——本轮的守卫用例第一版没把
+   `MUTANTS_DIR` 指到 tmp，直接把正在跑的**全量刷新**的缓存搬走了，mutmut 父进程写
+   `mutants/harness/loop.py.meta` 时 FileNotFoundError 退出 1（好在那条路径是
+   "跑不起来 ⇒ 判失败"，不是静默绿）；现在 `_run_gate` 一律隔离到 tmp。
 
 ### 本轮之后仍需注意的
 
 * `integrations/` 的 MCP 服务是**本地单用户**形态；不承诺并发/多用户/远程/断线重连时序，
   也不承诺性能数字（`docs/integrations.md` §6）。租约**没有**接进 MCP 写路径。
-* nightly 的 mutation 作业预算已从 25 分钟放宽到 **45 分钟**（`--timeout 2400`）：
-  修掉误判后原先"一进去就崩"的那部分变异体会真的跑完，**本机空闲冷跑实测 631.5 秒**。
-  这是预算调整，不是判据放宽（超时仍判失败）。
+* nightly 的 mutation 作业预算已从 25 分钟放宽到 **45 分钟**——这是**两个数字，别混引**：
+  `nightly.yml` 里 job 的 `timeout-minutes: 45` 是 GitHub 给出的**墙钟上限**
+  （连 checkout / install 一起算），脚本参数 `--timeout 2400` 是 mutmut 运行自身的预算
+  （= 40 分钟，与 `docs/testing.md` §2 同口径）。放宽的理由：修掉误判后原先"一进去就崩"
+  的那部分变异体会真的跑完，**本机空闲冷跑实测 631.5 秒**。
+  这是预算调整，不是判据放宽（两种情况下的超时都判失败）。
+  **CI 侧实测（2026-09-26 补，带 run id）**：nightly run `36112304447`（2026-09-25，
+  ubuntu-latest，`--max-children 4`）job 墙钟 **21 分 11 秒**（含 checkout/install）、
+  `Mutation gate` 步骤 **20 分 52 秒**，两项预算都还有约 2 倍余量；变异子进程自身的耗时
+  从下一轮 nightly 起读 `--json-out` 的 `elapsed_s`（本包新加的落盘字段）。
 
 ---
 
@@ -330,7 +350,7 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    顺带补了 §九第 3 条"判决不承诺稳定"的**实测**：同一份代码连跑两遍全量，
    **2050 条逐条判决零翻转**、门禁退出 0——所以那条是"不承诺"，不是"已知会红"。
    （改动前后基线的差异因为命名位移而**不可比**，不要拿旧基线的名字去对。）
-   **这条纪律现在是代码而不是提醒**：`scripts/mutation_check.py --update-baseline` 会自动
+   **这条纪律现在是代码而不是提醒**：`python -m scripts.mutation_check --update-baseline` 会自动
    把 `mutants/` 整体移开（改名成 `mutants.stale-<UTC 时间戳>/`，已 gitignore）再跑全量，
    并把这次的条件写进基线与 `--json-out` 的 `refresh` 字段；要沿用旧缓存必须显式
    `--allow-incremental-refresh`（会大声警告）。判据是"缓存干不干净"，不是 mtime——
@@ -380,9 +400,12 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 * `harness/execution.py`（832 行，`wc -l` 现测）：七步管线的实现确实大，但它**在变异范围内**
   （`pyproject.toml [tool.mutmut].only_mutate`）。拆它 = 变异体按函数内序号重编号 =
   W11 刚重刷的基线整份不可比，而 W11 刚为落盘顺序（P1-2）改过它。拆分收益配不上基线作废的代价。
-* `scripts/mutation_check.py`（754 行，`wc -l` 现测）：它自己就是门禁，判据与三格退化注入记录
-  （`docs/design/2026-09-18-mutation-segfault-investigation.md` §4.1）是按现有结构写的；
-  拆它要先补一遍判据的回归用例，应单独一轮。
+* ~~`scripts/mutation_check.py`（754 行）~~ → **已拆**（2026-09-26）：当时记的条件是"拆它要先补
+  一遍判据的回归用例"——本届先补（第 4/5/6 项：墙钟落盘、内容指纹、更宽即拒绝守卫，各带用例与
+  退化注入），再按与 `opsenv/suite/` 同一规格拆成 `scripts/mutation_check/` 包（config / status /
+  fingerprint / baseline / gate / reporting / runtime + 门面 + `__main__.py`）。
+  拆前先做了**逐字切片 + 拼接回原文逐字相同**的断言（见提交信息），拆后跑了
+  `--summary-only` 与整轮门禁的**逐键对照**：除 `elapsed_s` 的计时噪声外完全相同。
 
 ### 本轮之后仍需注意的
 
@@ -397,3 +420,28 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    的 claim 锚点）已全部回灌，`scripts/check_facts.py --run verify` 是它的门禁。
 3. `opsenv/` 仍**不在**变异范围内（`only_mutate` 只有 harness 的 4 个文件）。也就是说拆包本身
    没有变异覆盖，覆盖它的是 `tests/test_no_duplicate_defs.py` 这类结构断言与上面那批逐字对照。
+
+### 补记：cross-job claim 漂移（2026-09-26，形态与规矩）
+
+**形态**：同一条**结构性事实**在两处 claim 里各存一份，改代码时只更新了一份。
+实例：W11 把门禁从 14 条加到 18 条，`suite-gate-count`（`run=verify`）改了，
+`noisy-gate-total`（噪声口径的同一事实，当时 `run=nightly`）漏改 ⇒ nightly 连续 5 天
+`facts-nightly` 失败（`期望 14±0.0，实测 18`），而 PR 门槛上的 verify 集**看不见它**
+（nightly 的 claim 不在 verify 里跑），所以 push/PR 全绿、只有夜里红。
+这正是"门禁抓不到自己"的又一种形态：**不是判据写错，而是判据的可见面比事实的分布窄**。
+
+**规矩**（三条，按优先级）：
+
+1. **结构性事实只登记一条 claim**，其余位置写"条数以 claim `X` 为准"，不在正文再写绝对数；
+2. 确实需要两份时（如本例：噪声口径的条数要能被独立对账），另一份也必须放在
+   **PR 门槛看得见的 `run`**（`verify`）——用**廉价命令**换可见性：本例的命令从
+   `--per-fault 8 --repeats 3` 换成 `--per-fault 2 --repeats 1 --reasoner noisy`（本机约 1 秒），
+   条数是结构性事实、不随样本量变化，换命令不损失判据强度；
+3. 两份之间加**关系断言**钉死（`tests/test_facts_gate.py::
+   test_noisy_gate_total_is_a_structural_sibling_of_suite_gate_count`），
+   断"值相等 + 取同一 JSON 路径"，而不是各写一个常数——两个常数可以一起错。
+
+**已修**：`noisy-gate-total` 的值 14 → 18、命令换廉价档、`run` 从 `nightly` 升到 `verify`
+（先例：W11 把 9 条 claim 升 verify，理由是"push 上没人看得见"）；
+`noisy-gate-failed-count` **保持 `nightly` 不动**——它读 `gate_summary.failed`，
+与样本量相关（条数随 `--per-fault/--repeats` 变），廉价档下不成立。

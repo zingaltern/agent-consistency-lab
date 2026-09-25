@@ -199,6 +199,33 @@ def test_documented_facts_commands_never_write_into_repo() -> None:
             assert not part.startswith("docs/"), f"{claim['id']} 直接写仓库: {part}"
 
 
+def test_noisy_gate_total_is_a_structural_sibling_of_suite_gate_count() -> None:
+    """**cross-job claim 漂移回归**（2026-09-26）：两条 claim 读的是同一条结构性事实。
+
+    修复前会怎样：W11 把门禁从 14 条加到 18 条时只更新了默认口径的 `suite-gate-count`，
+    漏了噪声口径的 `noisy-gate-total`（它当时 `run=nightly`）；PR 门槛的 verify 集看不见
+    nightly 的 claim，于是 nightly 连续 5 天红而 push/PR 全绿——"同一条事实存了两份、
+    只改了其中一份"就是它活下来的原因。
+
+    断言的是**关系**而不是数字：两条 claim 必须取同一个 JSON 路径（`gate_summary.total`）、
+    值必须相等。数字本身仍由各自的再生命令对账，这里只钉死"不许只改一份"。
+    改坏哪个会让它红：把 `reports/documented-facts.json` 里任一条的 `value` 或
+    `source_path` 改成与另一条不一致（本机实测：把 `noisy-gate-total` 的 value 改回 14
+    ⇒ 只有本用例红，其余用例不变）。
+    """
+    payload = json.loads(FACTS_FILE.read_text(encoding="utf-8"))
+    by_id = {claim["id"]: claim for claim in payload["claims"]}
+    default_flavor = by_id["suite-gate-count"]
+    noisy_flavor = by_id["noisy-gate-total"]
+    assert default_flavor["source_path"] == noisy_flavor["source_path"] == ["gate_summary", "total"]
+    assert noisy_flavor["value"] == default_flavor["value"], (
+        "噪声口径与默认口径的门禁条数必须相等："
+        f"{noisy_flavor['value']} != {default_flavor['value']}"
+        "（只更新一份 = nightly 红而 PR 门槛看不见）"
+    )
+    assert noisy_flavor["tolerance"] == 0, "结构性事实不带容差"
+
+
 # --------------------------------------------------- doc_literals（独立测试 P1-2）
 
 

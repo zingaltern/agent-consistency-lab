@@ -253,7 +253,14 @@ rm -rf mutants/ && .venv/bin/python -m mutmut run --max-children 4
    幸存者从 180 涨到 700，自然更慢。nightly 的预算因此从 `--timeout 1320`（22 分钟）
    上调到 `--timeout 2400`（40 分钟），job 上限 25 → 45 分钟——这是**预算**调整，
    不是判据放宽（超时仍然判失败）；同步写在 `docs/testing.md` §2 与 `nightly.yml` 注释里。
-   CI runner 上的真实耗时只能由 CI 自己回答，本机给不出。
+   **CI 侧的真实耗时（2026-09-26 补记，数字带 run id）**：nightly run `36112304447`
+   （2026-09-25，ubuntu-latest，`--max-children 4`）里 mutation 作业的 job 墙钟
+   **21 分 11 秒**（含 checkout / install，上限 45 分钟），其中 `Mutation gate` 步骤
+   **20 分 52 秒**（脚本内预算 2400 秒）。即两项预算都还有约 2 倍余量，且**偏紧的是本机**，
+   不是 CI。取数命令：
+   `gh run view 36112304447 --json jobs -q '.jobs[] | select(.name=="mutation") | .steps[] | "\(.name): \(.startedAt) -> \(.completedAt)"'`。
+   注意这仍是 **job/步骤级**墙钟；变异子进程自身的精确耗时从下一轮 nightly 起读
+   `--json-out` 的 `elapsed_s`（2026-09-26 新加的落盘字段）。
 
 独立验证报告 §3 P1-3 的那个反例（`is_expired__mutmut_9` 手工 apply 后全绿）
 在本轮修复后由 mutmut 自己判成 `survived`——判决与手工验证一致。

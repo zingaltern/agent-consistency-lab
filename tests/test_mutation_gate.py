@@ -14,8 +14,9 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,19 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
-SCRIPT = PROJECT_ROOT / "scripts" / "mutation_check.py"
 
 
 def _load_script() -> Any:
-    spec = importlib.util.spec_from_file_location("mutation_check", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """加载门禁的 **runtime 子模块**（拆包后 `main` 与它调用的全局名都在那里）。
+
+    为什么不是门面：本用例集要替换 `MUTANTS_DIR` / `run_mutmut` / `collect_status` /
+    `compute_mutant_fingerprints`，而 `main` 只在 `runtime` 的全局命名空间里查这些名字。
+    门面（`scripts.mutation_check`）上的同名名字是**只读副本**，改它们不会生效——
+    这与 `opsenv.suite.PROFILES` 是同一个坑，别退回文件加载器。
+    """
+    from scripts.mutation_check import runtime
+
+    return runtime
 
 
 def _baseline_v2(status_by_mutant: dict[str, str]) -> dict[str, Any]:
@@ -60,17 +65,33 @@ def _run_gate(
     baseline: dict[str, str] | None,
     extra_args: tuple[str, ...] = (),
     baseline_payload: dict[str, Any] | None = None,
+    fingerprints: dict[str, str | None] | None = None,
 ) -> int:
     """跑一次门禁判定（不真的跑 mutmut）：返回退出码。
 
     ``current`` 是 `{状态: [变异体名]}`（= `collect_status()` 的形状），
-    ``baseline`` 是 `{变异体名: 状态}`。
+    ``baseline`` 是 `{变异体名: 状态}`，``fingerprints`` 是 `{变异体名: 指纹}`。
     """
     module = _load_script()
     calls: dict[str, Any] = {}
     monkeypatch.setattr(module, "run_mutmut", lambda **kwargs: calls.update(kwargs))
     monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets(current))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+
+    def _fake_fingerprints(names: Any, **_kwargs: Any) -> dict[str, str | None]:
+        if fingerprints is None:
+            # 默认：每条名字给一个稳定的假指纹（等价于「内容没变」）。不给默认值会让
+            # 「一条指纹都取不到」的 fail-closed 路径把每个用例都挡在写基线之前。
+            return {str(name): f"sha256:{name}" for name in names}
+        return {str(name): fingerprints.get(str(name)) for name in names}
+
+    monkeypatch.setattr(module, "compute_mutant_fingerprints", _fake_fingerprints)
+    # **MUTANTS_DIR 一律指到 tmp**：`--update-baseline` 会真的把缓存整体移开
+    # （`baseline_refresh_plan` 的 move-aside），不隔离就会动仓库里那份。
+    # 本用例集在同一轮里真的踩过一次：三个守卫用例没隔离，把正在跑的**全量刷新**
+    # 的 `mutants/` 搬走了，mutmut 父进程写 `mutants/harness/loop.py.meta` 时
+    # FileNotFoundError 退出 1（好在那条路径是"跑不起来 ⇒ 判失败"，不是静默绿）。
+    monkeypatch.setattr(module, "MUTANTS_DIR", tmp_path / "mutants")
     baseline_path = tmp_path / "baseline.json"
     payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
     baseline_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -307,6 +328,111 @@ def test_gate_is_green_when_nothing_changed(
     assert code == 0
 
 
+def test_mutant_content_change_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 7：**同名但内容指纹变了** ⇒ 退出 1（独立验证 2026-09-18 · 报告 §5-3）。
+
+    修复前会怎样：判据只按"名字 + 状态"对账 ⇒ 在同一函数体内做**等量改写**
+    （常数改值、语句换序——既不增删变异体条数、也不移位编号）时，同一批名字指向
+    完全不同的变异，而门禁**静默绿**。指纹把"这条还是不是原来那条"变成可判定的。
+    """
+    base_fp = {"m1": "sha256:aaaa", "m2": "sha256:bbbb"}
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1", "m2"]},
+        baseline={"m1": "killed", "m2": "killed"},
+        fingerprints={"m1": "sha256:aaaa", "m2": "sha256:CHANGED"},
+        baseline_payload={
+            **_baseline_v2({"m1": "killed", "m2": "killed"}),
+            "schema": "mutation-baseline/v3",
+            "fingerprint_algorithm": "sha256(normalized-mutmut-diff)/v1",
+            "fingerprints": base_fp,
+        },
+    )
+    assert code == 1
+    # 反向对照：指纹逐条相同 ⇒ 不退化为"有指纹就红"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1", "m2"]},
+        baseline={"m1": "killed", "m2": "killed"},
+        fingerprints=dict(base_fp),
+        baseline_payload={
+            **_baseline_v2({"m1": "killed", "m2": "killed"}),
+            "fingerprints": base_fp,
+        },
+    )
+    assert code == 0
+
+
+def test_missing_fingerprints_do_not_fake_a_comparison(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """取不到指纹的条目**不参与**比对，而且要把两种"没法比"说清楚（不假装比对过）。
+
+    这是条件 7 的边界用例：门禁不能因为"没得比"而变红，也不能因为它而变绿——
+    只能如实报告这一格没在看。两种形态的文案不同，因为处置不同：
+    ① 当前侧取不到内容（本轮先把 mutants/ 修好）；② 基线还是旧版（先跑 --update-baseline）。
+    """
+    # ① 当前侧有名字取不到内容（基线有指纹）
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1"]},
+        baseline={"m1": "killed"},
+        fingerprints={"m1": None},
+        baseline_payload={
+            **_baseline_v2({"m1": "killed"}),
+            "fingerprints": {"m1": "sha256:aaaa"},
+        },
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "内容指纹" in out
+    assert "这些条目**不参与**指纹比对" in out
+    assert "这一格没在看" in out
+
+    # ② 基线是旧版（没有 fingerprints 字段）
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1"]},
+        baseline={"m1": "killed"},
+        fingerprints={"m1": "sha256:aaaa"},
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "基线里没有可比对的指纹" in out
+    assert "只记账、不判内容" in out
+
+
+def test_all_fingerprints_unreadable_refuses_to_write_a_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """fail-closed：一条指纹都取不到时**拒绝写基线**（否则等于静默关掉条件 7）。
+
+    修复前会怎样：写出一份没有 `fingerprints` 的基线，之后每轮都"没有可比对的指纹"，
+    条件 7 再不生效，而所有输出都是绿的。
+    """
+    module = _load_script()
+    monkeypatch.setattr(module, "run_mutmut", lambda **_kwargs: None)
+    monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets({"killed": ["m1"]}))
+    monkeypatch.setattr(
+        module, "compute_mutant_fingerprints", lambda names, **_kwargs: {n: None for n in names}
+    )
+    # 必须把 MUTANTS_DIR 指到 tmp：刷新路径会真的把缓存**整体移开**，
+    # 不设替身就会动仓库里那份（本用例第一版就是这么把 mutants/ 搬走的）。
+    monkeypatch.setattr(module, "MUTANTS_DIR", tmp_path / "mutants")
+    baseline_path = tmp_path / "baseline.json"
+    code = module.main(
+        ["--baseline", str(baseline_path), "--timeout", "1", "--update-baseline"]
+    )
+    assert code == 1
+    assert not baseline_path.exists(), "拒绝写入就一条都不该留下"
+
+
 def test_baseline_v1_is_read_with_a_visible_limitation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -448,7 +574,71 @@ def test_summary_only_reports_survivors_as_a_list(
     assert payload["survivors"] == ["b", "c"]
     assert payload["survivor_count"] == 2
     assert payload["inconclusive"] == ["d"]
+    # 不变量：`--summary-only` 只是**读回基线**，不得凭空造一个墙钟（基线里没有这个字段）
+    assert "elapsed_s" not in payload
     assert json.loads(capsys.readouterr().out.splitlines()[0])["survivor_count"] == 2
+
+
+# ------------------------------------------------- 墙钟落盘（CI 预算的唯一量化来源）
+
+
+def test_run_mutmut_returns_the_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_mutmut` 返回这一轮的墙钟秒数。
+
+    修复前会怎样：用时只在 print 里出现、不落盘 ⇒ 夜里上传的 artifact 回答不了
+    "CI 上 mutmut 本身跑了多久、离预算还有多少"——独立验证 2026-09-18 的报告 §5-1
+    把这条列为"预算够不够"的唯一定量缺口。
+    """
+    import types
+
+    module = _load_script()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    ticks = iter([100.0, 112.5])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(ticks))
+    assert module.run_mutmut(module=None, timeout=60, max_children=1) == pytest.approx(12.5)
+
+
+def test_json_out_records_elapsed_s(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """判定路径的产物里必须有 `elapsed_s`，且**既有键一个不动**（逐键断言）。
+
+    修复前会怎样：`/tmp/mutation.json` 里全是计数与名单，没有任何时间字段——
+    "CI 比本机慢多少倍"只能从 job 级别反推（含 checkout/install），答不出变异那一步的耗时。
+    """
+    out = tmp_path / "run.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--json-out", str(out)),
+    )
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert isinstance(payload["elapsed_s"], float)
+    assert payload["elapsed_s"] >= 0.0
+    # 既有键逐键仍在（新增字段不许顶掉任何一个）
+    for key in (
+        "schema",
+        "modules",
+        "command",
+        "counts",
+        "status_counts",
+        "status_by_mutant",
+        "survivor_rate",
+        "survivors",
+        "no_tests",
+        "inconclusive",
+        "unknown_statuses",
+        "refresh",
+        "invisible_share",
+    ):
+        assert key in payload, f"既有键 {key} 不见了"
 
 
 def test_timeout_fails_and_still_writes_the_artifact(monkeypatch, tmp_path: Path) -> None:
@@ -477,6 +667,8 @@ def test_timeout_fails_and_still_writes_the_artifact(monkeypatch, tmp_path: Path
     assert payload["verdict"] == "aborted"
     assert payload["reason"] == "timeout"
     assert "超时失败" in payload["message"]
+    # 超时那一刻已经跑了多久是第一手处置证据（"差一点跑完" vs "配置没生效"）
+    assert isinstance(payload["elapsed_s"], float)
 
 
 def test_unreadable_results_fail_and_still_write_the_artifact(
@@ -520,6 +712,228 @@ def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
     assert real_subprocess is not None
 
 
+# ------------------------------------------- 刷新基线不许顺手把盲区冻进去（更宽即拒绝）
+
+
+def test_baseline_widening_names_the_four_categories() -> None:
+    """「更宽」按今天已有的红灯条件定义，四条：
+
+    新增幸存 / 新增 no tests / 无结论增长 / 旧条目整条不见。
+    纯函数用例：判据本身可被单元测试钉住，不依赖 mutmut。
+    """
+    module = _load_script()
+    old = {
+        "status_by_mutant": {
+            "a": "killed",
+            "b": "survived",
+            "c": "no tests",
+            "d": "timeout",
+        },
+        "inconclusive": ["d"],
+    }
+    candidate = {
+        "status_by_mutant": {
+            "a": "survived",  # 新增幸存
+            "b": "survived",
+            "c2": "no tests",  # 新增 no tests
+            "e": "timeout",  # 无结论集合增长
+            "f": "killed",
+        },
+        "inconclusive": ["e"],
+        "survivors": ["a", "b"],
+        "no_tests": ["c2"],
+    }
+    keys = {item["key"] for item in module.baseline_widening(old, candidate)}
+    assert keys == {
+        "new-survivors",
+        "new-no-tests",
+        "inconclusive-grew",
+        "baseline-entries-missing",
+    }
+    # 正对照 1：与旧基线**逐条相同** ⇒ 不比旧的宽
+    assert module.baseline_widening(old, old) == []
+    # 正对照 2：**缩窄**（幸存变 killed、无结论变判定）⇒ 也不是"更宽"
+    narrower = {
+        "status_by_mutant": {"a": "killed", "b": "killed", "c": "killed", "d": "killed"},
+        "inconclusive": [],
+    }
+    assert module.baseline_widening(old, narrower) == []
+
+
+def test_wider_baseline_is_refused_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """刷新基线时**新增幸存变异 ⇒ 拒绝写入并退出 1**（独立验证 2026-09-18 · 报告 §5-2）。
+
+    修复前会怎样：`--update-baseline` 是文档化的逃生门，但没有守卫——
+    "顺手把这一轮的盲区冻进基线"在机制上没有任何阻力（第一版就出过一份混合基线：
+    14.7 秒"跑完"、`no tests` 从 18 虚增到 241）。现在默认拒绝，且旧基线**原样不动**。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "fresh"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--update-baseline",),
+    )
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "拒绝写基线" in out
+    assert "new-survivors" in out
+    assert "fresh" in out
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["schema"] == "mutation-baseline/v2", "拒绝写入时旧基线必须原样不动"
+
+
+def test_wider_baseline_can_be_written_with_the_escape_hatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """显式 `--allow-wider-baseline` 才放行：大声警告 + 把放行条件写进基线。
+
+    为什么"写进基线"这一半同等重要：下一轮评审看基线文件就能看出"这份基线是放宽后冻的"，
+    不用去翻 PR 描述——条件不能只靠人记。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    out_path = tmp_path / "run.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "fresh"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=(
+            "--update-baseline",
+            "--allow-wider-baseline",
+            "--json-out",
+            str(out_path),
+        ),
+    )
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "警告" in printed and "更宽" in printed
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["schema"] == "mutation-baseline/v3"
+    override = written["refresh"]["widening_override"]
+    assert override["allowed"] is True
+    assert {"key": "new-survivors", "count": 1} in override["categories"]
+    # `--json-out` 里的 refresh 也要带上它（夜里上传的就是那个文件）
+    assert (
+        json.loads(out_path.read_text(encoding="utf-8"))["refresh"]["widening_override"]["allowed"]
+        is True
+    )
+
+
+def test_equal_baseline_is_written_without_an_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """正对照：候选与旧基线逐条相同 ⇒ 正常写入，且**不该**留下放行标记。
+
+    没有这一格，"更宽必被拒"可能只是守卫恒真（把正常刷新也一起挡住）。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    same = {"a": "killed", "b": "survived", "c": "no tests"}
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"], "no tests": ["c"]},
+        baseline=same,
+        extra_args=("--update-baseline",),
+    )
+    assert code == 0
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["status_by_mutant"] == same
+    assert "widening_override" not in written["refresh"]
+
+
+
+
+# ------------------------------------------------- 拆包后的门面契约（2026-09-26）
+
+
+def test_facade_reexports_the_whole_pre_split_namespace() -> None:
+    """拆包不许丢名字：门面必须 re-export **拆分前命名空间里的每一个名字**。
+
+    为什么值得一条用例：8 条 claim 的 `source_cmd` 走 `python -m scripts.mutation_check`，
+    独立验证脚本走 `import scripts.mutation_check as mc`；少一个名字就是"命令照跑、
+    某条路径上才 AttributeError"。清单是**拆分前**用
+    `[n for n in vars(module) if not n.startswith("__")]` 抓下来的（含 import 进来的
+    `subprocess` / `time` / `Path` 这类）。
+
+    改坏什么会让它红：从门面的 import 清单里删掉任意一个名字
+    （本机实测：删掉 `_summary_payload` 的导入 ⇒ 只有本用例红）。
+    """
+    import scripts.mutation_check as facade
+
+    expected = {
+        "Any",
+        "DECIDED_STATUSES",
+        "DEFAULT_BASELINE",
+        "DEFAULT_MODULES",
+        "FINGERPRINT_ALGORITHM",
+        "INCONCLUSIVE_STATUSES",
+        "Iterator",
+        "KNOWN_STATUSES",
+        "MUTANTS_DIR",
+        "NoReturn",
+        "PROJECT_ROOT",
+        "Path",
+        "UNCOVERED_STATUSES",
+        "_abort",
+        "_chdir",
+        "_invisible_space_lines",
+        "_mutmut_argv",
+        "_report_line",
+        "_summary_payload",
+        "_write_json_out",
+        "all_mutant_names",
+        "apply_baseline_refresh_plan",
+        "argparse",
+        "baseline_refresh_plan",
+        "baseline_widening",
+        "collect_status",
+        "compute_mutant_fingerprints",
+        "contextmanager",
+        "fingerprint_comparison_lines",
+        "fingerprint_report",
+        "gate_verdict",
+        "hashlib",
+        "json",
+        "load_baseline",
+        "main",
+        "mutant_paths_in_cache",
+        "mutation_summary",
+        "normalize_fingerprint_source",
+        "normalize_module_filter",
+        "os",
+        "run_mutmut",
+        "show_mutant",
+        "status_map_from_payload",
+        "subprocess",
+        "sys",
+        "time",
+    }
+    missing = expected - set(vars(facade))
+    assert not missing, f"门面丢了这些名字: {sorted(missing)}"
+
+
+def test_module_entry_point_still_works() -> None:
+    """`python -m scripts.mutation_check` 必须继续可用（拆包后由 `__main__.py` 保住）。
+
+    修复前会怎样：拆成包却只留子模块、没有 `__main__.py` 时，这条命令以
+    `No module named scripts.mutation_check.__main__` 失败——而 nightly 的 mutation 作业
+    与 8 条 claim 正是这么调它的。这里跑 `--summary-only`（只读基线，不起 mutmut）。
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.mutation_check", "--summary-only"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["survivor_count"] == json.loads(
+        BASELINE.read_text(encoding="utf-8")
+    )["counts"]["survived"]
 # ------------------------------------------------------------------ 入库基线
 
 
@@ -527,7 +941,7 @@ def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
 def test_baseline_is_internally_consistent() -> None:
     payload = json.loads(BASELINE.read_text(encoding="utf-8"))
     counts = payload["counts"]
-    assert payload["schema"] == "mutation-baseline/v2"
+    assert payload["schema"] == "mutation-baseline/v3"
     assert counts["survived"] == len(payload["survivors"])
     assert counts["no_tests"] == len(payload["no_tests"])
     assert counts["inconclusive"] == len(payload["inconclusive"])
@@ -552,9 +966,9 @@ def test_baseline_records_every_mutant_status() -> None:
     payload = json.loads(BASELINE.read_text(encoding="utf-8"))
     status_by_mutant = payload["status_by_mutant"]
     assert len(status_by_mutant) == payload["counts"]["total"]
-    module = _load_script()
-    known = set(module.KNOWN_STATUSES)
-    assert set(status_by_mutant.values()) <= known, "基线里出现了未归类的状态"
+    from scripts.mutation_check import KNOWN_STATUSES  # 词表在门面上（不涉及替换）
+
+    assert set(status_by_mutant.values()) <= set(KNOWN_STATUSES), "基线里出现了未归类的状态"
     # `status_counts` 是"状态 → 条数"，必须与 `status_by_mutant` 逐条对得上
     for status, count in payload["status_counts"].items():
         assert count == sum(1 for s in status_by_mutant.values() if s == status), status
@@ -687,6 +1101,14 @@ def test_update_baseline_moves_the_cache_before_running_mutmut(
     monkeypatch.setattr(module, "run_mutmut", fake_run)
     monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets({"killed": ["m1"]}))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+    # 指纹也要给替身：替身造的变异体名（m1）不在真实缓存里，真函数会全部返回 None，
+    # 而"一条指纹都取不到"现在会**拒绝写基线**（fail-closed，见
+    # test_all_fingerprints_unreadable_refuses_to_write_a_baseline）。
+    monkeypatch.setattr(
+        module,
+        "compute_mutant_fingerprints",
+        lambda names, **_kwargs: {n: "sha256:x" for n in names},
+    )
 
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(_baseline_v2({"m1": "killed"})), encoding="utf-8")

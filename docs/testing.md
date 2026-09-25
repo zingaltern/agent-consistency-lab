@@ -30,9 +30,10 @@
                                                        #   不进 claim：机器不同就不同）
 .venv/bin/ruff check .
 .venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集）
-                                                       # 时长实测 **约 54 秒**（W11 起 W7 的阈值扫描
-                                                       # `context_sweep --repeats 2` 也在这个集合里，
-                                                       # 它独占约 38 秒；在此之前的 9 秒是旧口径）
+                                                       # 时长实测 **约 57 秒**（2026-09-26 复查；
+                                                       # W7 的阈值扫描 `context_sweep --repeats 2` 独占约
+                                                       # 38 秒，噪声口径的廉价门禁 claim 另占约 1 秒；
+                                                       # 在此之前的 9 秒是 W11 之前的旧口径）
 
 # 完整档（合并涉及语义/评测的改动前）
 .venv/bin/python -m experiments.crash_matrix --repeats 5         # 16 格全 as-predicted
@@ -42,8 +43,13 @@
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
-.venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退）
-                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟）
+.venv/bin/python -m scripts.mutation_check              # 变异门禁（全状态记账 + 防倒退）
+                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟；
+                                                       # job 的墙钟上限是另一件事：nightly.yml 的 timeout-minutes: 45）
+                                                       # CI 实测耗时（run 36112304447，2026-09-25）：
+                                                       # job 21 分 11 秒 / `Mutation gate` 步骤 20 分 52 秒
+                                                       # （含 checkout/install 的是前者）；`--json-out` 的 `elapsed_s`
+                                                       # 记的是变异子进程自身的墙钟，下一轮 nightly 起是精确口径
                                                        # 2026-09-18 修掉 segfault 误判后，原先"一进去就崩"的
                                                        # 那部分变异体会真的跑完测试：本机**空闲**冷跑实测
                                                        # **631.5 秒 ≈ 10.5 分钟**（带负载时读数会更高）
@@ -56,8 +62,25 @@
                                                        # 会混合旧判决（2026-09-19 实测过一次：14.7 秒"跑完"、
                                                        # `no tests` 从 18 虚增到 241）。要沿用旧缓存必须显式
                                                        # `--allow-incremental-refresh`（会大声警告）
+                                                       # ⚠️ 刷新基线还有第二条守卫：候选比旧基线**更宽**
+                                                       # （新增幸存 / 新增 no tests / 无结论增长 / 旧条目整条
+                                                       # 不见）⇒ 拒绝写入并退出 1（旧基线原样不动）；
+                                                       # 显式 `--allow-wider-baseline` 才放行，且放行条件会写进
+                                                       # 基线与 `--json-out` 的 `refresh.widening_override`
                                                        # ⚠️ 每次运行都打印"不可见空间"的规模：
                                                        # survivor_rate 不是覆盖率
+                                                       # ⚠️ 判据第七条：**同名不同指纹**也红。
+                                                       # 基线为每条变异体存内容指纹
+                                                       # （sha256 of mutmut 自己渲染的 diff，
+                                                       # 规范化 = 逐行去尾空格 + 丢首尾空行），
+                                                       # 挡住"等量改写"（常数改值、语句换序：
+                                                       # 条数与编号都不变 ⇒ 只按名字对账会静默绿；
+                                                       # 独立验证 2026-09-18 报告 §5-3）。
+                                                       # 取指纹走进程内 mutmut 的
+                                                       # get_diff_for_mutant：2050 条约 17 秒
+                                                       # （`mutmut show` 起子进程是 219 ms/条 ⇒
+                                                       # 2050 条约 448 秒，故不采用）；指纹取不到的
+                                                       # 条目如实记 None 并打印条数，不假装比对过
                                                        # ⚠️ 判据的适用边界（三条，别读过头）：
                                                        # ① 变异范围由 pyproject.toml [tool.mutmut].only_mutate
                                                        #    决定：注入到**未变异**模块的代码不参与变异，
@@ -119,6 +142,27 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 
    还原后基线是全绿。（四条各自的单元用例在 `tests/test_stats_and_gates.py`
    的"指标**定义**门禁与 CRN 门禁"一节，每条都带"改坏什么会让它红"。）
+
+   **2026-09-26 新增的一条判据 + 一条刷新守卫**（独立验证 2026-09-18 报告 §5-3 / §5-2
+   的两处残余边界；三格退化注入都实跑过，都"只红那一条"）：
+
+   | 判据 | 怎么把它弄红 | 期望 | 实测 |
+   |---|---|---|---|
+   | `mutation` 第七条：同名**不同内容指纹** | 在一个**被变异模块**的函数里做**等量改写**（本机用的是把 `is_expired` 的 `>=` 翻成 `<=`，语义不变、条数不变），再重刷该模块的变异体 | 退出 1 并报 `[mutant-content-changed]` | 29 条 approval 变异体**名字与条数都不变**、其中 4 条指纹变了 → 门禁报 `[mutant-content-changed]` 4 条（另有 1 条判决同时翻转 ⇒ 也报 `[new-survivors]`，那是旧判据本来就看得见的那部分）；改动还原并重刷后 29 条指纹**逐条回到基线** |
+   | `mutation` 第七条（关掉比对） | 把 `gate_verdict` 里的 `if content_changed:` 分支注释掉 | 只有 `test_mutant_content_change_turns_the_gate_red` 红 | 1 failed / 40 passed |
+   | `mutation`（指纹取不到时不许写基线） | 把 `--update-baseline` 里的"一条指纹都取不到即拒绝"注释掉 | 只有 `test_all_fingerprints_unreadable_refuses_to_write_a_baseline` 红 | 1 failed / 40 passed |
+   | `--update-baseline` 的"更宽即拒绝"守卫 | 把 `if widening and not args.allow_wider_baseline:` 改成恒假 | 只有 `test_wider_baseline_is_refused_by_default` 红 | 1 failed / 40 passed |
+
+   **刷新基线的两条守卫**（与上面那条同属 §5-2 的处置；都在 `--update-baseline` 路径上，
+   都是默认拒绝 + 显式逃生门）：
+
+   * **更宽即拒绝**：候选基线若相对旧基线新增幸存 / 新增 `no tests` / 无结论集合增长 /
+     旧条目整条不见 ⇒ **拒绝写入并退出 1**（旧基线原样不动）。确有理由时用
+     `--allow-wider-baseline` 显式放行：会大声警告，并把放行条件写进基线与 `--json-out`
+     的 `refresh.widening_override`（评审看文件就知道这份基线是放宽后冻的）。
+     注意**改代码导致的重编号**也算"更宽"（旧条目整条不见）⇒ 那种刷新必须显式放行，
+     这是刻意的：刷新基线应当是个有意识动作。
+   * **没有指纹不许写**：见上表第三行。
 
    **W11 补的三层 append-only 防线**（独立验证 2026-09-19 · P2-5；`harness/store/guard.py`）
    不是"门禁"，但同样是"改坏了必须有人报警"的机制，因此按同一条纪律做了退化注入

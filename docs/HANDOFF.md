@@ -414,6 +414,17 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
   拆前先做了**逐字切片 + 拼接回原文逐字相同**的断言（见提交信息），拆后跑了
   `--summary-only` 与整轮门禁的**逐键对照**：除 `elapsed_s` 的计时噪声外完全相同。
 
+### 真人黑盒测试：准备物已就绪，**待真人执行**（2026-09-26）
+
+`docs/independent-test-2026-09-26/` 是一套**准备物**（一键入口 `commands.sh` + 报告骨架
+`report.md` + 协议与红线 `README.md`），状态明确写成 **待真人执行**：
+
+* 一键入口跑**四套基线**（`pytest` / `ruff` / `check_facts --run verify` / `crash_matrix
+  --repeats 5`），产物全部落 `/tmp/independent-test-<日期>/`，末尾自检 `git status --porcelain`；
+* 报告必须由**真人**跑出来、由真人写，落 `docs/independent-test-<实际执行日期>/report.md`；
+* **本轮没有跑它、也没有任何"测试已通过"的结论来自它**——按红线，agent 不得代跑并声称完成。
+  上一轮真人黑盒测试的报告在 `docs/independent-test-2026-09-19/`（那一次是被审对象，不是本次）。
+
 ### 本轮之后仍需注意的
 
 1. **`mutants/` 缓存是"旧代码副本"这件事又咬了一次**：新用例读 `opsenv/` 与 `harness/` 的源码，

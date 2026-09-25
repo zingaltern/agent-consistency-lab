@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 463,
+      "value": 464,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [

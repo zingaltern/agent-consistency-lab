@@ -792,24 +792,6 @@ def _pending_action(store: SqliteStore, branch_id: str) -> str:
     return ""
 
 
-def _agent_output_tokens(store: SqliteStore, branch_id: str) -> int:
-    """输出 token 从 agent_message 的 usage 里取（模型自己报的数）。"""
-    from harness.events import TreeEventType
-
-    total = 0
-    for event in store.effective_events(branch_id):
-        if event.type == TreeEventType.AGENT_MESSAGE.value:
-            total += int(event.payload.get("usage", {}).get("completion_tokens", 0) or 0)
-    return total
-
-
-def _run_state(store: SqliteStore, branch_id: str) -> str:
-    from harness.state import reduce_events
-
-    state, _ = reduce_events(store.effective_events(branch_id))
-    return state.status.value
-
-
 def _finish(
     *,
     system: str,

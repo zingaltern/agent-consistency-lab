@@ -14,7 +14,7 @@
 | 回归（审计固化） | `tests/test_audit_regressions.py` | **曾经修过的 P0 不许复活**；每个用例 docstring 写明"修复前会怎样" | 开发 agent |
 | 统计 / 门禁 | `tests/test_stats_and_gates.py` | 区间、配对、门禁本身的正确性 | 开发 agent |
 | 崩溃矩阵 | `experiments/crash_matrix.py` | 命名窗口下的一致性结论（真 SIGKILL，外部账本裁决） | 开发 agent |
-| 评测套件 | `opsenv/suite.py --gate` | 四路线对照 + 可执行门禁（条数见 claim `suite-gate-count`） | 开发 agent |
+| 评测套件 | `python -m opsenv.suite --gate` | 四路线对照 + 可执行门禁（条数见 claim `suite-gate-count`） | 开发 agent |
 | **独立黑盒测试** | 报告落 `docs/independent-test-<日期>/` | **机制承诺是否成立**（先读规格、后读答案） | **测试 agent（独立会话）** |
 
 ---

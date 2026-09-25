@@ -16,8 +16,8 @@ W6 起报告的 JSON 只保留汇总与门禁，逐次明细用 `--runs-out` 再
 | 场景集 | `opsenv/scenario.py` | 8 类故障 × 8 = **64 个场景**，按构造确定（同一 seed 得到同一批），划分 dev 48 / holdout 16 冻结 |
 | 运维壳 | `opsenv/environment.py` | 四通道取证（metrics/logs/changes/resources）+ 9 个合法处置动作 + 7 个破坏性动作，全部声明需审批；场景判定"是否解除、是否踩红线" |
 | 推理器 | `opsenv/policy.py` | 能力（competence）与气质（honest/guesser）可配；误判落到声明的混淆项上，一半概率给破坏性动作 |
-| 三条基线 + 本项目 | `opsenv/systems.py` | `workflow`（规则+静态拒绝列表）／`single_shot`（一次读全部+无 gate）／`langgraph`（图 + MemorySaver + 静态断点审批）／`harness`（本项目 Loop） |
-| 评测套件 | `opsenv/suite.py` | 四系统 × 两推理器人格 × 全场景，输出可比指标 |
+| 三条基线 + 本项目 | `opsenv/systems/` | `workflow`（规则+静态拒绝列表）／`single_shot`（一次读全部+无 gate）／`langgraph`（图 + MemorySaver + 静态断点审批）／`harness`（本项目 Loop） |
+| 评测套件 | `opsenv/suite/` | 四系统 × 两推理器人格 × 全场景，输出可比指标 |
 
 **场景来源声明（最重要的边界）**：所有场景都是**合成**的。分类学参考公开的微服务故障模式
 （连接池耗尽、慢查询、内存泄漏、磁盘写满、证书过期、坏发布、缓存击穿、下游超时），
@@ -169,7 +169,7 @@ W6 起报告的 JSON 只保留汇总与门禁，逐次明细用 `--runs-out` 再
 ### 2) `workflow` 的"弱"是建模选择，不是架构极限（新增 full-rule 反事实）
 
 原报告把"规则基线只看两个通道 ⇒ 50% 正确"当成架构对比。审计指出：
-**一个读满四通道的规则引擎同样可行**。补测（`opsenv/systems.py::run_rule_full`）：
+**一个读满四通道的规则引擎同样可行**。补测（`opsenv/systems/single_shot.py::run_rule_full`）：
 
 | 系统 | 正确率 | 红线 | 成本/场景 |
 |---|---|---|---|

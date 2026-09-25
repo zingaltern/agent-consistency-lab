@@ -73,7 +73,7 @@
 | 沙箱隔离与权限控制 | **未实现沙箱**（边界）；权限部分是工具分级 + 审批绑定 |
 | 全链路 Tracing 与 Observability | `harness/trace.py`：事件日志 → span 树投影 + OTel 形状导出 |
 | Token 与成本消耗归因 | 分桶账本 + 缓存模型（W4/W7 报告） |
-| 自动化 EVAL 流水线 / 版本回归 | `opsenv/suite.py --gate` + CI（含实验假设自检） |
+| 自动化 EVAL 流水线 / 版本回归 | `python -m opsenv.suite --gate` + CI（含实验假设自检） |
 | 从 0 到 1 工业级落地经验 | 诚实版：**0→1 的工程化实验台**，不是生产系统 |
 
 ## 六、如果被问到"这个项目的局限是什么"

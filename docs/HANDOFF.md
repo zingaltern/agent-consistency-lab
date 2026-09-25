@@ -4,7 +4,7 @@
 W8 以及之后任何人接手都能从这里重新展开。细节不在这里——只放**不可丢失的事实与决策**，
 每条都指向可以现场读的证据文件。
 
-更新时间：W11（独立验证 2026-09-19：append-only 的 INSERT 旁路 + DDL 防线 + 落盘顺序 + 门禁指标定义覆盖面）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
+更新时间：W11（独立验证 2026-09-19：append-only 的 INSERT 旁路 + DDL 防线 + 落盘顺序 + 门禁指标定义覆盖面）+ 一轮拆包（评测层 `opsenv/suite.py` / `opsenv/systems.py` 拆成包，纯代码搬移，见 §十一）｜ 代码量见 `docs/HANDOFF.md` 的复现命令一节（`find ... | xargs wc -l`）｜ 测试全绿：**用例数不写在这里**，见 claim `tests-collected`（`scripts/count_tests.py` 再生）
 
 > **W9 先读这一段**：本轮把"结论可再生"从纪律变成了门禁——文档里每个被引用的数字都登记在
 > `reports/documented-facts.json`（claim 清单，条数以 `check_facts.py --list` 为准），
@@ -29,8 +29,14 @@ W8 以及之后任何人接手都能从这里重新展开。细节不在这里�
 > `verify_append_only_guard`（离线）。**残余边界写在 `docs/semantics.md` §2.1**：
 > 拿到库文件的人仍可另开无防线连接，链没有密钥。
 > 改 `harness/store/schema.py`、`harness/store/guard.py`、`harness/store/sqlite_store.py`、
-> `harness/execution.py` 或 `opsenv/suite.py::check_gates` 之前，先读 **§十**。
+> `harness/execution.py` 或 `opsenv/suite/gates.py::check_gates` 之前，先读 **§十**。
 > 另外：`docs/semantics.md` §2.1 与 §2.4 的措辞已按实测收窄。
+
+> **动 `opsenv/` 的目录结构或 import 面之前先读这一段**：评测层已按职责拆成包
+> （`opsenv/suite/` 五个模块 + 门面、`opsenv/systems/` 六个模块 + 门面），
+> **纯代码搬移、无语义改动**——门面把拆分前的命名空间一个不少地 re-export，
+> 旧 import 路径与 `python -m opsenv.suite` 全部继续可用。要加新代码就加到对应子模块，
+> 不要往门面里塞逻辑。理由、证据与"已接受的体量离群点"见 **§十一**。
 
 ---
 
@@ -329,3 +335,65 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    并把这次的条件写进基线与 `--json-out` 的 `refresh` 字段；要沿用旧缓存必须显式
    `--allow-incremental-refresh`（会大声警告）。判据是"缓存干不干净"，不是 mtime——
    同模块里没改过的函数本来就该保留旧判决，只有"整体重跑"才谈得上基线。
+
+---
+
+## 十一、评测层拆包（纯代码搬移，无语义改动）
+
+### 拆了什么、为什么
+
+| 拆分 | 结果 | 为什么 |
+|---|---|---|
+| `opsenv/suite.py`（1096 行 → 包） | `opsenv/suite/`：`run.py`（跑批/聚合）、`stats.py`（评分口径与配对统计）、`gates.py`（门禁）、`report.py`（渲染）、`cli.py`（命令行）+ 门面 `__init__.py` + `__main__.py` | `check_gates` 是门禁核心（W11 的四条**关系**门禁都在里面），却与渲染、CLI、聚合挤在同一个 1096 行文件里——读它要跨过几百行无关代码 |
+| `opsenv/systems.py`（876 行 → 包） | `opsenv/systems/`：`base.py`（共用底件）、`workflow.py`、`single_shot.py`、`langgraph_system.py`、`harness_system.py` + 门面 | 四条路线、LangGraph 图定义、策略模型混在一起，"这条路线做了什么"要读完整文件才能回答 |
+| 两处 `_agent_output_tokens` / `_run_state` **重复定义**（同一文件里各两份，函数体逐字相同） | 删除第二份（保留紧邻唯一消费者 `run_harness` 的那份） | 第二份**静默遮蔽**第一份：改第一份不生效，用例与门禁全绿、无人报警。现在由 `tests/test_no_duplicate_defs.py` 钉死（`opsenv/` 与 `harness/` 顶层同名重复定义即失败，已做过退化注入自证） |
+
+### 门面（`__init__.py`）的约定
+
+拆分前 `opsenv.suite` / `opsenv.systems` 命名空间里的名字（含它们自己 import 进来的类型与
+私有辅助）**一个不少**地 re-export，因此旧 import 路径与 `python -m opsenv.suite` 全部继续可用。
+唯一的例外是有意保留的间接层：`PROFILES` 定义在 `opsenv/suite/run.py`，但 `noisy_profiles`
+与 `main` 通过 `run._live_profiles()` **在调用时**从门面读——`docs/independent-test-2026-09-17/commands.sh`
+用 `opsenv.suite.PROFILES = ...` 换 `noise_seed` 来证明噪声口径可复现，子模块各持副本会让
+这个赋值**静默失效**。
+
+### 布局上的一处刻意偏离（与任务给的草案不同，理由是依赖方向）
+
+`_finish`（把环境状态折成一个 `RunResult`）放在 `systems/base.py`，草案把它列在
+`harness_system.py` 下。四条路线都要调它，放在 agent 路线那个模块里会让
+`workflow` / `single_shot` / `langgraph` 反向 import 它——依赖方向变坏，而且读规则基线的
+人得先看懂 agent 路线。其余布局与草案一致。
+
+### 零行为变更的证据（可复跑）
+
+`git archive` 出拆分前的树到 `/tmp` 跑同一批命令，与本树对比：
+
+| 对照 | 结果 |
+|---|---|
+| 套件整跑 `--per-fault 2 --repeats 1`（JSON + Markdown） | **逐字相同**（仅 `avg_wall_ms` 计时列不同） |
+| 五条路线（含反事实基线 `rule_full`）× 2 场景 × 2 值班人（oracle / 橡皮图章）× 2 重复的 `RunResult` | **逐字相同** |
+| `opsenv.suite.PROFILES = <seed 202>` 后 `noisy_profiles` 读到的 `noise_seed` | 两边都是 `202`（间接层确实生效） |
+| `--per-fault 0` 退出码 / 正常路径退出码 | 两边都是 `2` / `0` |
+
+### 已接受的体量离群点（**不要顺手拆**）
+
+* `harness/execution.py`（832 行，`wc -l` 现测）：七步管线的实现确实大，但它**在变异范围内**
+  （`pyproject.toml [tool.mutmut].only_mutate`）。拆它 = 变异体按函数内序号重编号 =
+  W11 刚重刷的基线整份不可比，而 W11 刚为落盘顺序（P1-2）改过它。拆分收益配不上基线作废的代价。
+* `scripts/mutation_check.py`（754 行，`wc -l` 现测）：它自己就是门禁，判据与三格退化注入记录
+  （`docs/design/2026-09-18-mutation-segfault-investigation.md` §4.1）是按现有结构写的；
+  拆它要先补一遍判据的回归用例，应单独一轮。
+
+### 本轮之后仍需注意的
+
+1. **`mutants/` 缓存是"旧代码副本"这件事又咬了一次**：新用例读 `opsenv/` 与 `harness/` 的源码，
+   而沙箱里那份 `opsenv/systems.py` 还带着本次删掉的重复定义 ⇒ 局部变异运行会把**每个**变异体
+   判成 killed（存活率只会显得更低，**门禁不会因此变红**，属于静默失效）。已按既有纪律把缓存
+   整体移开（`mutants.stale-<UTC 时间戳>/`，已 gitignore），下次变异运行全量重建。
+   判断依据仍是"缓存干不干净"，不是 mtime。
+2. **历史记录保持原样**：`docs/independent-test-*` 与 `docs/design/2026-09-*` 里的
+   `opsenv/suite.py` / `opsenv/systems.py` 字样不改——那是当时那次运行/评审的记录（含当时的行号），
+   改路径等于篡改证据。活文档（README / HANDOFF / `docs/*.md` / `reports/documented-facts.json`
+   的 claim 锚点）已全部回灌，`scripts/check_facts.py --run verify` 是它的门禁。
+3. `opsenv/` 仍**不在**变异范围内（`only_mutate` 只有 harness 的 4 个文件）。也就是说拆包本身
+   没有变异覆盖，覆盖它的是 `tests/test_no_duplicate_defs.py` 这类结构断言与上面那批逐字对照。

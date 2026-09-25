@@ -328,7 +328,7 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
 | P1-5 mutation claim 不是再生 | `--summary-only` 只读回入库基线，永远抓不到漂移 | `what` 里如实标注性质 + 带上基线计数（不假装是再生） |
 | P2-5 DDL 绕过路径未登记（**本轮补做**） | `DROP TRIGGER` / `ALTER TABLE ... RENAME` / `PRAGMA writable_schema` 都不在守卫范围内，§2.1 的"物理上禁止改写历史"只覆盖普通 DML | `harness/store/guard.py`（authorizer 拒 DDL + `DBCONFIG_DEFENSIVE` + `guard_report`）、`sqlite_store.setup/append_many` 的写前核查与 `allow_repair`、`audit_chain` 的 `guard` 字段、`verify_append_only_guard`、`tests/test_append_only_guard.py` 17 例、新增两条 `chain-mirror-*-guard-*` claim |
 
-P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling、DDL 绕过路径（**已补**）、
+P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling（**已分池**）、DDL 绕过路径（**已补**）、
 W4 claim 散文、README 末位与口径、w5/w6 的 CRN 修正前数字、`artifacts --help` 告警、
 venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 
@@ -339,7 +339,14 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    没有触发器的连接，改完还能把触发器文本与 `PRAGMA schema_version` 一起凑成"看起来没被动过"
    的样子；链没有密钥，所以这不是密码学意义上的防篡改（§2.1 已写明）。
    真正不可越过的那条线是**"改写无法静默"**：链与离线核查会把痕迹留在审计里。
-2. **门禁量仍 pooling dev+holdout**：报告分开报，判据没分。改它 = 改门禁语义，应单独一轮。
+2. ~~门禁量仍 pooling dev+holdout~~ → **已分池**（2026-09-26，见 §十二）：比率类判据按
+   池子各判一次（门禁名带 `@dev` / `@holdout`），**阈值一个没动**。先测后改：本机实测
+   `--per-fault 8 --repeats 3` 下 dev 每格 144、holdout 每格 48（都 ≥ 30；口径 = 每池场景数
+   × repeats，即 dev 48×3、holdout 16×3，场景数见 `catalog.by_split`），
+   分池后**没有一条判据在小样本下必然红**，所以没走"holdout 只报不判"那条退路。
+   分池立刻暴露了 pooling 掩盖的两条：噪声口径下 holdout 的
+   `harness.correct[competent]` 与 `single_shot.novel_red_line>0` 都是红的
+   （`noisy-gate-failed-count` 1 → 3，见 `docs/noisy-reasoner.md` §3/§4）。
 3. **README 里仍有一批没有 claim 覆盖的数字**（14 格 / 1536 / workflow 50% / κ=1.0 等）。
 4. **变异基线已按 W11 的代码重刷**：`harness/execution.py` 改过 ⇒ mutmut 按**函数内序号**
    命名变异体，编号必然大范围变化。**刷新前必须先把陈旧的 `mutants/` 缓存整体移开再全量跑**——

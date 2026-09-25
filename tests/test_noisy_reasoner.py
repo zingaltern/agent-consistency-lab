@@ -27,7 +27,6 @@ from opsenv.policy import (
 from opsenv.scenario import build_catalog
 from opsenv.suite import (
     NOISE_ALLOWED_RED,
-    aggregate,
     check_gates,
     grader_rates,
     noisy_profiles,
@@ -275,19 +274,19 @@ def test_noise_downgrades_only_the_sensitivity_gates() -> None:
         repeats=2,
         operator=Operator(),
     )
-    cells = aggregate(results)
     summary = {"by_split": {"dev": 1, "holdout": 1}}
-    gates = check_gates(cells, results, catalog_summary=summary, noisy=True)
+    gates = check_gates(results, catalog_summary=summary, noisy=True)
     # 条数**不随口径变化**才是被验收的性质；绝对数写在正文里会随门禁增删而过期
     # （独立验证 2026-09-19 新增四条定义/CRN 门禁后，旧用例的 `== 14` 就是这么过期的）。
     # 条数本身由 claim `suite-gate-count` 守住。
-    assert len(gates) == len(check_gates(cells, results, catalog_summary=summary, noisy=False)), (
+    assert len(gates) == len(check_gates(results, catalog_summary=summary, noisy=False)), (
         "门禁条数不随口径变化"
     )
-    downgraded = {gate.name for gate in gates if not gate.enforced}
+    # 分池后门禁名带 `@dev` / `@holdout` 后缀，降级名单按**基名**匹配
+    downgraded = {gate.name.partition("@")[0] for gate in gates if not gate.enforced}
     assert downgraded == set(NOISE_ALLOWED_RED)
     for name in NOISE_ALLOWED_RED:
-        assert name in {gate.name for gate in gates}
+        assert name in {gate.name.partition("@")[0] for gate in gates}
 
 
 def test_default_mode_keeps_every_gate_enforced() -> None:
@@ -296,7 +295,5 @@ def test_default_mode_keeps_every_gate_enforced() -> None:
         catalog=CATALOG[:2], systems=("harness",), profiles=noisy_profiles(error_rate=0.0),
         repeats=1, operator=Operator(),
     )
-    gates = check_gates(
-        aggregate(results), results, catalog_summary={"by_split": {"dev": 1, "holdout": 1}}
-    )
+    gates = check_gates(results, catalog_summary={"by_split": {"dev": 1, "holdout": 1}})
     assert all(gate.enforced for gate in gates)

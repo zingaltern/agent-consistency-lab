@@ -1,6 +1,6 @@
 # W6 报告：分段汇报、统计口径与 CI 门禁
 
-**日期**：2026-09-16 ｜ **代码**：`opsenv/stats.py`、`opsenv/suite.py`（新增统计/门禁/分段段）、
+**日期**：2026-09-16 ｜ **代码**：`opsenv/stats.py`、`opsenv/suite/`（新增统计/门禁/分段段）、
 `.github/workflows/ci.yml` ｜ **数据**：`reports/w6_eval.json`（64 场景 × 4 系统 × 2 推理器 × 3 次 = 1536 次）
 
 ---
@@ -119,7 +119,7 @@ W5 给出的是一堆点估计（"红线率 20.3% vs 0%"，CRN 修正前的口�
 
 ## 六、门禁（CI 里真的会拦）
 
-`opsenv/suite.py --gate` 把以下检查编码为可执行门禁，任一条不通过即非零退出
+`python -m opsenv.suite --gate` 把以下检查编码为可执行门禁，任一条不通过即非零退出
 （「实测」列取自 `reports/w6_eval.json` `gates`）：
 
 | 门禁 | 类型 | 实测 |

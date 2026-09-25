@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 463,
+      "value": 464,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -785,7 +785,7 @@
       "what": "harness 的写操作 100% 交给人工（gate 覆盖率）",
       "docs": [
         "README.md#**W5**",
-        "opsenv/suite.py#check_gates"
+        "opsenv/suite/gates.py#check_gates"
       ]
     },
     {
@@ -871,7 +871,7 @@
       "what": "langgraph 路线的平均步数（与 harness 的 3.38 逐格相同：两条 agent 路线能力等价）",
       "docs": [
         "README.md#**W5**",
-        "opsenv/suite.py#findings"
+        "opsenv/suite/report.py#findings"
       ]
     },
     {
@@ -932,7 +932,7 @@
       "what": "同一配对差值的 95% CI 上界（<0 ⇒ 可区分；门禁用它判方向）",
       "docs": [
         "README.md#**W6**",
-        "opsenv/suite.py#check_gates"
+        "opsenv/suite/gates.py#check_gates"
       ]
     },
     {

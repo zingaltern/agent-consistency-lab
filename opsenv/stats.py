@@ -118,7 +118,7 @@ def cohens_kappa(labels_a: Sequence[bool], labels_b: Sequence[bool]) -> float:
     """两个二值标注者的一致性（Cohen's κ）。
 
     ⚠️ 返回值 0.0 有两种含义：**真的一致率为随机水平**，或**无定义（无方差）**。
-    调用方必须自己区分（见 `opsenv/suite.py::proxy_calibration` 的 `has_variance`），
+    调用方必须自己区分（见 `opsenv/suite/stats.py::proxy_calibration` 的 `has_variance`），
     不能把 0.0 直接读成"一致性为零"。
     """
     if len(labels_a) != len(labels_b) or not labels_a:

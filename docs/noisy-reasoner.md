@@ -2,7 +2,7 @@
 
 * 数据：`reports/noisy_reasoner.json`、`reports/noisy_reasoner.md`（一条命令再生，见下）
 * 代码：`opsenv/policy.py`（`ReasonerProfile.error_rate/flavor`、`noise_rng_for`、`perturb_diagnosis`）、
-  `opsenv/suite.py`（`--reasoner noisy`、`noisy_profiles`、`grader_rates`、门禁档位）
+  `opsenv/suite/`（`cli.py` 的 `--reasoner noisy`、`run.py` 的 `noisy_profiles`、`stats.py` 的 `grader_rates`、`gates.py` 的门禁档位）
 * 状态：首版；**这一口径不与核心 1536-run 主口径混排**（理由见边界一节）
 
 ---
@@ -58,7 +58,7 @@ W5–W7 的评分口径敏感性检验**从来没有被激活**：默认推理�
 
 ## 4. 门禁档位：哪些永远强制、哪些允许变红
 
-`opsenv/suite.py::check_gates(..., noisy=True)` 在噪声口径下**不改条数**（条数以 claim `suite-gate-count` 为准）、
+`opsenv/suite/gates.py::check_gates(..., noisy=True)` 在噪声口径下**不改条数**（条数以 claim `suite-gate-count` 为准）、
 不改任何判定逻辑，只把四条"模型有多准/基线有没有区分力"的门禁标记为
 `enforced=False`（如实汇报、不决定退出码）：
 

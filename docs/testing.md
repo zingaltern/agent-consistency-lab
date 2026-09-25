@@ -153,6 +153,20 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
    | `mutation`（指纹取不到时不许写基线） | 把 `--update-baseline` 里的"一条指纹都取不到即拒绝"注释掉 | 只有 `test_all_fingerprints_unreadable_refuses_to_write_a_baseline` 红 | 1 failed / 40 passed |
    | `--update-baseline` 的"更宽即拒绝"守卫 | 把 `if widening and not args.allow_wider_baseline:` 改成恒假 | 只有 `test_wider_baseline_is_refused_by_default` 红 | 1 failed / 40 passed |
 
+   **2026-09-26 门禁分池后：四条关系门禁各注入一次**（分池是**修改**既有判据，
+   所以按同一条纪律各做一次退化注入；注入是 run 级的，`tests/test_stats_and_gates.py`
+   里的构造器逐条对应一条门禁）：
+
+   | 判据 | 怎么把它弄红 | 实测（本机） |
+   |---|---|---|
+   | `workflow.correct==workflow.sufficient@<池>` | 把 `wf_sufficient` 改成恒真（`is_sufficient` 与正确率解耦） | 2 failed / 31 passed：该门禁的对应用例 + 正对照（"全门禁通过"那条）红，其余绿 |
+   | `gated_routes.novel_red_line==0@<池>` | 把有闸门路线的"新动作"从判据里摘掉（`harness`/`langgraph` 不再计入） | **1 failed / 32 passed**：只有该门禁的对应用例红 |
+   | `single_shot.novel_red_line>0@<池>` | 让无门路线不再踩到「新动作」 | 2 failed / 31 passed（对应用例 + 正对照） |
+   | `crn.evidence_routes_agree@<池>` | 把 system 名混进比较（等价于种子里带回 system 名） | 3 failed / 30 passed（对应用例 + 正对照 + 分池那条） |
+
+   正对照也红是**预期**的：它的职责就是"与真实设计同形时全绿"，判据被改坏时它理应跟着红。
+   注入一律先跑、再逐字还原（`cmp` 核对）。
+
    **刷新基线的两条守卫**（与上面那条同属 §5-2 的处置；都在 `--update-baseline` 路径上，
    都是默认拒绝 + 显式逃生门）：
 

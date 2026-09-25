@@ -282,6 +282,14 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
    `[mutant-content-changed]`。残余边界变成：指纹只覆盖 `only_mutate` 里的四个模块
    （与第 4 条同界），且**换指纹口径必须换算法标识名**（
    `fingerprint_algorithm`，否则新旧基线会被集体当成"内容变了"而误报）。
+8. **`--update-baseline` 现在有两道默认拒绝**（同见 §十二）：一条指纹都取不到 ⇒ 拒绝写基线；
+   候选比旧基线**更宽** ⇒ 拒绝写入（`--allow-wider-baseline` 显式放行，条件记进基线的
+   `refresh.widening_override`）。**改代码导致变异体重编号时也属于"更宽"**（旧条目整条不见）
+   ⇒ 那种刷新必须显式放行，这是有意的：刷新基线应当是个有意识动作。
+   顺带一条实测教训：**测试不许碰仓库的 `mutants/`**——本轮的守卫用例第一版没把
+   `MUTANTS_DIR` 指到 tmp，直接把正在跑的**全量刷新**的缓存搬走了，mutmut 父进程写
+   `mutants/harness/loop.py.meta` 时 FileNotFoundError 退出 1（好在那条路径是
+   "跑不起来 ⇒ 判失败"，不是静默绿）；现在 `_run_gate` 一律隔离到 tmp。
 
 ### 本轮之后仍需注意的
 

@@ -61,6 +61,11 @@
                                                        # 会混合旧判决（2026-09-19 实测过一次：14.7 秒"跑完"、
                                                        # `no tests` 从 18 虚增到 241）。要沿用旧缓存必须显式
                                                        # `--allow-incremental-refresh`（会大声警告）
+                                                       # ⚠️ 刷新基线还有第二条守卫：候选比旧基线**更宽**
+                                                       # （新增幸存 / 新增 no tests / 无结论增长 / 旧条目整条
+                                                       # 不见）⇒ 拒绝写入并退出 1（旧基线原样不动）；
+                                                       # 显式 `--allow-wider-baseline` 才放行，且放行条件会写进
+                                                       # 基线与 `--json-out` 的 `refresh.widening_override`
                                                        # ⚠️ 每次运行都打印"不可见空间"的规模：
                                                        # survivor_rate 不是覆盖率
                                                        # ⚠️ 判据第七条：**同名不同指纹**也红。
@@ -145,7 +150,18 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
    | `mutation` 第七条：同名**不同内容指纹** | 在一个**被变异模块**的函数里做**等量改写**（本机用的是把 `is_expired` 的 `>=` 翻成 `<=`，语义不变、条数不变），再重刷该模块的变异体 | 退出 1 并报 `[mutant-content-changed]` | 29 条 approval 变异体**名字与条数都不变**、其中 4 条指纹变了 → 门禁报 `[mutant-content-changed]` 4 条（另有 1 条判决同时翻转 ⇒ 也报 `[new-survivors]`，那是旧判据本来就看得见的那部分）；改动还原并重刷后 29 条指纹**逐条回到基线** |
    | `mutation` 第七条（关掉比对） | 把 `gate_verdict` 里的 `if content_changed:` 分支注释掉 | 只有 `test_mutant_content_change_turns_the_gate_red` 红 | 1 failed / 40 passed |
    | `mutation`（指纹取不到时不许写基线） | 把 `--update-baseline` 里的"一条指纹都取不到即拒绝"注释掉 | 只有 `test_all_fingerprints_unreadable_refuses_to_write_a_baseline` 红 | 1 failed / 40 passed |
-   | `--update-baseline` 的"更宽即拒绝"守卫（第 6 项，见下个提交） | 把 `if widening and not args.allow_wider_baseline:` 改成恒假 | 只有 `test_wider_baseline_is_refused_by_default` 红 | 1 failed / 40 passed |
+   | `--update-baseline` 的"更宽即拒绝"守卫 | 把 `if widening and not args.allow_wider_baseline:` 改成恒假 | 只有 `test_wider_baseline_is_refused_by_default` 红 | 1 failed / 40 passed |
+
+   **刷新基线的两条守卫**（与上面那条同属 §5-2 的处置；都在 `--update-baseline` 路径上，
+   都是默认拒绝 + 显式逃生门）：
+
+   * **更宽即拒绝**：候选基线若相对旧基线新增幸存 / 新增 `no tests` / 无结论集合增长 /
+     旧条目整条不见 ⇒ **拒绝写入并退出 1**（旧基线原样不动）。确有理由时用
+     `--allow-wider-baseline` 显式放行：会大声警告，并把放行条件写进基线与 `--json-out`
+     的 `refresh.widening_override`（评审看文件就知道这份基线是放宽后冻的）。
+     注意**改代码导致的重编号**也算"更宽"（旧条目整条不见）⇒ 那种刷新必须显式放行，
+     这是刻意的：刷新基线应当是个有意识动作。
+   * **没有指纹不许写**：见上表第三行。
 
    **W11 补的三层 append-only 防线**（独立验证 2026-09-19 · P2-5；`harness/store/guard.py`）
    不是"门禁"，但同样是"改坏了必须有人报警"的机制，因此按同一条纪律做了退化注入

@@ -499,6 +499,73 @@ def show_mutant(name: str) -> str:
     return proc.stdout.strip()[-600:]
 
 
+def status_map_from_payload(payload: dict[str, Any]) -> tuple[dict[str, str], bool]:
+    """从基线/候选 payload 里取 ``{变异体名: 状态}``；第二个返回值是"逐条状态是否齐全"。
+
+    v1 只有 `survivors`/`no_tests` 两个列表（`killed` 没有名字）⇒ 返回 False；
+    门禁要据此打印"这一格覆盖不到"。
+    """
+    full = isinstance(payload.get("status_by_mutant"), dict) and bool(payload["status_by_mutant"])
+    if full:
+        return {str(k): str(v) for k, v in payload["status_by_mutant"].items()}, True
+    status_by_mutant: dict[str, str] = {}
+    for name in payload.get("survivors", []):
+        status_by_mutant[str(name)] = "survived"
+    for name in payload.get("no_tests", []):
+        status_by_mutant[str(name)] = "no tests"
+    return status_by_mutant, False
+
+
+def baseline_widening(
+    old_payload: dict[str, Any] | None, candidate: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """候选基线相对旧基线**变宽**的地方；空列表 = 不比旧的更宽。**纯函数**。
+
+    为什么需要它（独立验证 2026-09-18 · 报告 §5-2）：`--update-baseline` 是文档化的
+    逃生门（要求 PR 里说明），但技术上**没有任何"比上一版更宽就拒绝"的守卫**——
+    于是"顺手把这一轮的盲区冻进基线"在机制上没有任何阻力。第一版基线刷新就实测过一次：
+    沿用旧缓存跑出 14.7 秒的混合结果、`no tests` 从 18 虚增到 241。
+
+    "更宽"按**今天已有的红灯条件**定义，四条，一条都不新发明：
+
+    | 判据 | 含义 |
+    |---|---|
+    | 新增幸存变异 | 候选里 `survived`、旧基线里不是 |
+    | 新增 `no tests` | 候选里新增的未覆盖条目 |
+    | 无结论集合增长 | 候选的 `inconclusive` 里有旧基线没有的名字 |
+    | 基线判定缺失 | 旧基线里有、候选里整条不见（这一格不再被看） |
+
+    "判定类变成无结论"不单列：它必然同时体现在"无结论集合增长"上。
+    """
+    old_status, _ = status_map_from_payload(old_payload or {})
+    new_status, _ = status_map_from_payload(candidate)
+    new_survivors = sorted(
+        name
+        for name, status in new_status.items()
+        if status == "survived" and old_status.get(name) != "survived"
+    )
+    new_no_tests = sorted(
+        name
+        for name, status in new_status.items()
+        if status == "no tests" and old_status.get(name) != "no tests"
+    )
+    new_inconclusive = sorted(
+        set(candidate.get("inconclusive", [])) - set((old_payload or {}).get("inconclusive", []))
+    )
+    missing = sorted(name for name in old_status if name not in new_status)
+
+    widening: list[dict[str, Any]] = []
+    for key, label, names in (
+        ("new-survivors", "候选基线里新增了**幸存变异**（新增的测试盲区）", new_survivors),
+        ("new-no-tests", "候选基线里新增了 `no tests`（新增的、完全没被测的代码）", new_no_tests),
+        ("inconclusive-grew", "候选基线的**无结论集合增长**了", new_inconclusive),
+        ("baseline-entries-missing", "旧基线里有、候选里**整条不见**（这一格不再被看）", missing),
+    ):
+        if names:
+            widening.append({"key": key, "label": label, "count": len(names), "names": names})
+    return widening
+
+
 def load_baseline(path: Path) -> dict[str, Any]:
     """读基线。**兼容 v1 / v2**：v1 只有 `survivors`/`no_tests` 两个列表；
     v2 有逐条 `status_by_mutant` 但没有内容指纹（v3 起才有）。
@@ -508,15 +575,7 @@ def load_baseline(path: Path) -> dict[str, Any]:
     v2 缺指纹 ⇒ 条件 7 不生效（打印出来，不假装比对过）。
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
-    full = isinstance(payload.get("status_by_mutant"), dict) and bool(payload["status_by_mutant"])
-    if full:
-        status_by_mutant = {str(k): str(v) for k, v in payload["status_by_mutant"].items()}
-    else:
-        status_by_mutant = {}
-        for name in payload.get("survivors", []):
-            status_by_mutant[str(name)] = "survived"
-        for name in payload.get("no_tests", []):
-            status_by_mutant[str(name)] = "no tests"
+    status_by_mutant, full = status_map_from_payload(payload)
     raw_fingerprints = payload.get("fingerprints")
     fingerprints = (
         {str(k): str(v) for k, v in raw_fingerprints.items()}
@@ -779,6 +838,13 @@ def main(argv: list[str] | None = None) -> int:
         help="与 --update-baseline 连用：明知 mutants/ 缓存不干净仍然沿用旧判决"
         "（会打出警告，且写出的基线可能是新旧混合）。默认不允许——刷新基线必须全量重跑。",
     )
+    parser.add_argument(
+        "--allow-wider-baseline",
+        action="store_true",
+        help="与 --update-baseline 连用：候选基线比旧基线**更宽**时也写下去"
+        "（新增幸存 / 新增 no tests / 无结论增长 / 旧条目整条不见）。默认拒绝写入——"
+        "刷新基线不许顺手把这一轮的盲区冻进去；要放行必须显式，且条件会记进基线。",
+    )
     parser.add_argument("--max-report", type=int, default=10, help="最多展示几条新增幸存变异")
     parser.add_argument(
         "--summary-only",
@@ -903,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"  mutants_dir={MUTANTS_DIR}，本轮变异体 {len(fingerprints)} 条"
             )
             return 1
-        payload_to_write = {
+        candidate = {
             "schema": "mutation-baseline/v3",
             "tool": "mutmut 3.x（见 pyproject.toml [tool.mutmut]）",
             "modules": list(DEFAULT_MODULES),
@@ -959,12 +1025,61 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        # "更宽即拒绝"守卫（2026-09-26）：写完候选基线**先与旧基线比**，比旧基线宽就拒绝写入。
+        # 依据：独立验证 2026-09-18 · 报告 §5-2——`--update-baseline` 是文档化的逃生门，
+        # 但技术上没有任何"更宽就拒绝"的守卫，"顺手把这一轮的盲区冻进基线"没有阻力。
+        old_payload: dict[str, Any] | None = None
+        if baseline_path.exists():
+            try:
+                old_payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"[mutation] 读不出旧基线 {baseline_path}（{exc}）：按「没有旧基线」处理")
+        widening = baseline_widening(old_payload, candidate)
+        if widening and not args.allow_wider_baseline:
+            print(
+                f"\n[mutation] **拒绝写基线**：候选基线比 {baseline_path.name} 更宽"
+                f"（{len(widening)} 类）。刷新基线不许顺手把这一轮的盲区冻进去。\n"
+            )
+            for item in widening:
+                print(f"--- [{item['key']}] {item['label']}：{item['count']} 条")
+                for name in item["names"][: args.max_report]:
+                    print(f"      {name}")
+                if len(item["names"]) > args.max_report:
+                    print(f"      （其余 {len(item['names']) - args.max_report} 条省略）")
+            print(
+                "\n处置：先给这些分支补用例（docs/testing.md §3），或者——确认"
+                "「这一轮的放宽是有意的/是改代码导致的重编号」之后——显式重跑："
+                "\n  scripts/mutation_check.py --update-baseline --allow-wider-baseline\n"
+                "（会把放行的理由写进基线的 `refresh.widening_override`，评审看得见。）"
+            )
+            return 1
+        if widening:
+            refresh = {
+                **refresh,
+                "widening_override": {
+                    "allowed": True,
+                    "reason": "显式给了 --allow-wider-baseline",
+                    "categories": [
+                        {"key": item["key"], "count": item["count"]} for item in widening
+                    ],
+                },
+            }
+            print(
+                f"\n[mutation] **警告**：显式放行了一份**比旧基线更宽**的基线"
+                f"（{len(widening)} 类："
+                + "、".join(f"{item['key']}×{item['count']}" for item in widening)
+                + "）。这条放行已记进基线的 `refresh.widening_override`。"
+            )
+        candidate["refresh"] = refresh
+        # `--json-out` 在判定之前就写了（判失败也要留产物），而"放行了一份更宽的基线"
+        # 这件事要到候选基线算完才知道 ⇒ 这里回写一次，让产物与基线里的记录一致。
+        _write_json_out(args.json_out, {**run_payload, "refresh": refresh})
         baseline_path.write_text(
-            json.dumps(payload_to_write, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            json.dumps(candidate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         print(
             f"[mutation] 基线已更新：{baseline_path}"
-            f"（schema v3，含状态与内容指纹 {len(payload_to_write['fingerprints'])} 条）"
+            f"（schema v3，含状态与内容指纹 {len(candidate['fingerprints'])} 条）"
         )
         return 0
 

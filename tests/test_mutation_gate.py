@@ -81,6 +81,12 @@ def _run_gate(
         return {str(name): fingerprints.get(str(name)) for name in names}
 
     monkeypatch.setattr(module, "compute_mutant_fingerprints", _fake_fingerprints)
+    # **MUTANTS_DIR 一律指到 tmp**：`--update-baseline` 会真的把缓存整体移开
+    # （`baseline_refresh_plan` 的 move-aside），不隔离就会动仓库里那份。
+    # 本用例集在同一轮里真的踩过一次：三个守卫用例没隔离，把正在跑的**全量刷新**
+    # 的 `mutants/` 搬走了，mutmut 父进程写 `mutants/harness/loop.py.meta` 时
+    # FileNotFoundError 退出 1（好在那条路径是"跑不起来 ⇒ 判失败"，不是静默绿）。
+    monkeypatch.setattr(module, "MUTANTS_DIR", tmp_path / "mutants")
     baseline_path = tmp_path / "baseline.json"
     payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
     baseline_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -699,6 +705,139 @@ def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
     else:  # pragma: no cover
         raise AssertionError("非 0 退出码必须终止判定")
     assert real_subprocess is not None
+
+
+# ------------------------------------------- 刷新基线不许顺手把盲区冻进去（更宽即拒绝）
+
+
+def test_baseline_widening_names_the_four_categories() -> None:
+    """「更宽」按今天已有的红灯条件定义，四条：
+
+    新增幸存 / 新增 no tests / 无结论增长 / 旧条目整条不见。
+    纯函数用例：判据本身可被单元测试钉住，不依赖 mutmut。
+    """
+    module = _load_script()
+    old = {
+        "status_by_mutant": {
+            "a": "killed",
+            "b": "survived",
+            "c": "no tests",
+            "d": "timeout",
+        },
+        "inconclusive": ["d"],
+    }
+    candidate = {
+        "status_by_mutant": {
+            "a": "survived",  # 新增幸存
+            "b": "survived",
+            "c2": "no tests",  # 新增 no tests
+            "e": "timeout",  # 无结论集合增长
+            "f": "killed",
+        },
+        "inconclusive": ["e"],
+        "survivors": ["a", "b"],
+        "no_tests": ["c2"],
+    }
+    keys = {item["key"] for item in module.baseline_widening(old, candidate)}
+    assert keys == {
+        "new-survivors",
+        "new-no-tests",
+        "inconclusive-grew",
+        "baseline-entries-missing",
+    }
+    # 正对照 1：与旧基线**逐条相同** ⇒ 不比旧的宽
+    assert module.baseline_widening(old, old) == []
+    # 正对照 2：**缩窄**（幸存变 killed、无结论变判定）⇒ 也不是"更宽"
+    narrower = {
+        "status_by_mutant": {"a": "killed", "b": "killed", "c": "killed", "d": "killed"},
+        "inconclusive": [],
+    }
+    assert module.baseline_widening(old, narrower) == []
+
+
+def test_wider_baseline_is_refused_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """刷新基线时**新增幸存变异 ⇒ 拒绝写入并退出 1**（独立验证 2026-09-18 · 报告 §5-2）。
+
+    修复前会怎样：`--update-baseline` 是文档化的逃生门，但没有守卫——
+    "顺手把这一轮的盲区冻进基线"在机制上没有任何阻力（第一版就出过一份混合基线：
+    14.7 秒"跑完"、`no tests` 从 18 虚增到 241）。现在默认拒绝，且旧基线**原样不动**。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "fresh"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--update-baseline",),
+    )
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "拒绝写基线" in out
+    assert "new-survivors" in out
+    assert "fresh" in out
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["schema"] == "mutation-baseline/v2", "拒绝写入时旧基线必须原样不动"
+
+
+def test_wider_baseline_can_be_written_with_the_escape_hatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """显式 `--allow-wider-baseline` 才放行：大声警告 + 把放行条件写进基线。
+
+    为什么"写进基线"这一半同等重要：下一轮评审看基线文件就能看出"这份基线是放宽后冻的"，
+    不用去翻 PR 描述——条件不能只靠人记。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    out_path = tmp_path / "run.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b", "fresh"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=(
+            "--update-baseline",
+            "--allow-wider-baseline",
+            "--json-out",
+            str(out_path),
+        ),
+    )
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "警告" in printed and "更宽" in printed
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["schema"] == "mutation-baseline/v3"
+    override = written["refresh"]["widening_override"]
+    assert override["allowed"] is True
+    assert {"key": "new-survivors", "count": 1} in override["categories"]
+    # `--json-out` 里的 refresh 也要带上它（夜里上传的就是那个文件）
+    assert (
+        json.loads(out_path.read_text(encoding="utf-8"))["refresh"]["widening_override"]["allowed"]
+        is True
+    )
+
+
+def test_equal_baseline_is_written_without_an_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """正对照：候选与旧基线逐条相同 ⇒ 正常写入，且**不该**留下放行标记。
+
+    没有这一格，"更宽必被拒"可能只是守卫恒真（把正常刷新也一起挡住）。
+    """
+    baseline_path = tmp_path / "baseline.json"
+    same = {"a": "killed", "b": "survived", "c": "no tests"}
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"], "no tests": ["c"]},
+        baseline=same,
+        extra_args=("--update-baseline",),
+    )
+    assert code == 0
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert written["status_by_mutant"] == same
+    assert "widening_override" not in written["refresh"]
 
 
 # ------------------------------------------------------------------ 入库基线

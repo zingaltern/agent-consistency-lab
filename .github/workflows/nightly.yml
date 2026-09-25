@@ -60,7 +60,7 @@ jobs:
         # 超时预算写在命令行参数里（--timeout 2400 = 40 分钟）：超时不是"跳过"而是"失败"——
         # 跑不完就无法判定有没有新增盲区。本地（4 并行）约 8.5 分钟，CI 更慢，故留约 4 倍余量。
         # 注意：**变异体总数为 0、或一条都没被判定，都会判失败**（跑不起来 ≠ 没有盲区）。
-        run: python scripts/mutation_check.py --timeout 2400 --max-children 4 --json-out /tmp/mutation.json
+        run: python -m scripts.mutation_check --timeout 2400 --max-children 4 --json-out /tmp/mutation.json
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v4

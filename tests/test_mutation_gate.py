@@ -14,8 +14,9 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,19 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASELINE = PROJECT_ROOT / "reports" / "mutation_baseline.json"
-SCRIPT = PROJECT_ROOT / "scripts" / "mutation_check.py"
 
 
 def _load_script() -> Any:
-    spec = importlib.util.spec_from_file_location("mutation_check", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """加载门禁的 **runtime 子模块**（拆包后 `main` 与它调用的全局名都在那里）。
+
+    为什么不是门面：本用例集要替换 `MUTANTS_DIR` / `run_mutmut` / `collect_status` /
+    `compute_mutant_fingerprints`，而 `main` 只在 `runtime` 的全局命名空间里查这些名字。
+    门面（`scripts.mutation_check`）上的同名名字是**只读副本**，改它们不会生效——
+    这与 `opsenv.suite.PROFILES` 是同一个坑，别退回文件加载器。
+    """
+    from scripts.mutation_check import runtime
+
+    return runtime
 
 
 def _baseline_v2(status_by_mutant: dict[str, str]) -> dict[str, Any]:
@@ -840,6 +845,95 @@ def test_equal_baseline_is_written_without_an_override(
     assert "widening_override" not in written["refresh"]
 
 
+
+
+# ------------------------------------------------- 拆包后的门面契约（2026-09-26）
+
+
+def test_facade_reexports_the_whole_pre_split_namespace() -> None:
+    """拆包不许丢名字：门面必须 re-export **拆分前命名空间里的每一个名字**。
+
+    为什么值得一条用例：8 条 claim 的 `source_cmd` 走 `python -m scripts.mutation_check`，
+    独立验证脚本走 `import scripts.mutation_check as mc`；少一个名字就是"命令照跑、
+    某条路径上才 AttributeError"。清单是**拆分前**用
+    `[n for n in vars(module) if not n.startswith("__")]` 抓下来的（含 import 进来的
+    `subprocess` / `time` / `Path` 这类）。
+
+    改坏什么会让它红：从门面的 import 清单里删掉任意一个名字
+    （本机实测：删掉 `_summary_payload` 的导入 ⇒ 只有本用例红）。
+    """
+    import scripts.mutation_check as facade
+
+    expected = {
+        "Any",
+        "DECIDED_STATUSES",
+        "DEFAULT_BASELINE",
+        "DEFAULT_MODULES",
+        "FINGERPRINT_ALGORITHM",
+        "INCONCLUSIVE_STATUSES",
+        "Iterator",
+        "KNOWN_STATUSES",
+        "MUTANTS_DIR",
+        "NoReturn",
+        "PROJECT_ROOT",
+        "Path",
+        "UNCOVERED_STATUSES",
+        "_abort",
+        "_chdir",
+        "_invisible_space_lines",
+        "_mutmut_argv",
+        "_report_line",
+        "_summary_payload",
+        "_write_json_out",
+        "all_mutant_names",
+        "apply_baseline_refresh_plan",
+        "argparse",
+        "baseline_refresh_plan",
+        "baseline_widening",
+        "collect_status",
+        "compute_mutant_fingerprints",
+        "contextmanager",
+        "fingerprint_comparison_lines",
+        "fingerprint_report",
+        "gate_verdict",
+        "hashlib",
+        "json",
+        "load_baseline",
+        "main",
+        "mutant_paths_in_cache",
+        "mutation_summary",
+        "normalize_fingerprint_source",
+        "normalize_module_filter",
+        "os",
+        "run_mutmut",
+        "show_mutant",
+        "status_map_from_payload",
+        "subprocess",
+        "sys",
+        "time",
+    }
+    missing = expected - set(vars(facade))
+    assert not missing, f"门面丢了这些名字: {sorted(missing)}"
+
+
+def test_module_entry_point_still_works() -> None:
+    """`python -m scripts.mutation_check` 必须继续可用（拆包后由 `__main__.py` 保住）。
+
+    修复前会怎样：拆成包却只留子模块、没有 `__main__.py` 时，这条命令以
+    `No module named scripts.mutation_check.__main__` 失败——而 nightly 的 mutation 作业
+    与 8 条 claim 正是这么调它的。这里跑 `--summary-only`（只读基线，不起 mutmut）。
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.mutation_check", "--summary-only"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["survivor_count"] == json.loads(
+        BASELINE.read_text(encoding="utf-8")
+    )["counts"]["survived"]
 # ------------------------------------------------------------------ 入库基线
 
 
@@ -872,9 +966,9 @@ def test_baseline_records_every_mutant_status() -> None:
     payload = json.loads(BASELINE.read_text(encoding="utf-8"))
     status_by_mutant = payload["status_by_mutant"]
     assert len(status_by_mutant) == payload["counts"]["total"]
-    module = _load_script()
-    known = set(module.KNOWN_STATUSES)
-    assert set(status_by_mutant.values()) <= known, "基线里出现了未归类的状态"
+    from scripts.mutation_check import KNOWN_STATUSES  # 词表在门面上（不涉及替换）
+
+    assert set(status_by_mutant.values()) <= set(KNOWN_STATUSES), "基线里出现了未归类的状态"
     # `status_counts` 是"状态 → 条数"，必须与 `status_by_mutant` 逐条对得上
     for status, count in payload["status_counts"].items():
         assert count == sum(1 for s in status_by_mutant.values() if s == status), status

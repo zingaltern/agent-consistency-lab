@@ -1446,7 +1446,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -1472,7 +1473,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2244,7 +2246,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2268,7 +2271,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2292,7 +2296,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2315,7 +2320,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2338,7 +2344,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"
@@ -2361,7 +2368,8 @@
       "run": "verify",
       "source_cmd": [
         "{python}",
-        "scripts/mutation_check.py",
+        "-m",
+        "scripts.mutation_check",
         "--summary-only",
         "--json-out",
         "{out}"

@@ -350,7 +350,7 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    顺带补了 §九第 3 条"判决不承诺稳定"的**实测**：同一份代码连跑两遍全量，
    **2050 条逐条判决零翻转**、门禁退出 0——所以那条是"不承诺"，不是"已知会红"。
    （改动前后基线的差异因为命名位移而**不可比**，不要拿旧基线的名字去对。）
-   **这条纪律现在是代码而不是提醒**：`scripts/mutation_check.py --update-baseline` 会自动
+   **这条纪律现在是代码而不是提醒**：`python -m scripts.mutation_check --update-baseline` 会自动
    把 `mutants/` 整体移开（改名成 `mutants.stale-<UTC 时间戳>/`，已 gitignore）再跑全量，
    并把这次的条件写进基线与 `--json-out` 的 `refresh` 字段；要沿用旧缓存必须显式
    `--allow-incremental-refresh`（会大声警告）。判据是"缓存干不干净"，不是 mtime——
@@ -400,9 +400,12 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 * `harness/execution.py`（832 行，`wc -l` 现测）：七步管线的实现确实大，但它**在变异范围内**
   （`pyproject.toml [tool.mutmut].only_mutate`）。拆它 = 变异体按函数内序号重编号 =
   W11 刚重刷的基线整份不可比，而 W11 刚为落盘顺序（P1-2）改过它。拆分收益配不上基线作废的代价。
-* `scripts/mutation_check.py`（754 行，`wc -l` 现测）：它自己就是门禁，判据与三格退化注入记录
-  （`docs/design/2026-09-18-mutation-segfault-investigation.md` §4.1）是按现有结构写的；
-  拆它要先补一遍判据的回归用例，应单独一轮。
+* ~~`scripts/mutation_check.py`（754 行）~~ → **已拆**（2026-09-26）：当时记的条件是"拆它要先补
+  一遍判据的回归用例"——本届先补（第 4/5/6 项：墙钟落盘、内容指纹、更宽即拒绝守卫，各带用例与
+  退化注入），再按与 `opsenv/suite/` 同一规格拆成 `scripts/mutation_check/` 包（config / status /
+  fingerprint / baseline / gate / reporting / runtime + 门面 + `__main__.py`）。
+  拆前先做了**逐字切片 + 拼接回原文逐字相同**的断言（见提交信息），拆后跑了
+  `--summary-only` 与整轮门禁的**逐键对照**：除 `elapsed_s` 的计时噪声外完全相同。
 
 ### 本轮之后仍需注意的
 

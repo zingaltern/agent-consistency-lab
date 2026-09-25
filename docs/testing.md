@@ -42,7 +42,7 @@
 
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
-.venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退）
+.venv/bin/python -m scripts.mutation_check              # 变异门禁（全状态记账 + 防倒退）
                                                        # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟；
                                                        # job 的墙钟上限是另一件事：nightly.yml 的 timeout-minutes: 45）
                                                        # CI 实测耗时（run 36112304447，2026-09-25）：

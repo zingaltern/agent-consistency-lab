@@ -288,6 +288,10 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
   （= 40 分钟，与 `docs/testing.md` §2 同口径）。放宽的理由：修掉误判后原先"一进去就崩"
   的那部分变异体会真的跑完，**本机空闲冷跑实测 631.5 秒**。
   这是预算调整，不是判据放宽（两种情况下的超时都判失败）。
+  **CI 侧实测（2026-09-26 补，带 run id）**：nightly run `36112304447`（2026-09-25，
+  ubuntu-latest，`--max-children 4`）job 墙钟 **21 分 11 秒**（含 checkout/install）、
+  `Mutation gate` 步骤 **20 分 52 秒**，两项预算都还有约 2 倍余量；变异子进程自身的耗时
+  从下一轮 nightly 起读 `--json-out` 的 `elapsed_s`（本包新加的落盘字段）。
 
 ---
 

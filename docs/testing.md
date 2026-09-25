@@ -43,7 +43,12 @@
 # 整量对账与重作业（CI 的 nightly 作业跑的就是这几条）
 .venv/bin/python scripts/check_facts.py                 # 全部 claim（条数以 --list 为准；约 100 秒）
 .venv/bin/python scripts/mutation_check.py              # 变异门禁（全状态记账 + 防倒退）
-                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟）
+                                                       # 超时预算由 --timeout 给出（nightly 用 2400s = 40 分钟；
+                                                       # job 的墙钟上限是另一件事：nightly.yml 的 timeout-minutes: 45）
+                                                       # CI 实测耗时（run 36112304447，2026-09-25）：
+                                                       # job 21 分 11 秒 / `Mutation gate` 步骤 20 分 52 秒
+                                                       # （含 checkout/install 的是前者）；`--json-out` 的 `elapsed_s`
+                                                       # 记的是变异子进程自身的墙钟，下一轮 nightly 起是精确口径
                                                        # 2026-09-18 修掉 segfault 误判后，原先"一进去就崩"的
                                                        # 那部分变异体会真的跑完测试：本机**空闲**冷跑实测
                                                        # **631.5 秒 ≈ 10.5 分钟**（带负载时读数会更高）

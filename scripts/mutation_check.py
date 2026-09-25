@@ -205,7 +205,14 @@ def apply_baseline_refresh_plan(plan: dict[str, Any]) -> dict[str, Any]:
 
 def run_mutmut(
     *, module: str | None, timeout: float, max_children: int, json_out: str = ""
-) -> None:
+) -> float:
+    """跑 mutmut，返回这一轮的**墙钟秒数**（写进 `--json-out` 的 `elapsed_s`）。
+
+    为什么要返回值：预算够不够是唯一一个**只有 CI 能回答**的定量问题（独立验证
+    2026-09-18 · 报告 §5-1），而先前只有 print 一行用时、不落盘 ⇒ 夜里跑完也留不下数。
+    返回的区间是"这一条 mutmut 子进程的墙钟"，与 nightly 的 job 墙钟
+    （`gh run view <id> --json jobs`，含 checkout/install）对照即可判断余量。
+    """
     argv = _mutmut_argv(module)
     print(f"[mutation] 运行: {' '.join(argv)} --max-children {max_children}（上限 {timeout:.0f}s）")
     started = time.perf_counter()
@@ -226,8 +233,10 @@ def run_mutmut(
             "  已产生的输出尾部："
             f"{(exc.stdout or '')[-200:] if isinstance(exc.stdout, str) else ''}",
             json_out=json_out,
+            extra={"elapsed_s": round(time.perf_counter() - started, 1)},
         )
-    print(f"[mutation] 用时 {time.perf_counter() - started:.1f}s")
+    elapsed = time.perf_counter() - started
+    print(f"[mutation] 用时 {elapsed:.1f}s")
     if proc.returncode != 0:
         # `mutmut run` 非 0 = 本轮没跑成功（配置没生效、collect error、被 OOM 杀…）。
         # 绝不能继续判定：mutmut 的结果读的是 `mutants/` 缓存，失败时残留的旧结果
@@ -238,7 +247,9 @@ def run_mutmut(
             f"  stdout 尾部：{proc.stdout.strip()[-300:]}\n"
             f"  stderr 尾部：{proc.stderr.strip()[-300:]}",
             json_out=json_out,
+            extra={"elapsed_s": round(elapsed, 1)},
         )
+    return elapsed
 
 
 def collect_status(*, json_out: str = "") -> dict[str, list[str]]:
@@ -469,7 +480,9 @@ def _write_json_out(path: str, payload: dict[str, Any]) -> None:
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _abort(reason: str, message: str, *, json_out: str) -> NoReturn:
+def _abort(
+    reason: str, message: str, *, json_out: str, extra: dict[str, Any] | None = None
+) -> NoReturn:
     """判定**作废**时的退出路径：先落产物，再退出。
 
     为什么要有这个 helper：nightly 上传的就是 `--json-out` 指向的文件，而"跑不起来"
@@ -479,16 +492,18 @@ def _abort(reason: str, message: str, *, json_out: str) -> NoReturn:
 
     ``reason`` 是给机器读的稳定标识（timeout / mutmut_run_failed / results_unreadable），
     ``message`` 是给人读的原文——两者都不做截断，产物里要能直接定位原因。
+    ``extra`` 是调用方额外知道的量化信息（目前只有 `elapsed_s`：**超时那一刻已经跑了多久**
+    是处置超时的第一手证据，能区分"差一点就跑完"和"配置根本没生效"）。
     """
-    _write_json_out(
-        json_out,
-        {
-            "schema": "mutation-run/v2",
-            "verdict": "aborted",
-            "reason": reason,
-            "message": message,
-        },
-    )
+    payload: dict[str, Any] = {
+        "schema": "mutation-run/v2",
+        "verdict": "aborted",
+        "reason": reason,
+        "message": message,
+    }
+    if extra:
+        payload.update(extra)
+    _write_json_out(json_out, payload)
     raise SystemExit(message)
 
 
@@ -591,11 +606,18 @@ def main(argv: list[str] | None = None) -> int:
             stamp=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         )
     )
-    run_mutmut(
+    # 墙钟：优先用 `run_mutmut` 自己的计时（它量的正是那条子进程的生命周期）；
+    # 若返回 None（测试替身 / 未来的其它 runner），退回在这里量这一段——
+    # 拿不到就写这一段实测，不写一个"看起来像实测"的常数。
+    run_started = time.perf_counter()
+    elapsed = run_mutmut(
         module=module_filter or None,
         timeout=args.timeout,
         max_children=args.max_children,
         json_out=args.json_out,
+    )
+    elapsed_s = round(
+        float(elapsed if elapsed is not None else time.perf_counter() - run_started), 1
     )
     buckets = collect_status(json_out=args.json_out)
     summary = mutation_summary(buckets)
@@ -629,6 +651,12 @@ def main(argv: list[str] | None = None) -> int:
         "no_tests": summary["no_tests"],
         "inconclusive": summary["inconclusive"],
         "unknown_statuses": summary["unknown_statuses"],
+        # 这一轮 `mutmut run` 的**墙钟秒数**（2026-09-26 新加）：nightly 上传的就是这个文件，
+        # 而"预算够不够"只有 CI 能回答（独立验证 2026-09-18 · 报告 §5-1）——先前只有 print，
+        # 夜里跑完留不下数。对照 nightly job 的墙钟（`gh run view <id> --json jobs`，含
+        # checkout/install）即可算余量。不按模块拆分：本脚本一次 `mutmut run` 跑完
+        # `only_mutate` 的全部模块，模块级细分要改成串行多次运行（那是另一种预算形态）。
+        "elapsed_s": elapsed_s,
         # 这一轮是"全量重跑"还是"沿用了旧缓存"：基线混合与否只能从这里读出来
         "refresh": refresh,
     }

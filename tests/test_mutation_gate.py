@@ -71,6 +71,7 @@ def _run_gate(
     monkeypatch.setattr(module, "run_mutmut", lambda **kwargs: calls.update(kwargs))
     monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets(current))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+
     baseline_path = tmp_path / "baseline.json"
     payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
     baseline_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -451,6 +452,68 @@ def test_summary_only_reports_survivors_as_a_list(
     assert json.loads(capsys.readouterr().out.splitlines()[0])["survivor_count"] == 2
 
 
+# ------------------------------------------------- 墙钟落盘（CI 预算的唯一量化来源）
+
+
+def test_run_mutmut_returns_the_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run_mutmut` 返回这一轮的墙钟秒数。
+
+    修复前会怎样：用时只在 print 里出现、不落盘 ⇒ 夜里上传的 artifact 回答不了
+    "CI 上 mutmut 本身跑了多久、离预算还有多少"——独立验证 2026-09-18 的报告 §5-1
+    把这条列为"预算够不够"的唯一定量缺口。
+    """
+    import types
+
+    module = _load_script()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    ticks = iter([100.0, 112.5])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: next(ticks))
+    assert module.run_mutmut(module=None, timeout=60, max_children=1) == pytest.approx(12.5)
+
+
+def test_json_out_records_elapsed_s(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """判定路径的产物里必须有 `elapsed_s`，且**既有键一个不动**（逐键断言）。
+
+    修复前会怎样：`/tmp/mutation.json` 里全是计数与名单，没有任何时间字段——
+    "CI 比本机慢多少倍"只能从 job 级别反推（含 checkout/install），答不出变异那一步的耗时。
+    """
+    out = tmp_path / "run.json"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["a"], "survived": ["b"]},
+        baseline={"a": "killed", "b": "survived"},
+        extra_args=("--json-out", str(out)),
+    )
+    assert code == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert isinstance(payload["elapsed_s"], float)
+    assert payload["elapsed_s"] >= 0.0
+    # 既有键逐键仍在（新增字段不许顶掉任何一个）
+    for key in (
+        "schema",
+        "modules",
+        "command",
+        "counts",
+        "status_counts",
+        "status_by_mutant",
+        "survivor_rate",
+        "survivors",
+        "no_tests",
+        "inconclusive",
+        "unknown_statuses",
+        "refresh",
+        "invisible_share",
+    ):
+        assert key in payload, f"既有键 {key} 不见了"
+
+
 def test_timeout_fails_and_still_writes_the_artifact(monkeypatch, tmp_path: Path) -> None:
     """超时必须判失败，**而且**留下产物：跑不完 ≠ 没有回归。
 
@@ -477,6 +540,8 @@ def test_timeout_fails_and_still_writes_the_artifact(monkeypatch, tmp_path: Path
     assert payload["verdict"] == "aborted"
     assert payload["reason"] == "timeout"
     assert "超时失败" in payload["message"]
+    # 超时那一刻已经跑了多久是第一手处置证据（"差一点跑完" vs "配置没生效"）
+    assert isinstance(payload["elapsed_s"], float)
 
 
 def test_unreadable_results_fail_and_still_write_the_artifact(

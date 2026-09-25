@@ -328,7 +328,7 @@ W9 交付经过一次架构评审（`docs/design/2026-09-17-architecture-review.
 | P1-5 mutation claim 不是再生 | `--summary-only` 只读回入库基线，永远抓不到漂移 | `what` 里如实标注性质 + 带上基线计数（不假装是再生） |
 | P2-5 DDL 绕过路径未登记（**本轮补做**） | `DROP TRIGGER` / `ALTER TABLE ... RENAME` / `PRAGMA writable_schema` 都不在守卫范围内，§2.1 的"物理上禁止改写历史"只覆盖普通 DML | `harness/store/guard.py`（authorizer 拒 DDL + `DBCONFIG_DEFENSIVE` + `guard_report`）、`sqlite_store.setup/append_many` 的写前核查与 `allow_repair`、`audit_chain` 的 `guard` 字段、`verify_append_only_guard`、`tests/test_append_only_guard.py` 17 例、新增两条 `chain-mirror-*-guard-*` claim |
 
-P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling、DDL 绕过路径（**已补**）、
+P2 十条（交叉校验范围、discordant 口径、三个 MDE 的物化、门禁量 pooling（**已分池**）、DDL 绕过路径（**已补**）、
 W4 claim 散文、README 末位与口径、w5/w6 的 CRN 修正前数字、`artifacts --help` 告警、
 venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 
@@ -339,7 +339,14 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    没有触发器的连接，改完还能把触发器文本与 `PRAGMA schema_version` 一起凑成"看起来没被动过"
    的样子；链没有密钥，所以这不是密码学意义上的防篡改（§2.1 已写明）。
    真正不可越过的那条线是**"改写无法静默"**：链与离线核查会把痕迹留在审计里。
-2. **门禁量仍 pooling dev+holdout**：报告分开报，判据没分。改它 = 改门禁语义，应单独一轮。
+2. ~~门禁量仍 pooling dev+holdout~~ → **已分池**（2026-09-26，见 §十二）：比率类判据按
+   池子各判一次（门禁名带 `@dev` / `@holdout`），**阈值一个没动**。先测后改：本机实测
+   `--per-fault 8 --repeats 3` 下 dev 每格 144、holdout 每格 48（都 ≥ 30；口径 = 每池场景数
+   × repeats，即 dev 48×3、holdout 16×3，场景数见 `catalog.by_split`），
+   分池后**没有一条判据在小样本下必然红**，所以没走"holdout 只报不判"那条退路。
+   分池立刻暴露了 pooling 掩盖的两条：噪声口径下 holdout 的
+   `harness.correct[competent]` 与 `single_shot.novel_red_line>0` 都是红的
+   （`noisy-gate-failed-count` 1 → 3，见 `docs/noisy-reasoner.md` §3/§4）。
 3. **README 里仍有一批没有 claim 覆盖的数字**（14 格 / 1536 / workflow 50% / κ=1.0 等）。
 4. **变异基线已按 W11 的代码重刷**：`harness/execution.py` 改过 ⇒ mutmut 按**函数内序号**
    命名变异体，编号必然大范围变化。**刷新前必须先把陈旧的 `mutants/` 缓存整体移开再全量跑**——
@@ -407,6 +414,17 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
   拆前先做了**逐字切片 + 拼接回原文逐字相同**的断言（见提交信息），拆后跑了
   `--summary-only` 与整轮门禁的**逐键对照**：除 `elapsed_s` 的计时噪声外完全相同。
 
+### 真人黑盒测试：准备物已就绪，**待真人执行**（2026-09-26）
+
+`docs/independent-test-2026-09-26/` 是一套**准备物**（一键入口 `commands.sh` + 报告骨架
+`report.md` + 协议与红线 `README.md`），状态明确写成 **待真人执行**：
+
+* 一键入口跑**四套基线**（`pytest` / `ruff` / `check_facts --run verify` / `crash_matrix
+  --repeats 5`），产物全部落 `/tmp/independent-test-<日期>/`，末尾自检 `git status --porcelain`；
+* 报告必须由**真人**跑出来、由真人写，落 `docs/independent-test-<实际执行日期>/report.md`；
+* **本轮没有跑它、也没有任何"测试已通过"的结论来自它**——按红线，agent 不得代跑并声称完成。
+  上一轮真人黑盒测试的报告在 `docs/independent-test-2026-09-19/`（那一次是被审对象，不是本次）。
+
 ### 本轮之后仍需注意的
 
 1. **`mutants/` 缓存是"旧代码副本"这件事又咬了一次**：新用例读 `opsenv/` 与 `harness/` 的源码，
@@ -420,6 +438,13 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
    的 claim 锚点）已全部回灌，`scripts/check_facts.py --run verify` 是它的门禁。
 3. `opsenv/` 仍**不在**变异范围内（`only_mutate` 只有 harness 的 4 个文件）。也就是说拆包本身
    没有变异覆盖，覆盖它的是 `tests/test_no_duplicate_defs.py` 这类结构断言与上面那批逐字对照。
+4. **下一轮候选：把租约接进写路径**（2026-09-26 出设计，未实现）——
+   [design/2026-09-26-lease-in-write-path.md](design/2026-09-26-lease-in-write-path.md)：
+   接入点推荐"`execution.py` 第 5 步（TOCTOU 复核点）旁 + `loop._drive` 入口"，
+   失败语义默认**拒绝**（不是降级、更不是仅告警），默认关闭 ⇒ 单进程行为逐位不变；
+   要改 `semantics.md` §3 与 §2.5（**先改语义再改代码**）；代价是 `execution.py`/`loop.py`
+   都在 `only_mutate` 里 ⇒ 变异基线整份不可比（刷新实测 563.0 秒）——文档 §5 给了
+   "先放新模块"的折中方案与它的代价。
 
 ### 补记：cross-job claim 漂移（2026-09-26，形态与规矩）
 
@@ -445,3 +470,52 @@ venv 入口脚本的旧路径）逐条状态见报告 §3 与 §5。
 （先例：W11 把 9 条 claim 升 verify，理由是"push 上没人看得见"）；
 `noisy-gate-failed-count` **保持 `nightly` 不动**——它读 `gate_summary.failed`，
 与样本量相关（条数随 `--per-fault/--repeats` 变），廉价档下不成立。
+
+---
+
+## 十二、2026-09-26：欠账清理轮（nightly 恢复绿 + 变异门禁加固 + 门禁分池）
+
+两个 PR：**#22**（阶段 0–3）与随后的阶段 4–6。下面只写**不可丢失的事实与规矩**，
+逐条改动的原因见提交信息。
+
+### 本轮修了什么（按"让什么变得可验证"排）
+
+| # | 改动 | 让什么变得可验证 |
+|---|---|---|
+| 0 | `noisy-gate-total` 值 14 → 18、命令换廉价档、`run` 升到 verify；HANDOFF §十一 补记 **cross-job claim 漂移** 的三条规矩 | nightly 连续 5 天红的根因（同一事实存两份、只改一份，而第二份在 nightly 里）不再是隐形；两份现在都在 PR 门槛上对账，并有关系断言钉死"值相等 + 取同一 JSON 路径" |
+| 1 | `semantics.md` §7-1/§7-3 的"待 W5"改事实口径 + 完成判据；§3/§7-4 的掉电语义写明"要做必须先由所有者立新承诺" | 文档不再暗示"W5 会顺带做掉"；掉电实验的**前置条件**（fsync 代价属于所有者决策）写清楚了 |
+| 2 | `pitch-4min.md` / HANDOFF 的清单与数字口径收口（artifact GC 已交付、45 分钟 vs 2400 秒各归其位） | 清单里只剩真没做的；两个预算数字不再被混引 |
+| 3 | 变异门禁：`--json-out` 加 `elapsed_s`；基线 v3 加**内容指纹**（同名不同指纹 ⇒ `[mutant-content-changed]`）；`--update-baseline` 加**更宽即拒绝**守卫（`--allow-wider-baseline` 显式放行、条件写进基线） | 独立验证 2026-09-18 报告 §5-1/§5-2/§5-3 三处残余边界各有机器判据；CI 墙钟从"只有 CI 能回答"变成产物里的字段 |
+| 4 | `scripts/mutation_check.py`（1126 行）拆成包 + 门面（46 个名字一个不少） | 判据、基线、指纹、runner、CLI 各归其位；拆前拆后产物**逐键对照**（除 `elapsed_s` 计时噪声外完全相同） |
+| 5 | **比率门禁按 dev/holdout 分池**（阈值一个没动）：17 条池内判据 × 2 池 + 2 条不分池 = 36 | HANDOFF §十-2 的"报告分开报、判据没分"结束；分池立刻暴露 pooling 掩盖的两条（噪声口径 `noisy-gate-failed-count` 1 → 3） |
+| 6 | 租约接进写路径的**设计**（未实现）+ 真人黑盒测试准备物（**待真人执行**） | 下一轮有明确接入点与代价账；黑盒测试有可执行入口与报告骨架 |
+
+### 本轮新增/改变的判定与它们的退化注入（都"改坏必红"）
+
+* **claim 关系断言**：`noisy-gate-total` 与 `suite-gate-count` 的值必须相等、取同一 JSON 路径
+  （注入：把值改回 14 ⇒ 只有该用例红）；
+* **内容指纹**：等量改写（`>=` 翻成 `<=`，条数与编号都不变）⇒ 4 条同名变异指纹变化即红；
+  注释掉比对 ⇒ 只有对应用例红；
+* **更宽即拒绝**：守卫改恒假 ⇒ 只有对应用例红；带逃生门写成功且 `refresh.widening_override` 落盘；
+* **指纹 fail-closed**：一条指纹都取不到即拒绝写基线（注释掉 ⇒ 只有对应用例红）；
+* **门面契约**：删掉门面里任意一个名字 ⇒ 只有契约用例红；
+* **分池后的四条关系门禁**（指标定义 / 新动作对称自检两侧 / CRN）各注入一次，各自的对应用例红。
+
+### 本轮之后仍需注意的（新增三条）
+
+1. **内容指纹只覆盖 `only_mutate` 里的四个模块**（与既有的"范围外"边界同界）；
+   **换指纹口径必须换算法标识名**（`fingerprint_algorithm`），否则新旧基线会被集体误报。
+2. **刷新基线现在是两道默认拒绝**：没有指纹不许写；候选比旧基线更宽不许写。
+   **改代码导致变异体重编号也算"更宽"** ⇒ 那种刷新要显式 `--allow-wider-baseline`
+   （这是有意的：刷新应当是个有意识动作）。顺带一条教训：**测试不许碰仓库的 `mutants/`**
+   ——本轮的守卫用例第一版没把 `MUTANTS_DIR` 指到 tmp，把正在跑的全量刷新缓存搬走了。
+3. **测试不许碰仓库的缓存**这条现在由 `_run_gate` 的固定隔离兜住（`tests/test_mutation_gate.py`）。
+
+### 本轮的口径变化（引用旧数字时要当心）
+
+| 数字 | 旧 | 新 | 为什么 |
+|---|---|---|---|
+| `suite-gate-count` / `noisy-gate-total` | 18 | **36** | 分池：17 条池内判据 × 2 池 + 2 条不分池 |
+| `noisy-gate-failed-count` | 1 | **3** | 分池后 holdout 的两条不再被 dev 掩盖 |
+| `tests-collected` | 464 | 见 claim | 本轮新增用例（墙钟 / 指纹 / 守卫 / 分池 / 门面契约） |
+| `check_facts --run verify` 时长 | 约 54 秒 | 约 57 秒 | 噪声门禁 claim 升到 verify + 机器噪声（本机参考值，不进 claim） |

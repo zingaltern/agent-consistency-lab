@@ -4,7 +4,7 @@
   "claims": [
     {
       "id": "tests-collected",
-      "value": 476,
+      "value": 481,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -29,7 +29,7 @@
     },
     {
       "id": "suite-gate-count",
-      "value": 18,
+      "value": 36,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -47,7 +47,7 @@
         "gate_summary",
         "total"
       ],
-      "what": "评测门禁条数（结构性事实，不随样本量变化）：本包要求「条数不变」——条数以本 claim 为准，正文不写绝对数",
+      "what": "评测门禁条数（结构性事实，不随样本量变化）：2026-09-26 口径分池后 = 17 条池内判据 × 2 个池子（dev / holdout）+ 2 条不分池（pools.present、catalog 结构）——条数以本 claim 为准，正文不写绝对数",
       "docs": [
         "docs/development.md#2.3 合并门槛（Definition of Done）",
         "docs/testing.md#7. 完成判定（绿灯标准）"
@@ -1319,7 +1319,7 @@
     },
     {
       "id": "noisy-gate-total",
-      "value": 18,
+      "value": 36,
       "tolerance": 0,
       "run": "verify",
       "source_cmd": [
@@ -1339,7 +1339,7 @@
         "gate_summary",
         "total"
       ],
-      "what": "噪声口径下门禁条数与默认口径一致（只把 4 条敏感性门禁降级为如实汇报）：这是**结构性事实**（不随样本量与误差率变化），条数以 claim suite-gate-count 为准，正文不写绝对数",
+      "what": "噪声口径下门禁条数与默认口径一致（只把 4 条敏感性门禁降级为如实汇报，分池后按基名匹配）：这是**结构性事实**（不随样本量与误差率变化），条数以 claim suite-gate-count 为准，正文不写绝对数",
       "docs": [
         "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"
@@ -1347,7 +1347,7 @@
     },
     {
       "id": "noisy-gate-failed-count",
-      "value": 1,
+      "value": 3,
       "tolerance": 0,
       "run": "nightly",
       "source_cmd": [
@@ -1369,7 +1369,7 @@
         "gate_summary",
         "failed"
       ],
-      "what": "噪声口径下如实记录的红色门禁条数（harness.correct[competent] 掉出 [0.80,0.95]）",
+      "what": "噪声口径下如实记录的红色门禁条数：harness.correct[competent] 掉出 [0.80,0.95] 在 dev 与 holdout 各一条，加上 single_shot.novel_red_line>0 只在 holdout 池上为 0（分池前 pooling 把后两条掩盖成 1 条）",
       "docs": [
         "reports/noisy_reasoner.md#评分口径敏感性",
         "docs/noisy-reasoner.md"

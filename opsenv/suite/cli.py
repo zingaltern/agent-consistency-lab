@@ -92,7 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     cells = aggregate(results)
     summary = summarise(catalog)
-    gates = check_gates(cells, results, catalog_summary=summary, noisy=noisy)
+    # 分池判据自己从 results 派生每池的 cells（`cells` 仍给报告用）
+    gates = check_gates(results, catalog_summary=summary, noisy=noisy)
 
     sections = [
         (

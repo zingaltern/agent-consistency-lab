@@ -30,9 +30,10 @@
                                                        #   不进 claim：机器不同就不同）
 .venv/bin/ruff check .
 .venv/bin/python scripts/check_facts.py --run verify    # 文档数字对账（轻 claim 集）
-                                                       # 时长实测 **约 54 秒**（W11 起 W7 的阈值扫描
-                                                       # `context_sweep --repeats 2` 也在这个集合里，
-                                                       # 它独占约 38 秒；在此之前的 9 秒是旧口径）
+                                                       # 时长实测 **约 57 秒**（2026-09-26 复查；
+                                                       # W7 的阈值扫描 `context_sweep --repeats 2` 独占约
+                                                       # 38 秒，噪声口径的廉价门禁 claim 另占约 1 秒；
+                                                       # 在此之前的 9 秒是 W11 之前的旧口径）
 
 # 完整档（合并涉及语义/评测的改动前）
 .venv/bin/python -m experiments.crash_matrix --repeats 5         # 16 格全 as-predicted

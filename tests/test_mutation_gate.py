@@ -60,11 +60,12 @@ def _run_gate(
     baseline: dict[str, str] | None,
     extra_args: tuple[str, ...] = (),
     baseline_payload: dict[str, Any] | None = None,
+    fingerprints: dict[str, str | None] | None = None,
 ) -> int:
     """跑一次门禁判定（不真的跑 mutmut）：返回退出码。
 
     ``current`` 是 `{状态: [变异体名]}`（= `collect_status()` 的形状），
-    ``baseline`` 是 `{变异体名: 状态}`。
+    ``baseline`` 是 `{变异体名: 状态}`，``fingerprints`` 是 `{变异体名: 指纹}`。
     """
     module = _load_script()
     calls: dict[str, Any] = {}
@@ -72,6 +73,14 @@ def _run_gate(
     monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets(current))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
 
+    def _fake_fingerprints(names: Any, **_kwargs: Any) -> dict[str, str | None]:
+        if fingerprints is None:
+            # 默认：每条名字给一个稳定的假指纹（等价于「内容没变」）。不给默认值会让
+            # 「一条指纹都取不到」的 fail-closed 路径把每个用例都挡在写基线之前。
+            return {str(name): f"sha256:{name}" for name in names}
+        return {str(name): fingerprints.get(str(name)) for name in names}
+
+    monkeypatch.setattr(module, "compute_mutant_fingerprints", _fake_fingerprints)
     baseline_path = tmp_path / "baseline.json"
     payload = baseline_payload if baseline_payload is not None else _baseline_v2(baseline or {})
     baseline_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -308,6 +317,111 @@ def test_gate_is_green_when_nothing_changed(
     assert code == 0
 
 
+def test_mutant_content_change_turns_the_gate_red(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """条件 7：**同名但内容指纹变了** ⇒ 退出 1（独立验证 2026-09-18 · 报告 §5-3）。
+
+    修复前会怎样：判据只按"名字 + 状态"对账 ⇒ 在同一函数体内做**等量改写**
+    （常数改值、语句换序——既不增删变异体条数、也不移位编号）时，同一批名字指向
+    完全不同的变异，而门禁**静默绿**。指纹把"这条还是不是原来那条"变成可判定的。
+    """
+    base_fp = {"m1": "sha256:aaaa", "m2": "sha256:bbbb"}
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1", "m2"]},
+        baseline={"m1": "killed", "m2": "killed"},
+        fingerprints={"m1": "sha256:aaaa", "m2": "sha256:CHANGED"},
+        baseline_payload={
+            **_baseline_v2({"m1": "killed", "m2": "killed"}),
+            "schema": "mutation-baseline/v3",
+            "fingerprint_algorithm": "sha256(normalized-mutmut-diff)/v1",
+            "fingerprints": base_fp,
+        },
+    )
+    assert code == 1
+    # 反向对照：指纹逐条相同 ⇒ 不退化为"有指纹就红"
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1", "m2"]},
+        baseline={"m1": "killed", "m2": "killed"},
+        fingerprints=dict(base_fp),
+        baseline_payload={
+            **_baseline_v2({"m1": "killed", "m2": "killed"}),
+            "fingerprints": base_fp,
+        },
+    )
+    assert code == 0
+
+
+def test_missing_fingerprints_do_not_fake_a_comparison(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """取不到指纹的条目**不参与**比对，而且要把两种"没法比"说清楚（不假装比对过）。
+
+    这是条件 7 的边界用例：门禁不能因为"没得比"而变红，也不能因为它而变绿——
+    只能如实报告这一格没在看。两种形态的文案不同，因为处置不同：
+    ① 当前侧取不到内容（本轮先把 mutants/ 修好）；② 基线还是旧版（先跑 --update-baseline）。
+    """
+    # ① 当前侧有名字取不到内容（基线有指纹）
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1"]},
+        baseline={"m1": "killed"},
+        fingerprints={"m1": None},
+        baseline_payload={
+            **_baseline_v2({"m1": "killed"}),
+            "fingerprints": {"m1": "sha256:aaaa"},
+        },
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "内容指纹" in out
+    assert "这些条目**不参与**指纹比对" in out
+    assert "这一格没在看" in out
+
+    # ② 基线是旧版（没有 fingerprints 字段）
+    code = _run_gate(
+        monkeypatch,
+        tmp_path,
+        current={"killed": ["m1"]},
+        baseline={"m1": "killed"},
+        fingerprints={"m1": "sha256:aaaa"},
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "基线里没有可比对的指纹" in out
+    assert "只记账、不判内容" in out
+
+
+def test_all_fingerprints_unreadable_refuses_to_write_a_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """fail-closed：一条指纹都取不到时**拒绝写基线**（否则等于静默关掉条件 7）。
+
+    修复前会怎样：写出一份没有 `fingerprints` 的基线，之后每轮都"没有可比对的指纹"，
+    条件 7 再不生效，而所有输出都是绿的。
+    """
+    module = _load_script()
+    monkeypatch.setattr(module, "run_mutmut", lambda **_kwargs: None)
+    monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets({"killed": ["m1"]}))
+    monkeypatch.setattr(
+        module, "compute_mutant_fingerprints", lambda names, **_kwargs: {n: None for n in names}
+    )
+    # 必须把 MUTANTS_DIR 指到 tmp：刷新路径会真的把缓存**整体移开**，
+    # 不设替身就会动仓库里那份（本用例第一版就是这么把 mutants/ 搬走的）。
+    monkeypatch.setattr(module, "MUTANTS_DIR", tmp_path / "mutants")
+    baseline_path = tmp_path / "baseline.json"
+    code = module.main(
+        ["--baseline", str(baseline_path), "--timeout", "1", "--update-baseline"]
+    )
+    assert code == 1
+    assert not baseline_path.exists(), "拒绝写入就一条都不该留下"
+
+
 def test_baseline_v1_is_read_with_a_visible_limitation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -449,6 +563,8 @@ def test_summary_only_reports_survivors_as_a_list(
     assert payload["survivors"] == ["b", "c"]
     assert payload["survivor_count"] == 2
     assert payload["inconclusive"] == ["d"]
+    # 不变量：`--summary-only` 只是**读回基线**，不得凭空造一个墙钟（基线里没有这个字段）
+    assert "elapsed_s" not in payload
     assert json.loads(capsys.readouterr().out.splitlines()[0])["survivor_count"] == 2
 
 
@@ -592,7 +708,7 @@ def test_mutmut_non_zero_exit_voids_the_verdict(monkeypatch) -> None:
 def test_baseline_is_internally_consistent() -> None:
     payload = json.loads(BASELINE.read_text(encoding="utf-8"))
     counts = payload["counts"]
-    assert payload["schema"] == "mutation-baseline/v2"
+    assert payload["schema"] == "mutation-baseline/v3"
     assert counts["survived"] == len(payload["survivors"])
     assert counts["no_tests"] == len(payload["no_tests"])
     assert counts["inconclusive"] == len(payload["inconclusive"])
@@ -752,6 +868,14 @@ def test_update_baseline_moves_the_cache_before_running_mutmut(
     monkeypatch.setattr(module, "run_mutmut", fake_run)
     monkeypatch.setattr(module, "collect_status", lambda **_kwargs: _buckets({"killed": ["m1"]}))
     monkeypatch.setattr(module, "show_mutant", lambda name: f"# {name}")
+    # 指纹也要给替身：替身造的变异体名（m1）不在真实缓存里，真函数会全部返回 None，
+    # 而"一条指纹都取不到"现在会**拒绝写基线**（fail-closed，见
+    # test_all_fingerprints_unreadable_refuses_to_write_a_baseline）。
+    monkeypatch.setattr(
+        module,
+        "compute_mutant_fingerprints",
+        lambda names, **_kwargs: {n: "sha256:x" for n in names},
+    )
 
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(_baseline_v2({"m1": "killed"})), encoding="utf-8")

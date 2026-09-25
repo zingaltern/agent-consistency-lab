@@ -63,6 +63,18 @@
                                                        # `--allow-incremental-refresh`（会大声警告）
                                                        # ⚠️ 每次运行都打印"不可见空间"的规模：
                                                        # survivor_rate 不是覆盖率
+                                                       # ⚠️ 判据第七条：**同名不同指纹**也红。
+                                                       # 基线为每条变异体存内容指纹
+                                                       # （sha256 of mutmut 自己渲染的 diff，
+                                                       # 规范化 = 逐行去尾空格 + 丢首尾空行），
+                                                       # 挡住"等量改写"（常数改值、语句换序：
+                                                       # 条数与编号都不变 ⇒ 只按名字对账会静默绿；
+                                                       # 独立验证 2026-09-18 报告 §5-3）。
+                                                       # 取指纹走进程内 mutmut 的
+                                                       # get_diff_for_mutant：2050 条约 17 秒
+                                                       # （`mutmut show` 起子进程是 219 ms/条 ⇒
+                                                       # 2050 条约 448 秒，故不采用）；指纹取不到的
+                                                       # 条目如实记 None 并打印条数，不假装比对过
                                                        # ⚠️ 判据的适用边界（三条，别读过头）：
                                                        # ① 变异范围由 pyproject.toml [tool.mutmut].only_mutate
                                                        #    决定：注入到**未变异**模块的代码不参与变异，
@@ -124,6 +136,16 @@ JSON 序列化异常被管道吞掉，报告缺了一整块）。
 
    还原后基线是全绿。（四条各自的单元用例在 `tests/test_stats_and_gates.py`
    的"指标**定义**门禁与 CRN 门禁"一节，每条都带"改坏什么会让它红"。）
+
+   **2026-09-26 新增的一条判据 + 一条刷新守卫**（独立验证 2026-09-18 报告 §5-3 / §5-2
+   的两处残余边界；三格退化注入都实跑过，都"只红那一条"）：
+
+   | 判据 | 怎么把它弄红 | 期望 | 实测 |
+   |---|---|---|---|
+   | `mutation` 第七条：同名**不同内容指纹** | 在一个**被变异模块**的函数里做**等量改写**（本机用的是把 `is_expired` 的 `>=` 翻成 `<=`，语义不变、条数不变），再重刷该模块的变异体 | 退出 1 并报 `[mutant-content-changed]` | 29 条 approval 变异体**名字与条数都不变**、其中 4 条指纹变了 → 门禁报 `[mutant-content-changed]` 4 条（另有 1 条判决同时翻转 ⇒ 也报 `[new-survivors]`，那是旧判据本来就看得见的那部分）；改动还原并重刷后 29 条指纹**逐条回到基线** |
+   | `mutation` 第七条（关掉比对） | 把 `gate_verdict` 里的 `if content_changed:` 分支注释掉 | 只有 `test_mutant_content_change_turns_the_gate_red` 红 | 1 failed / 40 passed |
+   | `mutation`（指纹取不到时不许写基线） | 把 `--update-baseline` 里的"一条指纹都取不到即拒绝"注释掉 | 只有 `test_all_fingerprints_unreadable_refuses_to_write_a_baseline` 红 | 1 failed / 40 passed |
+   | `--update-baseline` 的"更宽即拒绝"守卫（第 6 项，见下个提交） | 把 `if widening and not args.allow_wider_baseline:` 改成恒假 | 只有 `test_wider_baseline_is_refused_by_default` 红 | 1 failed / 40 passed |
 
    **W11 补的三层 append-only 防线**（独立验证 2026-09-19 · P2-5；`harness/store/guard.py`）
    不是"门禁"，但同样是"改坏了必须有人报警"的机制，因此按同一条纪律做了退化注入

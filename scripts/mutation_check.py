@@ -37,7 +37,7 @@
 后两类合起来是**不可见空间**：它们不参与 `survivor_rate`，每次运行都打印其规模——
 `survivor_rate` **不是覆盖率**，别读成覆盖率。
 
-### 六条红灯条件
+### 六条红灯条件（2026-09-18 起；第七条见下）
 
 1. 新增幸存变异（保留首版行为；基线里 `killed` 的变异体变成 `survived` 也算新增）；
 2. 基线里是**判定类**的变异体，本轮变成**非判定类**（P0-1 的活体场景）；
@@ -48,6 +48,28 @@
 
 外加一条 fail-closed：出现**本脚本不认识的状态名** ⇒ 判失败（mutmut 升版带来的新分类
 必须先被归类，否则就是新一轮"静默丢数据"）。
+
+### 第七条：同名不同指纹（2026-09-26 加）
+
+判据只按"名字 + 状态"对账时，有一格是空的（独立验证 2026-09-18 · 报告 §5-3）：
+同一函数体内的**等量改写**（常数改值、语句换序等既不增删条数、也不移位编号的改动）会让
+同一批名字指向**不同**的变异，而门禁看不出差别——可能**静默绿**。
+现在基线为每个变异体存一条**内容指纹**（`sha256` of 规范化后的变异 diff），
+对账时"同名不同指纹"报 `[mutant-content-changed]` 并退出 1。
+
+指纹的口径（两句话）：
+
+* 内容 = mutmut 自己渲染的变异函数 diff（`get_diff_for_mutant`，与 `mutmut show` 的
+  diff 部分**逐字相同**，本机实测 40 条样本零差异）；取它在**进程内**算，
+  2050 条约 17 秒——用 `mutmut show` 起子进程要 219 ms/条（2050 条约 448 秒），
+  且逐条重扫 `find_mutant`；
+* 规范化 = 逐行去尾空格 + 丢弃首尾空行（行尾空格与文件末尾换行不构成"内容变了"）。
+  指纹只回答"这条变异还是不是原来那条"，**不是**质量分。
+
+指纹拿不到时（`mutants/` 缺文件、`.meta` 里没有这个名字）如实记 `None` 并打印条数：
+**不比对、不假装比对过**。刷新基线时若一条都取不到，直接判失败（不许写一份没有指纹的基线，
+那等于把这条判据静默关掉）。
+
 
 用法::
 
@@ -70,10 +92,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -105,6 +131,136 @@ INCONCLUSIVE_STATUSES = (
     "check was interrupted by user",
 )
 KNOWN_STATUSES = DECIDED_STATUSES + UNCOVERED_STATUSES + INCONCLUSIVE_STATUSES
+
+# 内容指纹的算法标识：写进基线，**指纹换了口径必须换这个名字**——
+# 否则新旧基线会被当成"内容变了"而集体误报（判据要说得出自己是怎么算的）。
+FINGERPRINT_ALGORITHM = "sha256(normalized-mutmut-diff)/v1"
+
+
+@contextmanager
+def _chdir(path: Path) -> Iterator[None]:
+    """临时切到 ``path``：mutmut 的读函数按**当前工作目录**找 ``mutants/``。
+
+    `get_diff_for_mutant` / `MutantLineSpans.load` 内部写死了 ``Path("mutants") / path``，
+    给不了目录参数。本脚本其余部分（`mutmut run` / `mutmut results`）本来就以
+    `cwd=PROJECT_ROOT` 起子进程，所以在同一目录里读是一致的；离开时必还原。
+    """
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def mutant_paths_in_cache(mutants_dir: Path) -> dict[str, Path]:
+    """变异体名 → 变异文件路径（相对 ``mutants/``）。
+
+    映射取自 `mutants/**/*.meta` 里的 `exit_code_by_key`：那是 mutmut 自己写下的账本
+    （`find_mutant` 也按它走）。**不用名字反推路径**（`harness.approval.xǁ…` →
+    `harness/approval.py`）——那是把 mutmut 的命名约定再抄一遍，抄错就是静默错位。
+    """
+    mapping: dict[str, Path] = {}
+    if not mutants_dir.exists():
+        return mapping
+    for meta_path in sorted(mutants_dir.glob("**/*.meta")):
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        relative = meta_path.relative_to(mutants_dir).with_suffix("")
+        for name in payload.get("exit_code_by_key", {}):
+            mapping[str(name)] = relative
+    return mapping
+
+
+def normalize_fingerprint_source(diff: str) -> str:
+    """规范化：逐行去尾空格 + 丢弃首尾空行。
+
+    行尾空格与文件末尾换行不构成"变异内容变了"；反过来，任何真实的代码改写
+    （常数改值、条件取反、语句换序）都会改变规范化文本 ⇒ 指纹改变。
+    """
+    return "\n".join(line.rstrip() for line in diff.splitlines()).strip()
+
+
+def compute_mutant_fingerprints(
+    names: list[str] | set[str], *, mutants_dir: Path | None = None
+) -> dict[str, str | None]:
+    """给每条变异体算内容指纹；取不到就记 ``None``（**绝不编一个**）。
+
+    内容取自 mutmut 自己的渲染（`get_diff_for_mutant`），因此与 `mutmut show` 的 diff 部分
+    逐字相同——本机实测 40 条样本零差异，且同一条重复调用输出逐字相同。
+    取不到的三类原因都落到 ``None``：`mutants/` 不存在、名字不在任何 `.meta` 里、
+    渲染时读文件失败；调用方负责把"有几条取不到"打印出来。
+    """
+    from mutmut.mutation.diff_apply import get_diff_for_mutant  # 懒 import：--summary-only 不需要
+
+    mutants_dir = Path(mutants_dir or MUTANTS_DIR)
+    if not mutants_dir.exists():
+        return {name: None for name in names}
+    if mutants_dir.name != "mutants":
+        raise ValueError(
+            f"{mutants_dir} 不叫 `mutants`：mutmut 的读函数按当前目录找 `mutants/`，"
+            "换个名字会让指纹静默全空"
+        )
+    paths = mutant_paths_in_cache(mutants_dir)
+    fingerprints: dict[str, str | None] = {}
+    with _chdir(mutants_dir.parent):
+        for name in sorted(names):
+            relative = paths.get(name)
+            if relative is None:
+                fingerprints[name] = None
+                continue
+            try:
+                diff = get_diff_for_mutant(name, path=str(relative))
+            except Exception:  # 渲染失败 ⇒ 如实记 None（下面会打印条数）
+                fingerprints[name] = None
+                continue
+            digest = hashlib.sha256(
+                normalize_fingerprint_source(diff).encode("utf-8")
+            ).hexdigest()
+            fingerprints[name] = f"sha256:{digest}"
+    return fingerprints
+
+
+def fingerprint_report(fingerprints: dict[str, str | None]) -> list[str]:
+    """要打印的指纹口径说明（每次运行都打，免得被读成"内容肯定没变"）。"""
+    total = len(fingerprints)
+    readable = sum(1 for value in fingerprints.values() if value)
+    lines = [
+        f"[mutation] 内容指纹（{FINGERPRINT_ALGORITHM}）：{readable}/{total} 条可读"
+    ]
+    if readable < total:
+        lines.append(
+            f"  ⚠️ {total - readable} 条取不到内容（mutants/ 缺文件或 .meta 里没有这个名字）："
+            "这些条目**不参与**指纹比对，不假装比对过。"
+        )
+    return lines
+
+
+def fingerprint_comparison_lines(
+    fingerprints: dict[str, str | None], baseline_fingerprints: dict[str, str]
+) -> list[str]:
+    """"这一轮到底比了几条"——**必须分两种说法**：基线没有 vs 本轮取不到。
+
+    两种形态的处置不同：前者跑一次 `--update-baseline` 就有得比了；后者说明这一轮
+    `mutants/` 侧取不到内容，得先修缓存。把两者混成一句"没有可比对的指纹"会指向错的处置。
+    """
+    compared = sum(
+        1 for name, value in fingerprints.items() if value and baseline_fingerprints.get(name)
+    )
+    if compared:
+        return [f"  与基线逐条比对：{compared} 条同名可比对。"]
+    if baseline_fingerprints:
+        return [
+            "  ⚠️ 本轮没有任何条目能与基线比对（当前侧取不到内容）："
+            "**只记账、不判内容**——这不是「内容没变」，而是「这一格没在看」。"
+        ]
+    return [
+        "  ⚠️ 基线里没有可比对的指纹（旧基线或刚刷新）：本轮**只记账、不判内容**；"
+        "跑一次 `--update-baseline` 即可让这条判据生效。"
+    ]
+
 
 
 def normalize_module_filter(value: str) -> str:
@@ -281,8 +437,23 @@ def collect_status(*, json_out: str = "") -> dict[str, list[str]]:
     return buckets
 
 
-def mutation_summary(buckets: dict[str, list[str]]) -> dict[str, Any]:
-    """把 mutmut 的状态表折算成"全状态记账"的摘要。**不丢弃任何状态**。"""
+def all_mutant_names(buckets: dict[str, list[str]]) -> set[str]:
+    """结果表里的**全部**变异体名（所有状态，不做过滤）。
+
+    指纹要对"结果表里出现过的每一条"取——包括幸存、no tests 与无结论类：
+    无结论类变成有结论时，内容也该是同一份。
+    """
+    return {name for names in buckets.values() for name in names}
+
+
+def mutation_summary(
+    buckets: dict[str, list[str]], *, fingerprints: dict[str, str | None] | None = None
+) -> dict[str, Any]:
+    """把 mutmut 的状态表折算成"全状态记账"的摘要。**不丢弃任何状态**。
+
+    ``fingerprints`` 是可选的内容指纹（`compute_mutant_fingerprints` 的产物）：
+    默认空 dict 时，摘要与加指纹之前**逐字相同**（旧调用点不用改）。
+    """
     by_status = {status: sorted(names) for status, names in buckets.items()}
     status_by_mutant = {name: status for status, names in buckets.items() for name in names}
     counts = {status: len(buckets.get(status, [])) for status in KNOWN_STATUSES}
@@ -313,6 +484,7 @@ def mutation_summary(buckets: dict[str, list[str]]) -> dict[str, Any]:
         # 幸存率只在"被判定的变异体"上算：no tests 与无结论类是另一类盲区，
         # 混进分母会让这个数看起来更好看。**它不是覆盖率**。
         "survivor_rate": (counts["survived"] / decided) if decided else 0.0,
+        "fingerprints": dict(fingerprints or {}),
     }
 
 
@@ -328,10 +500,12 @@ def show_mutant(name: str) -> str:
 
 
 def load_baseline(path: Path) -> dict[str, Any]:
-    """读基线。**兼容 v1**：v1 只有 `survivors`/`no_tests` 两个列表。
+    """读基线。**兼容 v1 / v2**：v1 只有 `survivors`/`no_tests` 两个列表；
+    v2 有逐条 `status_by_mutant` 但没有内容指纹（v3 起才有）。
 
     v1 的 `killed` 只有计数没有名字，所以条件 2/3 在 v1 上只能覆盖
     "基线幸存者" 与 "基线 no tests"——这一点会被打印出来，免得被读成全覆盖。
+    v2 缺指纹 ⇒ 条件 7 不生效（打印出来，不假装比对过）。
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
     full = isinstance(payload.get("status_by_mutant"), dict) and bool(payload["status_by_mutant"])
@@ -343,10 +517,18 @@ def load_baseline(path: Path) -> dict[str, Any]:
             status_by_mutant[str(name)] = "survived"
         for name in payload.get("no_tests", []):
             status_by_mutant[str(name)] = "no tests"
+    raw_fingerprints = payload.get("fingerprints")
+    fingerprints = (
+        {str(k): str(v) for k, v in raw_fingerprints.items()}
+        if isinstance(raw_fingerprints, dict)
+        else {}
+    )
     return {
         "schema": str(payload.get("schema", "mutation-baseline/v1")),
         "status_by_mutant": status_by_mutant,
         "full_status_coverage": full,
+        "fingerprints": fingerprints,
+        "fingerprint_algorithm": str(payload.get("fingerprint_algorithm", "")),
         "inconclusive": set(
             name for name, status in status_by_mutant.items() if status in INCONCLUSIVE_STATUSES
         ),
@@ -354,7 +536,7 @@ def load_baseline(path: Path) -> dict[str, Any]:
 
 
 def gate_verdict(summary: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
-    """六条红灯条件 + 未知状态 fail-closed。返回 ``{"failures": [...], ...}``。
+    """七条红灯条件 + 未知状态 fail-closed。返回 ``{"failures": [...], ...}``。
 
     纯函数：不吃 mutmut、不读文件——判定逻辑本身要能被单元测试与退化注入直接钉住。
     """
@@ -374,6 +556,15 @@ def gate_verdict(summary: dict[str, Any], baseline: dict[str, Any]) -> dict[str,
     new_no_tests = [name for name in summary["no_tests"] if base.get(name) != "no tests"]
     # 6. 无结论集合较基线增长。
     new_inconclusive = sorted(set(summary["inconclusive"]) - baseline["inconclusive"])
+    # 7. 同名不同指纹：判据只按"名字 + 状态"对账时，等量改写会让同一批名字指向不同的变异
+    #    （独立验证 2026-09-18 · 报告 §5-3）。只比"两边都取到指纹"的名字——
+    #    取不到的那一侧由 fingerprint_report 打印条数，绝不假装比对过。
+    base_fingerprints = baseline.get("fingerprints") or {}
+    content_changed = sorted(
+        name
+        for name, value in (summary.get("fingerprints") or {}).items()
+        if value and base_fingerprints.get(name) and value != base_fingerprints[name]
+    )
 
     failures: list[dict[str, Any]] = []
 
@@ -424,6 +615,15 @@ def gate_verdict(summary: dict[str, Any], baseline: dict[str, Any]) -> dict[str,
             "无结论集合较基线**增长**（有新名字进入不可见空间）",
             new_inconclusive,
         )
+    if content_changed:
+        fail(
+            "mutant-content-changed",
+            "同名变异体的**内容指纹变了**（名字与状态都对得上，但已经不是同一条变异）",
+            content_changed,
+            "这是「等量改写」的窗口：条数与编号都没变，只有变异内容变了——"
+            "只按名字 + 状态对账会让它静默绿。要么把改动还原，要么确认新内容后"
+            "跑 --update-baseline（并在 PR 里说明）。",
+        )
     if summary["unknown_statuses"]:
         fail(
             "unknown-status",
@@ -439,6 +639,7 @@ def gate_verdict(summary: dict[str, Any], baseline: dict[str, Any]) -> dict[str,
         "vanished": vanished,
         "new_no_tests": new_no_tests,
         "new_inconclusive": new_inconclusive,
+        "content_changed": content_changed,
         "baseline_full_status_coverage": baseline["full_status_coverage"],
         "ok": not failures,
     }
@@ -544,6 +745,10 @@ def _summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "invisible_count": invisible,
         "invisible_share": payload.get("invisible_share", 0.0),
         "modules": payload.get("modules", []),
+        # 只给**条数**与算法名：指纹本身 2000+ 条，逐条打在这一行 stdout 上没人读得动。
+        # （它是给门禁逐条比对用的，完整名单在基线文件与 `--json-out` 的产物里。）
+        "fingerprint_algorithm": payload.get("fingerprint_algorithm", ""),
+        "fingerprint_count": len(payload.get("fingerprints") or {}),
     }
 
 
@@ -620,12 +825,19 @@ def main(argv: list[str] | None = None) -> int:
         float(elapsed if elapsed is not None else time.perf_counter() - run_started), 1
     )
     buckets = collect_status(json_out=args.json_out)
-    summary = mutation_summary(buckets)
+    # 内容指纹（条件 7）：从这一轮刚生成的 `mutants/` 读，逐条算；
+    # 取不到的条目如实记 None，条数与"是否真的比对了"由 fingerprint_report 打印。
+    fingerprints = compute_mutant_fingerprints(
+        all_mutant_names(buckets), mutants_dir=MUTANTS_DIR
+    )
+    summary = mutation_summary(buckets, fingerprints=fingerprints)
     print(
         f"[mutation] killed={summary['killed']} survived={len(summary['survived'])} "
         f"no_tests={len(summary['no_tests'])} survivor_rate={summary['survivor_rate']:.3f}"
     )
     for line in _invisible_space_lines(summary):
+        print(line)
+    for line in fingerprint_report(fingerprints):
         print(line)
 
     run_payload = {
@@ -657,6 +869,10 @@ def main(argv: list[str] | None = None) -> int:
         # checkout/install）即可算余量。不按模块拆分：本脚本一次 `mutmut run` 跑完
         # `only_mutate` 的全部模块，模块级细分要改成串行多次运行（那是另一种预算形态）。
         "elapsed_s": elapsed_s,
+        # 内容指纹（条件 7 的原料）：逐条写进产物，两次运行的产物可以直接 diff 出
+        # "哪些同名变异换了内容"；基线里也存同一份（算法标识一并写，换口径必须改名）。
+        "fingerprint_algorithm": FINGERPRINT_ALGORITHM,
+        "fingerprints": fingerprints,
         # 这一轮是"全量重跑"还是"沿用了旧缓存"：基线混合与否只能从这里读出来
         "refresh": refresh,
     }
@@ -677,65 +893,79 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.update_baseline:
+        unreadable = sorted(name for name, value in fingerprints.items() if not value)
+        if fingerprints and len(unreadable) == len(fingerprints):
+            # fail-closed：写一份**一条指纹都没有**的基线，等于把条件 7 静默关掉
+            # （门禁之后会一直"没有可比对的指纹"而全绿）。宁可判失败。
+            print(
+                "[mutation] 一条内容指纹都取不到（mutants/ 缺文件 / .meta 里没有这些名字）："
+                "拒绝写基线——那会把「同名不同指纹」这条判据静默关掉。\n"
+                f"  mutants_dir={MUTANTS_DIR}，本轮变异体 {len(fingerprints)} 条"
+            )
+            return 1
+        payload_to_write = {
+            "schema": "mutation-baseline/v3",
+            "tool": "mutmut 3.x（见 pyproject.toml [tool.mutmut]）",
+            "modules": list(DEFAULT_MODULES),
+            "command": "mutmut run --max-children 4（nightly job `mutation`）",
+            # 这份基线是什么条件下冻的：全量重跑（`action=full-run`/`move-aside`）
+            # 还是"沿用了旧缓存的增量结果"（`action=incremental`）。后者是
+            # 混合基线，写在这里而不是靠人记。
+            "refresh": refresh,
+            "counts": {
+                "killed": summary["killed"],
+                "survived": len(summary["survived"]),
+                "no_tests": len(summary["no_tests"]),
+                "inconclusive": len(summary["inconclusive"]),
+                "invisible": summary["invisible_count"],
+                "total": summary["total"],
+                "decided": summary["decided"],
+            },
+            "status_counts": summary["status_counts"],
+            # 每个变异体的状态：条件 2/3 靠它才能看见"killed 变成 segfault"
+            # 与"整条重命名"（v1 只有 survivors/no_tests 两个列表，看不见这些）。
+            "status_by_mutant": summary["status_by_mutant"],
+            # 每条变异体的**内容指纹**（v3 起）：条件 7 靠它才能看见"同名但已不是同一条"
+            # ——等量改写（常数改值、语句换序）既不增删条数也不移位编号，只看名字会静默绿。
+            "fingerprint_algorithm": FINGERPRINT_ALGORITHM,
+            "fingerprints": {name: value for name, value in fingerprints.items() if value},
+            "survivor_rate": round(summary["survivor_rate"], 4),
+            "invisible_share": round(summary["invisible_share"], 4),
+            "survivors": summary["survived"],
+            "no_tests": summary["no_tests"],
+            # 已知无结论集合：门禁对它的**增长**敏感，对它本身不做断言。
+            # 它不得被读成"不是盲区"——2026-09-18 之前这个集合里装着 906 条
+            # `segfault`（macOS fork 子进程碰系统代理解析导致的误判），其中
+            # `harness.approval.xǁApprovalBindingǁis_expired__mutmut_9` 经手工应用
+            # 整套用例全绿 ⇒ 是一条**真幸存变异**。根因修掉后该集合为空。
+            "inconclusive": summary["inconclusive"],
+            "note": (
+                "幸存变异 = 测试盲区。基线只用来防「新增盲区」，不是质量分："
+                "部分路径由子进程驱动的崩溃矩阵/四系统评测覆盖，mutmut 看不见，"
+                "因此清单里包含「其实被外层验证保护着」的变异。"
+                "无结论类（segfault/timeout/not checked…）与未覆盖类（no tests）"
+                "合起来是**不可见空间**，它们不进 survivor_rate——"
+                "survivor_rate 不是覆盖率。"
+                "基线的 `status_by_mutant` 记了每一条的状态：判定类变成非判定类、"
+                "整条缺失、新增 no tests、无结论集合增长，都会让门禁变红。"
+                "`fingerprints` 记了每一条的内容指纹：同名**不同指纹**同样变红"
+                f"（算法 {FINGERPRINT_ALGORITHM}；换口径必须换标识名，否则会集体误报）。"
+                "`inconclusive` 是「已知无结论集合」，门禁只判它的增长、不判它本身——"
+                "**它不得被读成「不是盲区」**：2026-09-18 之前这个集合里装着 906 条 "
+                "`segfault`（macOS 上 fork 出的子进程碰系统代理解析导致的误判），"
+                "其中 is_expired__mutmut_9 经手工应用后整套用例全绿，是一条真幸存变异；"
+                "根因修掉后该集合为空，调查见 "
+                "docs/design/2026-09-18-mutation-segfault-investigation.md。"
+            ),
+        }
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
         baseline_path.write_text(
-            json.dumps(
-                {
-                    "schema": "mutation-baseline/v2",
-                    "tool": "mutmut 3.x（见 pyproject.toml [tool.mutmut]）",
-                    "modules": list(DEFAULT_MODULES),
-                    "command": "mutmut run --max-children 4（nightly job `mutation`）",
-                    # 这份基线是什么条件下冻的：全量重跑（`action=full-run`/`move-aside`）
-                    # 还是"沿用了旧缓存的增量结果"（`action=incremental`）。后者是
-                    # 混合基线，写在这里而不是靠人记。
-                    "refresh": refresh,
-                    "counts": {
-                        "killed": summary["killed"],
-                        "survived": len(summary["survived"]),
-                        "no_tests": len(summary["no_tests"]),
-                        "inconclusive": len(summary["inconclusive"]),
-                        "invisible": summary["invisible_count"],
-                        "total": summary["total"],
-                        "decided": summary["decided"],
-                    },
-                    "status_counts": summary["status_counts"],
-                    # 每个变异体的状态：条件 2/3 靠它才能看见"killed 变成 segfault"
-                    # 与"整条重命名"（v1 只有 survivors/no_tests 两个列表，看不见这些）。
-                    "status_by_mutant": summary["status_by_mutant"],
-                    "survivor_rate": round(summary["survivor_rate"], 4),
-                    "invisible_share": round(summary["invisible_share"], 4),
-                    "survivors": summary["survived"],
-                    "no_tests": summary["no_tests"],
-                    # 已知无结论集合：门禁对它的**增长**敏感，对它本身不做断言。
-                    # 它不得被读成"不是盲区"——2026-09-18 之前这个集合里装着 906 条
-                    # `segfault`（macOS fork 子进程碰系统代理解析导致的误判），其中
-                    # `harness.approval.xǁApprovalBindingǁis_expired__mutmut_9` 经手工应用
-                    # 整套用例全绿 ⇒ 是一条**真幸存变异**。根因修掉后该集合为空。
-                    "inconclusive": summary["inconclusive"],
-                    "note": (
-                        "幸存变异 = 测试盲区。基线只用来防「新增盲区」，不是质量分："
-                        "部分路径由子进程驱动的崩溃矩阵/四系统评测覆盖，mutmut 看不见，"
-                        "因此清单里包含「其实被外层验证保护着」的变异。"
-                        "无结论类（segfault/timeout/not checked…）与未覆盖类（no tests）"
-                        "合起来是**不可见空间**，它们不进 survivor_rate——"
-                        "survivor_rate 不是覆盖率。"
-                        "基线的 `status_by_mutant` 记了每一条的状态：判定类变成非判定类、"
-                        "整条缺失、新增 no tests、无结论集合增长，都会让门禁变红。"
-                        "`inconclusive` 是「已知无结论集合」，门禁只判它的增长、不判它本身——"
-                        "**它不得被读成「不是盲区」**：2026-09-18 之前这个集合里装着 906 条 "
-                        "`segfault`（macOS 上 fork 出的子进程碰系统代理解析导致的误判），"
-                        "其中 is_expired__mutmut_9 经手工应用后整套用例全绿，是一条真幸存变异；"
-                        "根因修掉后该集合为空，调查见 "
-                        "docs/design/2026-09-18-mutation-segfault-investigation.md。"
-                    ),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+            json.dumps(payload_to_write, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
-        print(f"[mutation] 基线已更新：{baseline_path}（schema v2，含每条变异体的状态）")
+        print(
+            f"[mutation] 基线已更新：{baseline_path}"
+            f"（schema v3，含状态与内容指纹 {len(payload_to_write['fingerprints'])} 条）"
+        )
         return 0
 
     if not baseline_path.exists():
@@ -748,8 +978,10 @@ def main(argv: list[str] | None = None) -> int:
     if not baseline["full_status_coverage"]:
         print(
             "[mutation] 注意：基线是 v1（只有 survivors/no_tests 两个列表，没有 killed 的名字）。"
-            "条件 2/3 因此只能覆盖基线幸存者与 no tests；跑一次 --update-baseline 可升到 v2。"
+            "条件 2/3 因此只能覆盖基线幸存者与 no tests；跑一次 --update-baseline 可升到 v3。"
         )
+    for line in fingerprint_comparison_lines(fingerprints, baseline["fingerprints"]):
+        print(line)
 
     verdict = gate_verdict(summary, baseline)
     if verdict["ok"]:
